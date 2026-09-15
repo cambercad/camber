@@ -6,12 +6,13 @@
 #   bash publish-wheel.sh --bootstrap     # apt + .NET SDK, then build
 #
 # Output (same folder as Windows wheels — ready for twine later):
-#   <repo>/dist/camber-*.whl
+#   <repo>/dist/cambercad-*.whl
 
 set -euo pipefail
 
 RUNTIME="linux-x64"
 CONFIGURATION="Release"
+WHEEL_VERSION="0.1.1"
 BOOTSTRAP=0
 
 while [[ $# -gt 0 ]]; do
@@ -19,6 +20,7 @@ while [[ $# -gt 0 ]]; do
     --bootstrap) BOOTSTRAP=1; shift ;;
     --runtime) RUNTIME="$2"; shift 2 ;;
     --configuration) CONFIGURATION="$2"; shift 2 ;;
+    --version) WHEEL_VERSION="$2"; shift 2 ;;
     -h|--help)
       sed -n '2,12p' "$0"
       exit 0
@@ -66,9 +68,9 @@ if [[ "$ROOT" == /mnt/* ]] && [[ "${CAMBER_LINUX_RELAUNCHED:-0}" != "1" ]]; then
   export CAMBER_WIN_DIST="$WIN_REPO/dist"
   bash "$BUILD_ROOT/Geo.Python/publish-wheel.sh" "$@"
   mkdir -p "$WIN_REPO/dist"
-  cp -f "$BUILD_ROOT/dist"/camber-*.whl "$WIN_REPO/dist/"
+  cp -f "$BUILD_ROOT/dist"/cambercad-*.whl "$WIN_REPO/dist/"
   echo "Copied wheels to $WIN_REPO/dist:"
-  ls -la "$WIN_REPO/dist"/camber-*.whl
+  ls -la "$WIN_REPO/dist"/cambercad-*.whl
   exit 0
 fi
 
@@ -148,14 +150,49 @@ rm -rf "$CAMBER_DST"
 cp -a "$ROOT/python/camber" "$CAMBER_DST"
 
 SETUP="$PKG/setup.py"
+README="$REPO_ROOT/README.md"
 if [[ -f "$SETUP" ]]; then
-  python3 - <<'PY' "$SETUP"
-import pathlib, sys
-path = pathlib.Path(sys.argv[1])
-text = path.read_text(encoding="utf-8")
-text = text.replace('name="_camber_native"', 'name="camber"')
-text = text.replace("name='_camber_native'", 'name="camber"')
-text = text.replace('name="geo_csg"', 'name="camber"')
+  python3 - "$SETUP" "$README" "$WHEEL_VERSION" <<'PY'
+from pathlib import Path
+import sys
+import re
+
+setup_path = Path(sys.argv[1])
+readme = Path(sys.argv[2]).read_text(encoding="utf-8")
+version = sys.argv[3]
+text = setup_path.read_text(encoding="utf-8")
+text = re.sub(r'version\s*=\s*["\'][^"\']+["\']', f'version="{version}"', text, count=1)
+text = text.replace('name="_camber_native"', 'name="cambercad"')
+text = text.replace("name='_camber_native'", 'name="cambercad"')
+text = text.replace('name="geo_csg"', 'name="cambercad"')
+text = text.replace('author="DotWrap"', 'author="cambercad"')
+text = text.replace("author='DotWrap'", 'author="cambercad"')
+summary = (
+    "Scripting- and AI-first CAD: triangle-first kernel with sketch, CSG, "
+    "optional NURBS, mesh import/export, and a Python API."
+)
+text = text.replace(
+    'description="Auto-generated Python bindings for DotWrap C# library"',
+    f"description={summary!r}",
+)
+text = text.replace(
+    "description='Auto-generated Python bindings for DotWrap C# library'",
+    f"description={summary!r}",
+)
+if "author_email=" not in text:
+    text = text.replace(
+        'author="cambercad"',
+        'author="cambercad",\n    author_email="cambercad@proton.me"',
+    )
+if "long_description" not in text:
+    extra_meta = (
+        f"    long_description={readme!r},\n"
+        '    long_description_content_type="text/markdown",\n'
+    )
+    text = text.replace(
+        f"description={summary!r},\n",
+        f"description={summary!r},\n{extra_meta}",
+    )
 extra = 'extras_require={"view": ["pyglet", "imgui[pyglet]", "numpy"]}'
 if "extras_require" not in text:
     text = text.replace(
@@ -166,8 +203,8 @@ if "extras_require" not in text:
         "install_requires=['cffi']",
         'install_requires=["cffi"], ' + extra,
     )
-path.write_text(text, encoding="utf-8")
-print("patched", path)
+setup_path.write_text(text, encoding="utf-8")
+print("patched", setup_path)
 PY
 fi
 
@@ -189,27 +226,28 @@ ls -la "$STAGE"
 shopt -s nullglob
 PYTAG="$(python -c 'import sys; print(f"cp{sys.version_info.major}{sys.version_info.minor}")')"
 case "$RUNTIME" in
-  linux-x64) PLAT="linux_x86_64" ;;
-  linux-arm64) PLAT="linux_aarch64" ;;
+  # PyPI rejects bare linux_x86_64; use a manylinux tag for native wheels.
+  linux-x64) PLAT="manylinux_2_17_x86_64" ;;
+  linux-arm64) PLAT="manylinux_2_17_aarch64" ;;
   *) PLAT="${RUNTIME//-/_}" ;;
 esac
 
 # Retag in-place inside STAGE (wheel tags --remove deletes the source file).
 (
   cd "$STAGE"
-  for whl in camber-*.whl; do
+  for whl in cambercad-*.whl; do
     python -m wheel tags --remove --python-tag "$PYTAG" --abi-tag "$PYTAG" --platform-tag "$PLAT" "$whl" || {
       # Fallback rename only (metadata may still say py3-none-any).
       if [[ "$whl" == *-py3-none-any.whl ]]; then
-        ver="${whl#camber-}"
+        ver="${whl#cambercad-}"
         ver="${ver%-py3-none-any.whl}"
-        mv -f "$whl" "camber-${ver}-${PYTAG}-${PYTAG}-${PLAT}.whl"
+        mv -f "$whl" "cambercad-${ver}-${PYTAG}-${PYTAG}-${PLAT}.whl"
       fi
     }
   done
 )
 
-for whl in "$STAGE"/camber-*.whl; do
+for whl in "$STAGE"/cambercad-*.whl; do
   dest_name="$(basename "$whl")"
   cp -f "$whl" "$DIST/$dest_name"
   echo "Wrote $DIST/$dest_name"
@@ -219,11 +257,11 @@ deactivate 2>/dev/null || true
 
 echo
 echo "Wheels in $DIST"
-ls -la "$DIST"/camber-*.whl 2>/dev/null || true
+ls -la "$DIST"/cambercad-*.whl 2>/dev/null || true
 echo
 echo "Install example (repo root):"
-echo "  uv venv .venv && uv pip install --python .venv/bin/python \"dist/camber-\"*\".whl[view]\""
+echo "  uv venv .venv && uv pip install --python .venv/bin/python \"dist/cambercad-\"*\".whl[view]\""
 echo "Smoke:"
 echo "  .venv/bin/python Geo.Python/python/smoke.py"
 echo "Later PyPI:"
-echo "  twine upload dist/camber-*.whl"
+echo "  twine upload dist/cambercad-*.whl"

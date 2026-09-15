@@ -1,6 +1,7 @@
 param(
     [string]$Runtime = "win-x64",
-    [string]$Configuration = "Release"
+    [string]$Configuration = "Release",
+    [string]$WheelVersion = "0.1.1"
 )
 
 $ErrorActionPreference = "Stop"
@@ -29,21 +30,65 @@ if (Test-Path $camberDst) {
 Copy-Item -Recurse (Join-Path $root "python\camber") $camberDst
 
 $setup = Join-Path $pkg "setup.py"
+$readme = Join-Path $repoRoot "README.md"
 if (Test-Path $setup) {
-    $text = Get-Content $setup -Raw
-    $text = $text -replace 'name="_camber_native"', 'name="camber"'
-    $text = $text -replace "name='_camber_native'", 'name="camber"'
-    $text = $text -replace 'name="geo_csg"', 'name="camber"'
-    if ($text -notmatch 'extras_require') {
-        $text = $text -replace 'install_requires=\["cffi"\]', 'install_requires=["cffi"], extras_require={"view": ["pyglet", "imgui[pyglet]", "numpy"]}'
-        $text = $text -replace "install_requires=\['cffi'\]", 'install_requires=["cffi"], extras_require={"view": ["pyglet", "imgui[pyglet]", "numpy"]}'
-    }
-    Set-Content -Path $setup -Value $text -NoNewline
+    @'
+from pathlib import Path
+import sys
+
+import re
+
+setup_path = Path(sys.argv[1])
+readme = Path(sys.argv[2]).read_text(encoding="utf-8")
+version = sys.argv[3]
+text = setup_path.read_text(encoding="utf-8")
+text = re.sub(r'version\s*=\s*["\'][^"\']+["\']', f'version="{version}"', text, count=1)
+text = text.replace('name="_camber_native"', 'name="cambercad"')
+text = text.replace("name='_camber_native'", 'name="cambercad"')
+text = text.replace('name="geo_csg"', 'name="cambercad"')
+text = text.replace('author="DotWrap"', 'author="cambercad"')
+text = text.replace("author='DotWrap'", 'author="cambercad"')
+summary = (
+    "Scripting- and AI-first CAD: triangle-first kernel with sketch, CSG, "
+    "optional NURBS, mesh import/export, and a Python API."
+)
+text = text.replace(
+    'description="Auto-generated Python bindings for DotWrap C# library"',
+    f"description={summary!r}",
+)
+text = text.replace(
+    "description='Auto-generated Python bindings for DotWrap C# library'",
+    f"description={summary!r}",
+)
+if "author_email=" not in text:
+    text = text.replace('author="cambercad"', 'author="cambercad",\n    author_email="cambercad@proton.me"')
+if "long_description" not in text:
+    extra_meta = (
+        f"    long_description={readme!r},\n"
+        '    long_description_content_type="text/markdown",\n'
+    )
+    text = text.replace(
+        f"description={summary!r},\n",
+        f"description={summary!r},\n{extra_meta}",
+    )
+extra = 'extras_require={"view": ["pyglet", "imgui[pyglet]", "numpy"]}'
+if "extras_require" not in text:
+    text = text.replace(
+        'install_requires=["cffi"]',
+        'install_requires=["cffi"], ' + extra,
+    )
+    text = text.replace(
+        "install_requires=['cffi']",
+        'install_requires=["cffi"], ' + extra,
+    )
+setup_path.write_text(text, encoding="utf-8")
+print("patched", setup_path)
+'@ | python - $setup $readme $WheelVersion
 }
 
 python -m pip install --upgrade pip setuptools wheel cffi
 
-# Stage pip output, then keep only camber-*.whl in repo-root dist/ (PyPI-ready layout).
+# Stage pip output, then keep only cambercad-*.whl in repo-root dist/ (PyPI-ready layout).
 $stage = Join-Path $root "_wheel_stage"
 $dist = Join-Path $repoRoot "dist"
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
@@ -61,16 +106,16 @@ $plat = switch -Wildcard ($Runtime) {
 
 Push-Location $stage
 try {
-    Get-ChildItem -Filter "camber-*.whl" | ForEach-Object {
+    Get-ChildItem -Filter "cambercad-*.whl" | ForEach-Object {
         # wheel tags --remove deletes the input file and writes a retagged sibling here.
         & python -m wheel tags --remove --python-tag $py --abi-tag $py --platform-tag $plat $_.Name
         if ($LASTEXITCODE -ne 0) {
-            if ($_.Name -match '^camber-([^-]+)-py3-none-any\.whl$') {
-                Rename-Item $_.Name "camber-$($Matches[1])-$py-$py-$plat.whl"
+            if ($_.Name -match '^cambercad-([^-]+)-py3-none-any\.whl$') {
+                Rename-Item $_.Name "cambercad-$($Matches[1])-$py-$py-$plat.whl"
             }
         }
     }
-    Get-ChildItem -Filter "camber-*.whl" | ForEach-Object {
+    Get-ChildItem -Filter "cambercad-*.whl" | ForEach-Object {
         $dest = Join-Path $dist $_.Name
         Copy-Item $_.FullName $dest -Force
         Write-Host "Wrote $dest"
@@ -82,7 +127,7 @@ finally {
 Remove-Item -Recurse -Force $stage
 
 Write-Host "Wheels in $dist"
-Get-ChildItem $dist -Filter "camber-*.whl"
-Write-Host "Install: uv pip install `"$dist\camber-*.whl[view]`""
+Get-ChildItem $dist -Filter "cambercad-*.whl"
+Write-Host "Install: uv pip install `"$dist\cambercad-*.whl[view]`""
 Write-Host "Smoke:   python python\smoke.py"
-Write-Host "Later PyPI: twine upload dist\camber-*.whl"
+Write-Host "Later PyPI: twine upload dist\cambercad-*.whl"
