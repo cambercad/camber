@@ -19,4 +19,8 @@
     <Folder Include="Solve\" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="GeoTests" />
+  </ItemGroup>
+
 </Project>

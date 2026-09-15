@@ -89,6 +89,20 @@ uv pip install --python .\.venv\Scripts\python.exe (Get-ChildItem ..\dist\camber
 python python\smoke.py
 ```
 
+## Tests
+
+From the repo root:
+
+```powershell
+.\run-tests.ps1
+```
+
+```bash
+./run-tests.sh
+```
+
+Runs C# tests (`dotnet test camber.sln`) and Python `unittest` under `Geo.Python/python/tests`. Uses `.venv` at the repo root or `Geo.Python/.venv` if present, otherwise `python` on PATH. Native Python tests skip when the wheel is not installed.
+
 More detail: [Geo.Python/README.md](Geo.Python/README.md).
 
 ## Build the wheel (Linux / WSL Ubuntu 24.04)
@@ -144,6 +158,7 @@ Open [`camber.sln`](camber.sln). Projects required for the Python wheel:
 | Project | Role |
 |---------|------|
 | `Geo.Python` | Native AOT + DotWrap FFI |
+| `GeoTests` | C# unit tests (`dotnet test`) |
 | `Geo` | Public CAD API, mesh construction, export |
 | `GeoMeta` | Naming / metadata |
 | `CSG` | Boolean / mesh CSG |
