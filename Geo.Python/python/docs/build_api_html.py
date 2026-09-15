@@ -32,7 +32,7 @@ SECTIONS = [
     ("Core", ["Part", "Sketch", "SketchCurve", "Solid", "ProjectedSketch"]),
     ("Pose", ["Frame", "Curve", "LoftOptions", "frame_from_axis"]),
     ("Assembly", [
-        "Assembly", "AssemblyPart", "AssemblyPointDatum",
+        "Assembly", "AssemblyOccurrence", "AssemblyPart", "AssemblyPointDatum",
         "AssemblyAxisDatum", "AssemblyPlaneDatum",
     ]),
     ("Vectors", ["vec2", "vec3"]),
@@ -59,6 +59,7 @@ FACTORY_HEAD = {
     "ProjectedSketch": "ProjectedSketch  # Part.project_sketch",
     "Curve": "Curve  # Curve.line / helix / circle / arc / spiral",
     "Assembly": "Assembly  # Part.assembly",
+    "AssemblyOccurrence": "AssemblyOccurrence  # Assembly.add_subassembly",
     "AssemblyPart": "AssemblyPart  # Assembly.add_part",
     "AssemblyPointDatum": "AssemblyPointDatum  # AssemblyPart.point / point_at",
     "AssemblyAxisDatum": "AssemblyAxisDatum  # AssemblyPart.axis / axis_at",

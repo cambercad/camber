@@ -67,6 +67,23 @@ internal static class DisplayPack
     /// </summary>
     public static string PackAssembly(System.Collections.Generic.IReadOnlyList<AssemblyPart> parts)
     {
+        return PackAssemblyPosed(parts, null);
+    }
+
+    public static string PackAssembly(Assembly assembly)
+    {
+        if (assembly == null)
+            return Convert.ToBase64String(PackEmpty());
+        var parts = new System.Collections.Generic.List<AssemblyPart>();
+        var poses = new System.Collections.Generic.List<Transform>();
+        assembly.CollectLeafWorldPoses(parts, poses);
+        return PackAssemblyPosed(parts, poses);
+    }
+
+    static string PackAssemblyPosed(
+        System.Collections.Generic.IReadOnlyList<AssemblyPart> parts,
+        System.Collections.Generic.IReadOnlyList<Transform> worldPoses)
+    {
         int n = 0;
         if (parts != null)
         {
@@ -89,7 +106,8 @@ internal static class DisplayPack
                     AssemblyPart part = parts[i];
                     if (part == null || part.Mesh == null)
                         continue;
-                    part.Mesh.Update(part.EvaluatePose());
+                    Transform pose = worldPoses != null ? worldPoses[i] : part.EvaluatePose();
+                    part.Mesh.Update(pose);
                     part.Mesh.EnsureCoplanarPostProcessed();
                     WriteMesh(w, part.Mesh);
                 }

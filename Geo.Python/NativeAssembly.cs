@@ -16,6 +16,8 @@ public class NativeAssembly
         _inner = inner;
     }
 
+    internal Assembly Native { get { return _inner; } }
+
     public string Name { get { return _inner.Name; } }
 
     public int SolveAfterEveryConstraint
@@ -38,9 +40,57 @@ public class NativeAssembly
         return new NativeAssemblyPart(_inner.AddPart(solid.Native, new Vec3D(px, py, pz), orientation));
     }
 
+    public NativeAssemblyOccurrence AddSubAssembly(
+        NativeAssembly child,
+        double px,
+        double py,
+        double pz,
+        double qx,
+        double qy,
+        double qz,
+        double qw)
+    {
+        Quaternion orientation = new Quaternion(qx, qy, qz, qw);
+        return new NativeAssemblyOccurrence(_inner.AddSubAssembly(child.Native, new Vec3D(px, py, pz), orientation));
+    }
+
     public void FixPart(NativeAssemblyPart part)
     {
         _inner.FixPart(part.Native);
+    }
+
+    public void FixSubAssembly(NativeAssemblyOccurrence occurrence)
+    {
+        _inner.FixSubAssembly(occurrence.Native);
+    }
+
+    public int PartCount { get { return _inner.GetParts().Count; } }
+
+    public NativeAssemblyPart GetPart(int index)
+    {
+        return new NativeAssemblyPart(_inner.GetParts()[index]);
+    }
+
+    public int SubAssemblyCount { get { return _inner.GetSubAssemblies().Count; } }
+
+    public NativeAssemblyOccurrence GetSubAssembly(int index)
+    {
+        return new NativeAssemblyOccurrence(_inner.GetSubAssemblies()[index]);
+    }
+
+    public double GetWorldPoseX(NativeAssemblyPart part)
+    {
+        return _inner.WorldPoseOf(part.Native).Position.X;
+    }
+
+    public double GetWorldPoseY(NativeAssemblyPart part)
+    {
+        return _inner.WorldPoseOf(part.Native).Position.Y;
+    }
+
+    public double GetWorldPoseZ(NativeAssemblyPart part)
+    {
+        return _inner.WorldPoseOf(part.Native).Position.Z;
     }
 
     public void SetCoincidentPoints(NativeAssemblyPointDatum a, NativeAssemblyPointDatum b)
@@ -111,7 +161,7 @@ public class NativeAssembly
 
     public string DumpDisplay()
     {
-        return DisplayPack.PackAssembly(_inner.GetParts());
+        return DisplayPack.PackAssembly(_inner);
     }
 
     public NativeFrame GetPlaneFrame(string reference)
@@ -119,7 +169,9 @@ public class NativeAssembly
         if (string.IsNullOrWhiteSpace(reference))
             throw new System.ArgumentException("A planar surface reference is required.");
 
-        IReadOnlyList<AssemblyPart> parts = _inner.GetParts();
+        var parts = new List<AssemblyPart>();
+        var poses = new List<Transform>();
+        _inner.CollectLeafWorldPoses(parts, poses);
         for (int i = 0; i < parts.Count; i++)
         {
             AssemblyPart part = parts[i];
@@ -131,7 +183,7 @@ public class NativeAssembly
             if (!part.Mesh.TryGetPlaneFromPatch(localReference, out PlaneSurfaceParams plane))
                 throw new System.ArgumentException($"'{reference}' does not resolve to a planar surface.");
 
-            Transform pose = part.EvaluatePose();
+            Transform pose = poses[i];
             Vec3D localOrigin = plane.Origin;
             if (part.Mesh.TryGetSurface(localReference, out UVSurface surface) && surface.IsPlanar())
                 localOrigin = surface.ApproximatePlanarSurfaceCenter(out _, out _, out _);
@@ -174,62 +226,62 @@ public class NativeAssembly
                 sb.Append(ToAsciiDump(name));
                 sb.Append('\n');
             }
-            AppendMateGlyphs(sb, mate);
+            AppendMateGlyphs(sb, _inner, mate);
         }
         return sb.ToString();
     }
 
-    private static void AppendMateGlyphs(System.Text.StringBuilder sb, AssemblyMateRecord mate)
+    private static void AppendMateGlyphs(System.Text.StringBuilder sb, Assembly assembly, AssemblyMateRecord mate)
     {
         switch (mate.Kind)
         {
             case AssemblyMateKind.FixPart:
-                AppendGlyph(sb, "point", MateWorldPoint(mate.PartA, new Vec3D(0)), new Vec3D(0, 0, 1));
+                AppendGlyph(sb, "point", MateWorldPoint(assembly, mate.PartA, new Vec3D(0)), new Vec3D(0, 0, 1));
                 break;
             case AssemblyMateKind.CoincidentPoints:
             case AssemblyMateKind.DistancePoints:
-                AppendGlyph(sb, "point", MateWorldPoint(mate.PartA, mate.LocalA), default);
-                AppendGlyph(sb, "point", MateWorldPoint(mate.PartB, mate.LocalB), default);
+                AppendGlyph(sb, "point", MateWorldPoint(assembly, mate.PartA, mate.LocalA), default);
+                AppendGlyph(sb, "point", MateWorldPoint(assembly, mate.PartB, mate.LocalB), default);
                 break;
             case AssemblyMateKind.CoincidentAxes:
             case AssemblyMateKind.ParallelAxes:
             case AssemblyMateKind.PerpendicularAxes:
             case AssemblyMateKind.Concentric:
             case AssemblyMateKind.AngleAxes:
-                AppendGlyph(sb, "axis", MateWorldPoint(mate.PartA, mate.LocalA), MateWorldDir(mate.PartA, mate.DirA));
-                AppendGlyph(sb, "axis", MateWorldPoint(mate.PartB, mate.LocalB), MateWorldDir(mate.PartB, mate.DirB));
+                AppendGlyph(sb, "axis", MateWorldPoint(assembly, mate.PartA, mate.LocalA), MateWorldDir(assembly, mate.PartA, mate.DirA));
+                AppendGlyph(sb, "axis", MateWorldPoint(assembly, mate.PartB, mate.LocalB), MateWorldDir(assembly, mate.PartB, mate.DirB));
                 break;
             case AssemblyMateKind.CoincidentPlanes:
             case AssemblyMateKind.ParallelPlanes:
             case AssemblyMateKind.PerpendicularPlanes:
             case AssemblyMateKind.DistancePlanes:
-                AppendGlyph(sb, "plane", MateWorldPoint(mate.PartA, mate.LocalA), MateWorldDir(mate.PartA, mate.DirA));
-                AppendGlyph(sb, "plane", MateWorldPoint(mate.PartB, mate.LocalB), MateWorldDir(mate.PartB, mate.DirB));
+                AppendGlyph(sb, "plane", MateWorldPoint(assembly, mate.PartA, mate.LocalA), MateWorldDir(assembly, mate.PartA, mate.DirA));
+                AppendGlyph(sb, "plane", MateWorldPoint(assembly, mate.PartB, mate.LocalB), MateWorldDir(assembly, mate.PartB, mate.DirB));
                 break;
             case AssemblyMateKind.PointOnPlane:
             case AssemblyMateKind.Contact:
-                AppendGlyph(sb, "point", MateWorldPoint(mate.PartA, mate.LocalA), default);
-                AppendGlyph(sb, "plane", MateWorldPoint(mate.PartB, mate.LocalB), MateWorldDir(mate.PartB, mate.DirB));
+                AppendGlyph(sb, "point", MateWorldPoint(assembly, mate.PartA, mate.LocalA), default);
+                AppendGlyph(sb, "plane", MateWorldPoint(assembly, mate.PartB, mate.LocalB), MateWorldDir(assembly, mate.PartB, mate.DirB));
                 break;
         }
     }
 
-    private static Vec3D MateWorldPoint(AssemblyPart part, Vec3D local)
+    private static Vec3D MateWorldPoint(Assembly assembly, AssemblyPart part, Vec3D local)
     {
         if (part == null)
             return local;
-        Transform pose = part.EvaluatePose();
+        Transform pose = assembly.WorldPoseOf(part);
         return TransformMath.TransformPoint(in pose, local);
     }
 
-    private static Vec3D MateWorldDir(AssemblyPart part, Vec3D local)
+    private static Vec3D MateWorldDir(Assembly assembly, AssemblyPart part, Vec3D local)
     {
         Vec3D dir = local;
         if (dir.LengthSquared() < 1e-20)
             dir = new Vec3D(0, 0, 1);
         if (part == null)
             return dir;
-        Transform pose = part.EvaluatePose();
+        Transform pose = assembly.WorldPoseOf(part);
         Vec3D world = TransformMath.TransformDirection(in pose, dir);
         if (world.LengthSquared() < 1e-20)
             return new Vec3D(0, 0, 1);
@@ -276,6 +328,42 @@ public class NativeAssembly
                 outSb.Append('?');
         }
         return outSb.ToString();
+    }
+}
+
+[DotWrapExpose]
+public class NativeAssemblyOccurrence
+{
+    internal readonly AssemblyOccurrence Native;
+
+    internal NativeAssemblyOccurrence(AssemblyOccurrence native)
+    {
+        Native = native;
+    }
+
+    public string Name { get { return Native.Name; } }
+
+    public double PoseX { get { return Native.EvaluatePose().Position.X; } }
+    public double PoseY { get { return Native.EvaluatePose().Position.Y; } }
+    public double PoseZ { get { return Native.EvaluatePose().Position.Z; } }
+
+    public NativeAssembly GetChild()
+    {
+        return new NativeAssembly(Native.Child);
+    }
+
+    public int PartCount { get { return Native.GetParts().Count; } }
+
+    public NativeAssemblyPart GetPart(int index)
+    {
+        return new NativeAssemblyPart(Native.GetParts()[index]);
+    }
+
+    public int SubAssemblyCount { get { return Native.GetSubAssemblies().Count; } }
+
+    public NativeAssemblyOccurrence GetSubAssembly(int index)
+    {
+        return new NativeAssemblyOccurrence(Native.GetSubAssemblies()[index]);
     }
 }
 

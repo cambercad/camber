@@ -68,9 +68,14 @@ def _native_mod():
             NativeSolid,
             NativeSolidList,
         )
+        try:
+            from _camber_native.__dotwrap_generated.main import NativeAssemblyOccurrence
+        except ImportError:
+            NativeAssemblyOccurrence = None
         _TYPES = {
             "NativeAssembly": NativeAssembly,
             "NativeAssemblyAxisDatum": NativeAssemblyAxisDatum,
+            "NativeAssemblyOccurrence": NativeAssemblyOccurrence,
             "NativeAssemblyPart": NativeAssemblyPart,
             "NativeAssemblyPlaneDatum": NativeAssemblyPlaneDatum,
             "NativeAssemblyPointDatum": NativeAssemblyPointDatum,
@@ -682,7 +687,7 @@ class AssemblyPart(object):
 
     @property
     def pose(self):
-        """World translation as ``(x, y, z)``."""
+        """Translation in the owning assembly as ``(x, y, z)``."""
         return (self._n.pose_x, self._n.pose_y, self._n.pose_z)
 
     def axis(self, reference):
@@ -715,8 +720,57 @@ class AssemblyPart(object):
         return AssemblyPlaneDatum(_invoke(self._n, "add_plane_datum_at", px, py, pz, nx, ny, nz), self)
 
 
+class AssemblyOccurrence(object):
+    """Rigid instance of a nested Assembly inside a parent Assembly."""
+
+    def __init__(self, native, parent=None):
+        self._n = native
+        self._parent = parent
+
+    @property
+    def name(self):
+        """Nested assembly name."""
+        return self._n.name
+
+    @property
+    def pose(self):
+        """Translation of this occurrence in the parent assembly as ``(x, y, z)``."""
+        return (self._n.pose_x, self._n.pose_y, self._n.pose_z)
+
+    @property
+    def assembly(self):
+        """The nested Assembly (its parts, mates, and further sub-assemblies)."""
+        part = self._parent._part if self._parent is not None else None
+        return Assembly(_invoke(self._n, "get_child"), part)
+
+    @property
+    def parts(self):
+        """Direct parts of the nested assembly."""
+        count = int(self._n.part_count)
+        return [AssemblyPart(_invoke(self._n, "get_part", i)) for i in range(count)]
+
+    @property
+    def subassemblies(self):
+        """Direct sub-assemblies of the nested assembly."""
+        count = int(self._n.sub_assembly_count)
+        nested_parent = self.assembly
+        return [
+            AssemblyOccurrence(_invoke(self._n, "get_sub_assembly", i), nested_parent)
+            for i in range(count)
+        ]
+
+    def __repr__(self):
+        return "AssemblyOccurrence({0!r})".format(self.name)
+
+
 class Assembly(object):
-    """Rigid-part assembly solved by C# Geo Assembly constraints."""
+    """Rigid-part assembly solved by C# Geo Assembly constraints.
+
+    Parts and nested assemblies can be mixed: ``add_part`` places a Solid,
+    ``add_subassembly`` places another Assembly (which may itself contain
+    parts and sub-assemblies). Nested internals stay rigid; parent mates may
+    still use datums on nested parts.
+    """
 
     def __init__(self, native, part=None):
         self._n = native
@@ -747,11 +801,52 @@ class Assembly(object):
             self._n, "add_part",
             solid._n, px, py, pz, float(qx), float(qy), float(qz), float(qw)))
 
+    def add_subassembly(self, assembly, position=(0, 0, 0), orientation=(0, 0, 0, 1)):
+        """Place ``assembly`` as a rigid child. Returns AssemblyOccurrence.
+
+        The child may contain parts and further sub-assemblies. Solve the child
+        first; parent mates may use datums created on nested parts.
+        """
+        px, py, pz = _xyz(position)
+        if len(orientation) != 4:
+            raise ValueError("orientation must be quaternion (x, y, z, w)")
+        qx, qy, qz, qw = orientation
+        return AssemblyOccurrence(_invoke(
+            self._n, "add_sub_assembly",
+            assembly._n, px, py, pz, float(qx), float(qy), float(qz), float(qw)), self)
+
+    @property
+    def parts(self):
+        """Parts added with ``add_part`` on this assembly (not nested leaves)."""
+        count = int(self._n.part_count)
+        return [AssemblyPart(_invoke(self._n, "get_part", i)) for i in range(count)]
+
+    @property
+    def subassemblies(self):
+        """Child assemblies added with ``add_subassembly``."""
+        count = int(self._n.sub_assembly_count)
+        return [
+            AssemblyOccurrence(_invoke(self._n, "get_sub_assembly", i), self)
+            for i in range(count)
+        ]
+
+    def world_pose(self, part):
+        """Translation of a direct or nested part in this assembly's frame."""
+        return (
+            _invoke(self._n, "get_world_pose_x", part._n),
+            _invoke(self._n, "get_world_pose_y", part._n),
+            _invoke(self._n, "get_world_pose_z", part._n),
+        )
+
     def _record(self, kind, label, entities):
         self.constraints.append({"kind": kind, "label": label, "entities": list(entities or [])})
 
     def fix(self, part):
-        """Lock an AssemblyPart in world (ground)."""
+        """Lock an AssemblyPart or AssemblyOccurrence in world (ground)."""
+        if isinstance(part, AssemblyOccurrence):
+            _invoke(self._n, "fix_sub_assembly", part._n)
+            self._record("FixPart", "Fix " + part.name, [part.name + ":"])
+            return
         _invoke(self._n, "fix_part", part._n)
         self._record("FixPart", "Fix " + part.name, [part.name + ":"])
 

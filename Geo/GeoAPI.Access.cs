@@ -60,7 +60,7 @@ Returns the most recently registered mesh on this API (or null if none). Default
         }
 
         [APIDescription(@"GetTopAssembly() -> Assembly
-Returns the assembly most recently touched by AddPart / mates / SolveConstraints (or null if none). Default visualization shows all of its parts when VisualOutputKind is Assembly.")]
+Returns the assembly most recently touched by AddPart / AddSubAssembly / mates / SolveConstraints (or null if none). Default visualization shows all of its parts when VisualOutputKind is Assembly.")]
         public Assembly GetTopAssembly() => lastActiveAssembly;
 
         [APIDescription(@"VisualOutputKind: GeoVisualOutputKind

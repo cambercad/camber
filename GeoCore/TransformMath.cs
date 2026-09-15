@@ -74,5 +74,36 @@ namespace GeoCore
                 vector.Y + w * ty + (z * tx - x * tz),
                 vector.Z + w * tz + (x * ty - y * tx));
         }
+
+        /// <summary>
+        /// Parent ∘ local: apply <paramref name="local"/> first, then <paramref name="parent"/>.
+        /// </summary>
+        public static Transform Compose(in Transform parent, in Transform local)
+        {
+            Quaternion parentQ = NormalizeDefault(parent.Orientation);
+            Quaternion localQ = NormalizeDefault(local.Orientation);
+            Vec3D position = parent.Position + RotateVector(in parentQ, local.Position);
+            Quaternion orientation = ComposeOrientations(parentQ, localQ);
+            return new Transform(position, orientation);
+        }
+
+        public static Transform Inverse(in Transform transform)
+        {
+            Quaternion q = NormalizeDefault(transform.Orientation);
+            Quaternion qInv = new Quaternion(-q.X, -q.Y, -q.Z, q.W);
+            Vec3D negPos = new Vec3D(-transform.Position.X, -transform.Position.Y, -transform.Position.Z);
+            return new Transform(RotateVector(in qInv, negPos), qInv);
+        }
+
+        public static Quaternion ComposeOrientations(Quaternion a, Quaternion b)
+        {
+            a = NormalizeDefault(a);
+            b = NormalizeDefault(b);
+            return new Quaternion(
+                a.W * b.X + a.X * b.W + a.Y * b.Z - a.Z * b.Y,
+                a.W * b.Y - a.X * b.Z + a.Y * b.W + a.Z * b.X,
+                a.W * b.Z + a.X * b.Y - a.Y * b.X + a.Z * b.W,
+                a.W * b.W - a.X * b.X - a.Y * b.Y - a.Z * b.Z);
+        }
     }
 }

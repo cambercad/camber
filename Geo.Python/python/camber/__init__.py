@@ -24,6 +24,7 @@ from .api import (
     BOOLEAN_UNION,
     Assembly,
     AssemblyAxisDatum,
+    AssemblyOccurrence,
     AssemblyPart,
     AssemblyPlaneDatum,
     AssemblyPointDatum,
@@ -47,7 +48,7 @@ def show(obj, title="Camber"):
 
 __all__ = [
     "Part", "Sketch", "SketchCurve", "Solid", "ProjectedSketch", "Frame", "Curve", "LoftOptions",
-    "Assembly", "AssemblyPart", "AssemblyPointDatum", "AssemblyAxisDatum", "AssemblyPlaneDatum",
+    "Assembly", "AssemblyOccurrence", "AssemblyPart", "AssemblyPointDatum", "AssemblyAxisDatum", "AssemblyPlaneDatum",
     "vec2", "vec3", "show", "frame_from_axis",
     "BOOLEAN_UNION", "BOOLEAN_DIFFERENCE", "BOOLEAN_INTERSECT",
     "RayHit", "triangulate", "signed_area", "is_ccw", "point_in_polygon",

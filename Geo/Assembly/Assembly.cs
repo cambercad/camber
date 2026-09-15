@@ -5,12 +5,13 @@ using GeoSolver.Kinematics;
 
 namespace Geo
 {
-    [APIDescription(@"Assembly: 3D mate solver for registered meshes. AddPart returns AssemblyPart handles; create datums on parts; apply mates (SetCoincident, SetParallel, SetPerpendicular, SetConcentric, SetDistance, SetAngle, SetContact, â€¦); then SolveConstraints().")]
+    [APIDescription(@"Assembly: 3D mate solver for registered meshes. AddPart places solids; AddSubAssembly places a child assembly (which may itself contain parts and sub-assemblies) as a rigid occurrence. Create datums on parts (including nested ones); apply mates; then SolveConstraints().")]
     public class Assembly
     {
         private readonly GeoAPI _api;
         private readonly KinematicSolver _solver = new KinematicSolver();
         private readonly List<AssemblyPart> _parts = new List<AssemblyPart>();
+        private readonly List<AssemblyOccurrence> _occurrences = new List<AssemblyOccurrence>();
         private readonly List<AssemblyMateRecord> _mateRecords = new List<AssemblyMateRecord>();
         private bool _solveAfterEveryConstraint = true;
 
@@ -22,9 +23,15 @@ namespace Geo
 
         public string Name { get; }
 
+        internal Assembly Parent { get; private set; }
+
         [APIDescription(@"GetParts() -> IReadOnlyList[AssemblyPart]
-All parts added via AddPart on this assembly (live list).")]
+All parts added via AddPart on this assembly (live list, not nested sub-assembly parts).")]
         public IReadOnlyList<AssemblyPart> GetParts() => _parts;
+
+        [APIDescription(@"GetSubAssemblies() -> IReadOnlyList[AssemblyOccurrence]
+Child assemblies added via AddSubAssembly on this assembly (live list).")]
+        public IReadOnlyList<AssemblyOccurrence> GetSubAssemblies() => _occurrences;
 
         [APIDescription(@"GetMateRecords() -> IReadOnlyList[AssemblyMateRecord]
 Mate metadata recorded by Fix*/Set* calls (for viewers and diagnostics).")]
@@ -60,31 +67,96 @@ Registers a rigid body at the given initial pose. Mesh must belong to this GeoAP
             return part;
         }
 
+        [APIDescription(@"AddSubAssembly(child: Assembly, position: Vec3D, orientation: Quaternion = identity) -> AssemblyOccurrence
+Places a child assembly as a rigid occurrence at the given pose. The child may contain parts and further sub-assemblies. Child internals keep their last solved relative poses; this assembly owns 6 DOF for the whole subtree. Mates on this assembly may use datums on nested parts.")]
+        public AssemblyOccurrence AddSubAssembly(Assembly child, Vec3D position, Quaternion orientation = default)
+        {
+            if (child == null)
+                throw new ArgumentNullException(nameof(child));
+            if (!ReferenceEquals(child._api, _api))
+                throw new ArgumentException("Sub-assembly must belong to the same GeoAPI instance.", nameof(child));
+            if (child == this)
+                throw new ArgumentException("An assembly cannot contain itself.", nameof(child));
+            if (child.Parent != null)
+                throw new ArgumentException(
+                    $"Assembly '{child.Name}' is already nested in '{child.Parent.Name}'.",
+                    nameof(child));
+
+            for (Assembly ancestor = this; ancestor != null; ancestor = ancestor.Parent)
+            {
+                if (ancestor == child)
+                    throw new ArgumentException(
+                        $"Nesting '{child.Name}' in '{Name}' would create a cycle.",
+                        nameof(child));
+            }
+
+            if (child.ContainsAssembly(this))
+                throw new ArgumentException(
+                    $"Nesting '{child.Name}' in '{Name}' would create a cycle.",
+                    nameof(child));
+
+            orientation = TransformMath.NormalizeDefault(orientation);
+            var initialPose = new Transform(position, orientation);
+            IncludeSubtreeCharacteristicLength(child);
+            _solver.IncludeCharacteristicLength(position.Length());
+
+            var rig = new AssemblyOccurrenceRig(child);
+            RigidTransform<AssemblyOccurrenceRig> rigidBody = _solver.AddRigidBody(rig, initialPose);
+            var occurrence = new AssemblyOccurrence(this, child, rigidBody);
+            _occurrences.Add(occurrence);
+            child.Parent = this;
+            TouchActivity();
+            return occurrence;
+        }
+
         [APIDescription(@"FixPart(part: AssemblyPart) -> None
-Locks the part at its current pose (6 DOF).")]
+Locks the part at its current pose (6 DOF). A nested part locks the rigid sub-assembly that contains it.")]
         public void FixPart(AssemblyPart part)
         {
-            EnsureOwnedPart(part);
+            EnsurePartInTree(part);
             RecordMate(new AssemblyMateRecord(
                 AssemblyMateKind.FixPart,
                 $"Fix {part.Mesh.Name}",
                 part),
                 part.Mesh.Name + ":");
-            AddSolverConstraints(new FixedTransformConstraint3d(part.Transform));
+            AddSolverConstraints(new FixedTransformConstraint3d(SolverTransformOf(part)));
         }
 
         [APIDescription(@"FixPart(part: AssemblyPart, position: Vec3D, orientation: Quaternion) -> None
 Locks the part at the given world pose.")]
         public void FixPart(AssemblyPart part, Vec3D position, Quaternion orientation)
         {
-            EnsureOwnedPart(part);
+            EnsurePartInTree(part);
             orientation = TransformMath.NormalizeDefault(orientation);
+            Transform desired = new Transform(position, orientation);
+            if (part.Assembly != this)
+            {
+                AssemblyOccurrence occ = FindDirectOccurrenceContaining(part.Assembly);
+                if (occ == null)
+                    throw new ArgumentException($"AssemblyPart '{part.Mesh.Name}' is not in assembly '{Name}'.");
+                Transform relative = PoseInAssembly(part, occ.Child);
+                desired = TransformMath.Compose(desired, TransformMath.Inverse(relative));
+            }
             RecordMate(new AssemblyMateRecord(
                 AssemblyMateKind.FixPart,
                 $"Fix {part.Mesh.Name}",
                 part),
                 part.Mesh.Name + ":");
-            AddSolverConstraints(new FixedTransformConstraint3d(part.Transform, new Transform(position, orientation)));
+            AddSolverConstraints(new FixedTransformConstraint3d(SolverTransformOf(part), desired));
+        }
+
+        [APIDescription(@"FixSubAssembly(occurrence: AssemblyOccurrence) -> None
+Locks a nested sub-assembly at its current pose (6 DOF).")]
+        public void FixSubAssembly(AssemblyOccurrence occurrence)
+        {
+            EnsureOwnedOccurrence(occurrence);
+            AssemblyPart leaf = FirstLeafPart(occurrence.Child);
+            RecordMate(new AssemblyMateRecord(
+                AssemblyMateKind.FixPart,
+                $"Fix {occurrence.Child.Name}",
+                leaf),
+                occurrence.Child.Name + ":");
+            AddSolverConstraints(new FixedTransformConstraint3d(occurrence.Transform));
         }
 
         [APIDescription(@"SetCoincident(a: AssemblyPointDatum, b: AssemblyPointDatum) -> None
@@ -98,7 +170,7 @@ Makes two point datums coincident in world space.")]
                 a.Part, b.Part, a.LocalPoint, b.LocalPoint),
                 a.Entity,
                 b.Entity);
-            AddSolverConstraints(new PointOnPoint3d(a.Part.WorldPoint(a.LocalPoint), b.Part.WorldPoint(b.LocalPoint)));
+            AddSolverConstraints(new PointOnPoint3d(WorldPoint(a.Part, a.LocalPoint), WorldPoint(b.Part, b.LocalPoint)));
         }
 
         [APIDescription(@"SetCoincident(a: AssemblyAxisDatum, b: AssemblyAxisDatum) -> None
@@ -112,7 +184,7 @@ Makes two axis datum centers coincident in world space.")]
                 a.Part, b.Part, a.LocalPoint, b.LocalPoint, a.LocalDirection, b.LocalDirection),
                 a.Entity,
                 b.Entity);
-            AddSolverConstraints(new PointOnPoint3d(a.Part.WorldPoint(a.LocalPoint), b.Part.WorldPoint(b.LocalPoint)));
+            AddSolverConstraints(new PointOnPoint3d(WorldPoint(a.Part, a.LocalPoint), WorldPoint(b.Part, b.LocalPoint)));
         }
 
         [APIDescription(@"SetParallel(a: AssemblyAxisDatum, b: AssemblyAxisDatum) -> None
@@ -127,8 +199,8 @@ Makes two axis directions parallel in world space.")]
                 a.Entity,
                 b.Entity);
             AddSolverConstraints(new ParallelDirections3d(
-                a.Part.WorldDirection(a.LocalDirection),
-                b.Part.WorldDirection(b.LocalDirection)));
+                WorldDirection(a.Part, a.LocalDirection),
+                WorldDirection(b.Part, b.LocalDirection)));
         }
 
         [APIDescription(@"SetPerpendicular(a: AssemblyAxisDatum, b: AssemblyAxisDatum) -> None
@@ -143,8 +215,8 @@ Makes two axis directions perpendicular in world space.")]
                 a.Entity,
                 b.Entity);
             AddSolverConstraints(new PerpendicularDirections3d(
-                a.Part.WorldDirection(a.LocalDirection),
-                b.Part.WorldDirection(b.LocalDirection)));
+                WorldDirection(a.Part, a.LocalDirection),
+                WorldDirection(b.Part, b.LocalDirection)));
         }
 
         [APIDescription(@"SetConcentric(a: AssemblyAxisDatum, b: AssemblyAxisDatum) -> None
@@ -165,11 +237,11 @@ Coaxial mate: axis lines are collinear. Translation and rotation along the share
                 b.LocalDirection.Normalized(),
                 perpendicularB1).Normalized();
             AddSolverConstraints(new CoincidentAxes3d(
-                a.Part.WorldPoint(a.LocalPoint),
-                a.Part.WorldDirection(a.LocalDirection),
-                b.Part.WorldPoint(b.LocalPoint),
-                b.Part.WorldDirection(perpendicularB1),
-                b.Part.WorldDirection(perpendicularB2)));
+                WorldPoint(a.Part, a.LocalPoint),
+                WorldDirection(a.Part, a.LocalDirection),
+                WorldPoint(b.Part, b.LocalPoint),
+                WorldDirection(b.Part, perpendicularB1),
+                WorldDirection(b.Part, perpendicularB2)));
         }
 
         [APIDescription(@"SetDistance(a: AssemblyPointDatum, b: AssemblyPointDatum, distance: float) -> None
@@ -184,8 +256,8 @@ Keeps two point datums at the given world-space distance.")]
                 a.Entity,
                 b.Entity);
             AddSolverConstraints(new DistanceBetweenPoints3d(
-                a.Part.WorldPoint(a.LocalPoint),
-                b.Part.WorldPoint(b.LocalPoint),
+                WorldPoint(a.Part, a.LocalPoint),
+                WorldPoint(b.Part, b.LocalPoint),
                 distance));
         }
 
@@ -202,8 +274,8 @@ Sets the angle between two axis directions in world space.")]
                 a.Entity,
                 b.Entity);
             AddSolverConstraints(new AngleBetweenVectors3d(
-                a.Part.WorldDirection(a.LocalDirection),
-                b.Part.WorldDirection(b.LocalDirection),
+                WorldDirection(a.Part, a.LocalDirection),
+                WorldDirection(b.Part, b.LocalDirection),
                 angleRadians));
         }
 
@@ -218,12 +290,12 @@ Face-on-face mate: planes coplanar (parallel normals and coincident origins).")]
                 a.Part, b.Part, a.LocalOrigin, b.LocalOrigin, a.LocalNormal, b.LocalNormal),
                 a.Entity,
                 b.Entity);
-            CPlane3D planeB = b.Part.WorldPlane(b);
+            CPlane3D planeB = WorldPlane(b);
             AddSolverConstraints(
                 new ParallelDirections3d(
-                    a.Part.WorldDirection(a.LocalNormal),
-                    b.Part.WorldDirection(b.LocalNormal)),
-                new PointOnPlane3d(a.Part.WorldPoint(a.LocalOrigin), planeB));
+                    WorldDirection(a.Part, a.LocalNormal),
+                    WorldDirection(b.Part, b.LocalNormal)),
+                new PointOnPlane3d(WorldPoint(a.Part, a.LocalOrigin), planeB));
         }
 
         [APIDescription(@"SetCoincidentOriented(a: AssemblyPlaneDatum, b: AssemblyPlaneDatum, oppositeNormals: bool) -> None
@@ -244,13 +316,13 @@ Named extrude caps (ExtrudeTop / ExtrudeBottom) both store the sketch +Z, not th
                 b.Entity);
             IncludeLocalLength(a.LocalOrigin);
             IncludeLocalLength(b.LocalOrigin);
-            CPlane3D planeB = b.Part.WorldPlane(b);
+            CPlane3D planeB = WorldPlane(b);
             AddSolverConstraints(
                 new DirectedParallelDirections3d(
-                    a.Part.WorldDirection(a.LocalNormal),
-                    b.Part.WorldDirection(b.LocalNormal),
+                    WorldDirection(a.Part, a.LocalNormal),
+                    WorldDirection(b.Part, b.LocalNormal),
                     oppositeNormals),
-                new PointOnPlane3d(a.Part.WorldPoint(a.LocalOrigin), planeB));
+                new PointOnPlane3d(WorldPoint(a.Part, a.LocalOrigin), planeB));
         }
 
         [APIDescription(@"SetParallel(a: AssemblyPlaneDatum, b: AssemblyPlaneDatum) -> None
@@ -265,8 +337,8 @@ Makes two face normals parallel in world space.")]
                 a.Entity,
                 b.Entity);
             AddSolverConstraints(new ParallelDirections3d(
-                a.Part.WorldDirection(a.LocalNormal),
-                b.Part.WorldDirection(b.LocalNormal)));
+                WorldDirection(a.Part, a.LocalNormal),
+                WorldDirection(b.Part, b.LocalNormal)));
         }
 
         [APIDescription(@"SetPerpendicular(a: AssemblyPlaneDatum, b: AssemblyPlaneDatum) -> None
@@ -281,8 +353,8 @@ Makes two face normals perpendicular in world space.")]
                 a.Entity,
                 b.Entity);
             AddSolverConstraints(new PerpendicularDirections3d(
-                a.Part.WorldDirection(a.LocalNormal),
-                b.Part.WorldDirection(b.LocalNormal)));
+                WorldDirection(a.Part, a.LocalNormal),
+                WorldDirection(b.Part, b.LocalNormal)));
         }
 
         [APIDescription(@"SetDistance(a: AssemblyPlaneDatum, b: AssemblyPlaneDatum, distance: float) -> None
@@ -296,12 +368,12 @@ Offsets plane A from plane B along B's normal by the given signed distance (para
                 a.Part, b.Part, a.LocalOrigin, b.LocalOrigin, a.LocalNormal, b.LocalNormal, distance),
                 a.Entity,
                 b.Entity);
-            CPlane3D planeB = b.Part.WorldPlane(b);
+            CPlane3D planeB = WorldPlane(b);
             AddSolverConstraints(
                 new ParallelDirections3d(
-                    a.Part.WorldDirection(a.LocalNormal),
-                    b.Part.WorldDirection(b.LocalNormal)),
-                new PlaneOffset3d(a.Part.WorldPoint(a.LocalOrigin), planeB, distance));
+                    WorldDirection(a.Part, a.LocalNormal),
+                    WorldDirection(b.Part, b.LocalNormal)),
+                new PlaneOffset3d(WorldPoint(a.Part, a.LocalOrigin), planeB, distance));
         }
 
         [APIDescription(@"SetPointOnPlane(point: AssemblyPointDatum, plane: AssemblyPlaneDatum) -> None
@@ -316,8 +388,8 @@ Constrains a point datum to lie on a plane datum.")]
                 point.Entity,
                 plane.Entity);
             AddSolverConstraints(new PointOnPlane3d(
-                point.Part.WorldPoint(point.LocalPoint),
-                plane.Part.WorldPlane(plane)));
+                WorldPoint(point.Part, point.LocalPoint),
+                WorldPlane(plane)));
         }
 
         [APIDescription(@"SetContact(point: AssemblyPointDatum, plane: AssemblyPlaneDatum) -> None
@@ -332,8 +404,8 @@ Unilateral contact: keeps the point in the positive half-space of the plane (n Â
                 point.Entity,
                 plane.Entity);
             AddSolverConstraints(new ContactHalfSpace3d(
-                point.Part.WorldPoint(point.LocalPoint),
-                plane.Part.WorldPlane(plane)));
+                WorldPoint(point.Part, point.LocalPoint),
+                WorldPlane(plane)));
         }
 
         [APIDescription(@"SolveConstraints(preferMinimalMovement: bool = False) -> None
@@ -411,10 +483,195 @@ Runs the 6-DOF rigid-body solver. preferMinimalMovement biases toward the curren
                 throw new ArgumentException("AssemblyPart was not created by this Assembly.");
         }
 
+        private void EnsurePartInTree(AssemblyPart part)
+        {
+            if (part == null)
+                throw new ArgumentNullException(nameof(part));
+            if (part.Assembly == this)
+            {
+                if (!_parts.Contains(part))
+                    throw new ArgumentException("AssemblyPart was not created by this Assembly.");
+                return;
+            }
+            if (!ContainsAssembly(part.Assembly))
+                throw new ArgumentException(
+                    $"AssemblyPart '{part.Mesh.Name}' is not in assembly '{Name}' or its sub-assemblies.");
+        }
+
         private void EnsureOwnedDatum(AssemblyPart a, AssemblyPart b)
         {
-            EnsureOwnedPart(a);
-            EnsureOwnedPart(b);
+            EnsurePartInTree(a);
+            EnsurePartInTree(b);
+        }
+
+        private void EnsureOwnedOccurrence(AssemblyOccurrence occurrence)
+        {
+            if (occurrence == null)
+                throw new ArgumentNullException(nameof(occurrence));
+            if (occurrence.Parent != this || !_occurrences.Contains(occurrence))
+                throw new ArgumentException("AssemblyOccurrence was not created by this Assembly.");
+        }
+
+        internal bool ContainsAssembly(Assembly other)
+        {
+            if (other == null)
+                return false;
+            if (other == this)
+                return true;
+            for (int i = 0; i < _occurrences.Count; i++)
+            {
+                if (_occurrences[i].Child.ContainsAssembly(other))
+                    return true;
+            }
+            return false;
+        }
+
+        internal AssemblyOccurrence FindDirectOccurrenceContaining(Assembly nested)
+        {
+            for (int i = 0; i < _occurrences.Count; i++)
+            {
+                if (_occurrences[i].Child.ContainsAssembly(nested))
+                    return _occurrences[i];
+            }
+            return null;
+        }
+
+        internal static Transform PoseInAssembly(AssemblyPart part, Assembly frame)
+        {
+            if (part.Assembly == frame)
+                return part.EvaluatePose();
+
+            Transform pose = part.EvaluatePose();
+            Assembly current = part.Assembly;
+            while (current != frame)
+            {
+                if (current.Parent == null)
+                    throw new ArgumentException(
+                        $"AssemblyPart '{part.Mesh.Name}' is not in assembly '{frame.Name}'.");
+                AssemblyOccurrence step = current.Parent.FindDirectOccurrenceContaining(current);
+                if (step == null)
+                    throw new InvalidOperationException("Broken assembly occurrence chain.");
+                pose = TransformMath.Compose(step.EvaluatePose(), pose);
+                current = current.Parent;
+            }
+            return pose;
+        }
+
+        internal CTransform SolverTransformOf(AssemblyPart part)
+        {
+            if (part.Assembly == this)
+                return part.Transform;
+            AssemblyOccurrence occ = FindDirectOccurrenceContaining(part.Assembly);
+            if (occ == null)
+                throw new ArgumentException($"AssemblyPart '{part.Mesh.Name}' is not in assembly '{Name}'.");
+            return occ.Transform;
+        }
+
+        internal CVec3D WorldPoint(AssemblyPart part, Vec3D localPoint)
+        {
+            EnsurePartInTree(part);
+            if (part.Assembly == this)
+                return part.WorldPoint(localPoint);
+
+            AssemblyOccurrence occ = FindDirectOccurrenceContaining(part.Assembly);
+            if (occ == null)
+                throw new ArgumentException($"AssemblyPart '{part.Mesh.Name}' is not in assembly '{Name}'.");
+            Transform relative = PoseInAssembly(part, occ.Child);
+            Vec3D inOccurrence = TransformMath.TransformPoint(in relative, localPoint);
+            return occ.Transform.PointLocalToGlobal(CVec3D.Constant(inOccurrence));
+        }
+
+        internal CVec3D WorldDirection(AssemblyPart part, Vec3D localDirection)
+        {
+            EnsurePartInTree(part);
+            if (part.Assembly == this)
+                return part.WorldDirection(localDirection);
+
+            AssemblyOccurrence occ = FindDirectOccurrenceContaining(part.Assembly);
+            if (occ == null)
+                throw new ArgumentException($"AssemblyPart '{part.Mesh.Name}' is not in assembly '{Name}'.");
+            Transform relative = PoseInAssembly(part, occ.Child);
+            Vec3D inOccurrence = TransformMath.TransformDirection(in relative, localDirection);
+            return occ.Transform.DirectionLocalToGlobal(CVec3D.Constant(inOccurrence));
+        }
+
+        internal CPlane3D WorldPlane(AssemblyPlaneDatum plane)
+        {
+            return new CPlane3D(
+                WorldPoint(plane.Part, plane.LocalOrigin),
+                WorldDirection(plane.Part, plane.LocalNormal));
+        }
+
+        [APIDescription(@"WorldPoseOf(part: AssemblyPart) -> Transform
+Pose of a direct or nested part in this assembly's frame.")]
+        public Transform WorldPoseOf(AssemblyPart part)
+        {
+            EnsurePartInTree(part);
+            if (part.Assembly == this)
+                return part.EvaluatePose();
+            AssemblyOccurrence occ = FindDirectOccurrenceContaining(part.Assembly);
+            if (occ == null)
+                throw new ArgumentException($"AssemblyPart '{part.Mesh.Name}' is not in assembly '{Name}'.");
+            return TransformMath.Compose(occ.EvaluatePose(), PoseInAssembly(part, occ.Child));
+        }
+
+        public void CollectLeafWorldPoses(List<AssemblyPart> parts, List<Transform> worldPoses)
+        {
+            CollectLeafWorldPoses(
+                parts,
+                worldPoses,
+                new Transform(default, TransformMath.IdentityOrientation));
+        }
+
+        private void CollectLeafWorldPoses(List<AssemblyPart> parts, List<Transform> worldPoses, Transform parentWorld)
+        {
+            for (int i = 0; i < _parts.Count; i++)
+            {
+                AssemblyPart part = _parts[i];
+                parts.Add(part);
+                worldPoses.Add(TransformMath.Compose(parentWorld, part.EvaluatePose()));
+            }
+            for (int i = 0; i < _occurrences.Count; i++)
+            {
+                AssemblyOccurrence occ = _occurrences[i];
+                Transform occWorld = TransformMath.Compose(parentWorld, occ.EvaluatePose());
+                occ.Child.CollectLeafWorldPoses(parts, worldPoses, occWorld);
+            }
+        }
+
+        internal void ApplyComposedPose(Transform parentWorld)
+        {
+            for (int i = 0; i < _parts.Count; i++)
+            {
+                AssemblyPart part = _parts[i];
+                part.Mesh.Update(TransformMath.Compose(parentWorld, part.EvaluatePose()));
+            }
+            for (int i = 0; i < _occurrences.Count; i++)
+            {
+                AssemblyOccurrence occ = _occurrences[i];
+                occ.Child.ApplyComposedPose(TransformMath.Compose(parentWorld, occ.EvaluatePose()));
+            }
+        }
+
+        private void IncludeSubtreeCharacteristicLength(Assembly child)
+        {
+            for (int i = 0; i < child._parts.Count; i++)
+                _solver.IncludeCharacteristicLength(MeshCharacteristicLength(child._parts[i].Mesh));
+            for (int i = 0; i < child._occurrences.Count; i++)
+                IncludeSubtreeCharacteristicLength(child._occurrences[i].Child);
+        }
+
+        private static AssemblyPart FirstLeafPart(Assembly assembly)
+        {
+            if (assembly._parts.Count > 0)
+                return assembly._parts[0];
+            for (int i = 0; i < assembly._occurrences.Count; i++)
+            {
+                AssemblyPart leaf = FirstLeafPart(assembly._occurrences[i].Child);
+                if (leaf != null)
+                    return leaf;
+            }
+            return null;
         }
     }
 }
