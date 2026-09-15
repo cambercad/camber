@@ -149,64 +149,8 @@ CAMBER_DST="$PKG/camber"
 rm -rf "$CAMBER_DST"
 cp -a "$ROOT/python/camber" "$CAMBER_DST"
 
-SETUP="$PKG/setup.py"
 README="$REPO_ROOT/README.md"
-if [[ -f "$SETUP" ]]; then
-  python3 - "$SETUP" "$README" "$WHEEL_VERSION" <<'PY'
-from pathlib import Path
-import sys
-import re
-
-setup_path = Path(sys.argv[1])
-readme = Path(sys.argv[2]).read_text(encoding="utf-8")
-version = sys.argv[3]
-text = setup_path.read_text(encoding="utf-8")
-text = re.sub(r'version\s*=\s*["\'][^"\']+["\']', f'version="{version}"', text, count=1)
-text = text.replace('name="_camber_native"', 'name="cambercad"')
-text = text.replace("name='_camber_native'", 'name="cambercad"')
-text = text.replace('name="geo_csg"', 'name="cambercad"')
-text = text.replace('author="DotWrap"', 'author="cambercad"')
-text = text.replace("author='DotWrap'", 'author="cambercad"')
-summary = (
-    "Scripting- and AI-first CAD: triangle-first kernel with sketch, CSG, "
-    "optional NURBS, mesh import/export, and a Python API."
-)
-text = text.replace(
-    'description="Auto-generated Python bindings for DotWrap C# library"',
-    f"description={summary!r}",
-)
-text = text.replace(
-    "description='Auto-generated Python bindings for DotWrap C# library'",
-    f"description={summary!r}",
-)
-if "author_email=" not in text:
-    text = text.replace(
-        'author="cambercad"',
-        'author="cambercad",\n    author_email="cambercad@proton.me"',
-    )
-if "long_description" not in text:
-    extra_meta = (
-        f"    long_description={readme!r},\n"
-        '    long_description_content_type="text/markdown",\n'
-    )
-    text = text.replace(
-        f"description={summary!r},\n",
-        f"description={summary!r},\n{extra_meta}",
-    )
-extra = 'extras_require={"view": ["pyglet", "imgui[pyglet]", "numpy"]}'
-if "extras_require" not in text:
-    text = text.replace(
-        'install_requires=["cffi"]',
-        'install_requires=["cffi"], ' + extra,
-    )
-    text = text.replace(
-        "install_requires=['cffi']",
-        'install_requires=["cffi"], ' + extra,
-    )
-setup_path.write_text(text, encoding="utf-8")
-print("patched", setup_path)
-PY
-fi
+python3 "$ROOT/patch_wheel_metadata.py" "$PKG" "$README" "$WHEEL_VERSION"
 
 # Use a throwaway venv — Ubuntu 24.04 blocks system pip (PEP 668).
 BUILD_VENV="$ROOT/_wheel_venv"
@@ -224,7 +168,6 @@ python -m pip wheel --no-deps "$PKG" -w "$STAGE"
 ls -la "$STAGE"
 
 shopt -s nullglob
-PYTAG="$(python -c 'import sys; print(f"cp{sys.version_info.major}{sys.version_info.minor}")')"
 case "$RUNTIME" in
   # PyPI rejects bare linux_x86_64; use a manylinux tag for native wheels.
   linux-x64) PLAT="manylinux_2_17_x86_64" ;;
@@ -233,15 +176,15 @@ case "$RUNTIME" in
 esac
 
 # Retag in-place inside STAGE (wheel tags --remove deletes the source file).
+# py3-none-*: cffi ABI + Native AOT, not a CPython-version extension.
 (
   cd "$STAGE"
   for whl in cambercad-*.whl; do
-    python -m wheel tags --remove --python-tag "$PYTAG" --abi-tag "$PYTAG" --platform-tag "$PLAT" "$whl" || {
-      # Fallback rename only (metadata may still say py3-none-any).
+    python -m wheel tags --remove --python-tag py3 --abi-tag none --platform-tag "$PLAT" "$whl" || {
       if [[ "$whl" == *-py3-none-any.whl ]]; then
         ver="${whl#cambercad-}"
         ver="${ver%-py3-none-any.whl}"
-        mv -f "$whl" "cambercad-${ver}-${PYTAG}-${PYTAG}-${PLAT}.whl"
+        mv -f "$whl" "cambercad-${ver}-py3-none-${PLAT}.whl"
       fi
     }
   done

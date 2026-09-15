@@ -6,6 +6,28 @@ This is **not** a fork or reimplementation of CadQuery, build123d, FreeCAD, or O
 
 Status: APIs and file formats will change. Expect breakage. Much of the code is AI-assisted; the goal is useful geometry code, not AI slop — but plenty of bugs remain. It is already good enough to be useful for real scripts.
 
+## Install
+
+PyPI package name is **`cambercad`**. The Python import stays **`camber`**.
+
+Wheels are **per OS** (Windows amd64, Linux x86_64), not per Python version. CPython **3.10+** (including 3.13) can install the same file. There is no macOS wheel yet.
+
+```text
+pip install cambercad
+```
+
+Optional OpenGL viewer (pyglet + imgui + numpy):
+
+```text
+pip install "cambercad[view]"
+```
+
+```python
+import camber
+```
+
+`cffi` is a normal dependency of the native module. pip may print `cffi` under `cambercad`; that is expected.
+
 ## Triangles first
 
 The source of truth is a triangle mesh (ideally watertight). You can **load and modify** meshes from any source (STL, OBJ, …). NURBS is optional: objects built inside camber keep NURBS metadata when available, but you do not need it to work on imported meshes.
@@ -27,26 +49,26 @@ For export and analytic surfaces, **NURBS boundaries are derived from the triang
 | Import `camber`, model, export | **`cffi`** only (ships with the wheel’s native module) |
 | `.show()` / interactive sketch | **`pyglet`**, **`imgui[pyglet]`**, **`numpy`** |
 
-Install the viewer stack with the `view` extra once wheels are published, or manually today:
+Install the viewer stack with the `view` extra:
 
 ```text
-pyglet  imgui[pyglet]  numpy
+pip install "cambercad[view]"
 ```
 
-Note: the current DotWrap-generated native module imports **numpy** on Linux even for headless use. Prefer `camber[view]` or `pip install numpy` until that import is optional.
+Note: the current DotWrap-generated native module imports **numpy** on Linux even for headless use. Prefer `cambercad[view]` or `pip install numpy` until that import is optional.
 
 ## Wheels output (`dist/`)
 
-Both Windows and Linux publish scripts write **only** `camber-*.whl` into the **repo-root** folder:
+Both Windows and Linux publish scripts write **only** `cambercad-*.whl` into the **repo-root** folder:
 
 ```text
 camber/
   dist/
-    camber-0.1.0-cp312-cp312-win_amd64.whl
-    camber-0.1.0-cp312-cp312-linux_x86_64.whl
+    cambercad-0.1.1-py3-none-win_amd64.whl
+    cambercad-0.1.1-py3-none-manylinux_2_17_x86_64.whl
 ```
 
-That layout matches a future PyPI release (`twine upload dist/camber-*.whl`). Dependency wheels (`cffi`, …) are staged temporarily and not kept in `dist/`. Scripts retag DotWrap’s `py3-none-any` name to a platform tag so Win/Linux wheels can sit side by side.
+That layout matches PyPI (`twine upload dist/cambercad-*.whl`). Dependency wheels (`cffi`, …) are staged temporarily and not kept in `dist/`. Scripts retag DotWrap’s `py3-none-any` name to a platform tag so Win/Linux wheels can sit side by side. PyPI rejects a bare `linux_x86_64` tag; Linux wheels use `manylinux_2_17_x86_64`.
 
 ## Build the wheel (Windows)
 
@@ -55,15 +77,15 @@ Needs: Python 3.10+, .NET SDK (this tree targets `net10.0`), and VS **Desktop de
 ```powershell
 cd <this-repo>\Geo.Python
 .\publish-wheel.ps1
-# → writes <this-repo>\dist\camber-*.whl
+# → writes <this-repo>\dist\cambercad-*.whl
 ```
 
 Install + smoke (repo root):
 
 ```powershell
-uv pip install --python .\.venv\Scripts\python.exe (Get-ChildItem ..\dist\camber*.whl | Select-Object -Last 1).FullName
+uv pip install --python .\.venv\Scripts\python.exe (Get-ChildItem ..\dist\cambercad*.whl | Select-Object -Last 1).FullName
 # or with viewer:
-# uv pip install --python .\.venv\Scripts\python.exe "$((Get-ChildItem ..\dist\camber*.whl | Select-Object -Last 1).FullName)[view]"
+# uv pip install --python .\.venv\Scripts\python.exe "$((Get-ChildItem ..\dist\cambercad*.whl | Select-Object -Last 1).FullName)[view]"
 python python\smoke.py
 ```
 
@@ -79,7 +101,7 @@ Your distro needs the .NET SDK, a C/C++ toolchain (`clang` or `gcc`), and Python
 cd <this-repo>/Geo.Python
 bash publish-wheel.sh --bootstrap   # first time: apt + .NET 10 into ~/.dotnet
 # later: bash publish-wheel.sh
-# → writes <this-repo>/dist/camber-*-linux_x86_64.whl
+# → writes <this-repo>/dist/cambercad-*-manylinux_2_17_x86_64.whl
 #
 # If the repo lives on /mnt/c (Windows drive), the script copies sources to
 # ~/camber-linux-build automatically (NTFS breaks Native AOT timestamps).
@@ -95,11 +117,11 @@ Then at the repo root:
 
 ```bash
 uv venv .venv
-uv pip install --python .venv/bin/python "dist/camber-"*".whl[view]"
+uv pip install --python .venv/bin/python "dist/cambercad-"*".whl[view]"
 .venv/bin/python Geo.Python/python/smoke.py
 ```
 
-The wheel embeds a CPython extension for the Python that built it (e.g. 3.12). Install into a matching interpreter.
+The wheel is tagged `py3-none-<platform>`: one file per OS, installable on CPython 3.10+.
 
 ## Install with uv (local wheel)
 
@@ -108,9 +130,9 @@ Git clone alone cannot replace a published platform wheel: Native AOT needs the 
 ```powershell
 uv venv
 # kernel only:
-uv pip install dist\camber-*.whl
+uv pip install dist\cambercad-*.whl
 # or kernel + viewer (pyglet, imgui, numpy):
-uv pip install "dist\camber-*.whl[view]"
+uv pip install "dist\cambercad-*.whl[view]"
 ```
 
 Wheels for Win/Linux land in repo-root `dist/`. Publishing to PyPI is a separate local checklist (not kept in this repo).
@@ -145,10 +167,6 @@ Full license texts are under [`third_party/`](third_party/).
 | **DotWrap** 0.3.0 (NuGet, build-time) | MIT | `Geo.Python/Geo.Python.csproj` | Generates the Python native module |
 
 Optional runtime deps (not vendored): **cffi**, and for the viewer **pyglet** / **imgui** / **numpy**.
-
-Scan notes: other `http://…` links in comments are algorithm references (Bezier, NURBS notes, Morton codes, etc.), not copied libraries. A couple of geogram discussion URLs appear as comments only. Sketch text reads installed TrueType files at runtime; there is no vendored font engine. NACA / involute formulas and `GeoSolver/Sparse` are original / public math, not SuiteSparse or OCCT.
-
-This repository currently has **no** top-level license for original camber code (all rights reserved until one is chosen). Third-party notices above still apply and must be retained.
 
 ## Layout
 

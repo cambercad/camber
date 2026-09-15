@@ -2,7 +2,14 @@
 
 `camber` is a pip-installable CAD kernel: sketch, extrude, boolean, STL/STEP. The 3D viewer (pyglet + imgui) is **optional**.
 
-This folder is the Python **wheel**, not the GeoScriptViewer scripts (`from Geo import …`).
+Published package: **`cambercad`**. Import: **`import camber`**.
+
+```text
+pip install cambercad
+pip install "cambercad[view]"
+```
+
+This folder is also the **wheel build** (Native AOT + DotWrap), not the old GeoScriptViewer scripts (`from Geo import …`).
 
 ---
 

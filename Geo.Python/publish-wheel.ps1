@@ -29,62 +29,8 @@ if (Test-Path $camberDst) {
 }
 Copy-Item -Recurse (Join-Path $root "python\camber") $camberDst
 
-$setup = Join-Path $pkg "setup.py"
 $readme = Join-Path $repoRoot "README.md"
-if (Test-Path $setup) {
-    @'
-from pathlib import Path
-import sys
-
-import re
-
-setup_path = Path(sys.argv[1])
-readme = Path(sys.argv[2]).read_text(encoding="utf-8")
-version = sys.argv[3]
-text = setup_path.read_text(encoding="utf-8")
-text = re.sub(r'version\s*=\s*["\'][^"\']+["\']', f'version="{version}"', text, count=1)
-text = text.replace('name="_camber_native"', 'name="cambercad"')
-text = text.replace("name='_camber_native'", 'name="cambercad"')
-text = text.replace('name="geo_csg"', 'name="cambercad"')
-text = text.replace('author="DotWrap"', 'author="cambercad"')
-text = text.replace("author='DotWrap'", 'author="cambercad"')
-summary = (
-    "Scripting- and AI-first CAD: triangle-first kernel with sketch, CSG, "
-    "optional NURBS, mesh import/export, and a Python API."
-)
-text = text.replace(
-    'description="Auto-generated Python bindings for DotWrap C# library"',
-    f"description={summary!r}",
-)
-text = text.replace(
-    "description='Auto-generated Python bindings for DotWrap C# library'",
-    f"description={summary!r}",
-)
-if "author_email=" not in text:
-    text = text.replace('author="cambercad"', 'author="cambercad",\n    author_email="cambercad@proton.me"')
-if "long_description" not in text:
-    extra_meta = (
-        f"    long_description={readme!r},\n"
-        '    long_description_content_type="text/markdown",\n'
-    )
-    text = text.replace(
-        f"description={summary!r},\n",
-        f"description={summary!r},\n{extra_meta}",
-    )
-extra = 'extras_require={"view": ["pyglet", "imgui[pyglet]", "numpy"]}'
-if "extras_require" not in text:
-    text = text.replace(
-        'install_requires=["cffi"]',
-        'install_requires=["cffi"], ' + extra,
-    )
-    text = text.replace(
-        "install_requires=['cffi']",
-        'install_requires=["cffi"], ' + extra,
-    )
-setup_path.write_text(text, encoding="utf-8")
-print("patched", setup_path)
-'@ | python - $setup $readme $WheelVersion
-}
+python (Join-Path $root "patch_wheel_metadata.py") $pkg $readme $WheelVersion
 
 python -m pip install --upgrade pip setuptools wheel cffi
 
@@ -97,7 +43,6 @@ New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
 python -m pip wheel --no-deps $pkg -w $stage
 
-$py = & python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')"
 $plat = switch -Wildcard ($Runtime) {
     "win-x64" { "win_amd64" }
     "win-arm64" { "win_arm64" }
@@ -107,11 +52,11 @@ $plat = switch -Wildcard ($Runtime) {
 Push-Location $stage
 try {
     Get-ChildItem -Filter "cambercad-*.whl" | ForEach-Object {
-        # wheel tags --remove deletes the input file and writes a retagged sibling here.
-        & python -m wheel tags --remove --python-tag $py --abi-tag $py --platform-tag $plat $_.Name
+        # Native AOT + cffi ABI: one wheel per OS, any CPython 3.10+.
+        & python -m wheel tags --remove --python-tag py3 --abi-tag none --platform-tag $plat $_.Name
         if ($LASTEXITCODE -ne 0) {
             if ($_.Name -match '^cambercad-([^-]+)-py3-none-any\.whl$') {
-                Rename-Item $_.Name "cambercad-$($Matches[1])-$py-$py-$plat.whl"
+                Rename-Item $_.Name "cambercad-$($Matches[1])-py3-none-$plat.whl"
             }
         }
     }
