@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>camber API</title>
+<style>
+:root {
+  --bg: #f5f7f8;
+  --paper: #ffffff;
+  --ink: #172126;
+  --mute: #66757d;
+  --line: #dfe7e9;
+  --accent: #e5b82e;
+  --accent-dark: #3f484d;
+  --accent-soft: #fff3c4;
+  --warm: #e5b82e;
+  --shadow: 0 8px 24px rgba(31, 54, 61, .07);
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+html, body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.55 Inter, ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-dark); }
+code, h3 code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 13px; font-weight: 550; }
+.wrap { display: grid; grid-template-columns: 244px minmax(0, 1fr); min-height: 100vh; }
+nav {
+  position: sticky; top: 0; height: 100vh; overflow: auto;
+  padding: 30px 18px 44px; border-right: 1px solid var(--line);
+  background: rgba(255, 255, 255, .72); backdrop-filter: blur(12px);
+}
+.brand { display: flex; align-items: center; gap: 10px; margin: 0 8px 24px;
+  color: var(--ink); font-size: 15px; font-weight: 750; letter-spacing: .02em; }
+.brand::before { content: ""; width: 11px; height: 11px; border-radius: 3px;
+  background: linear-gradient(135deg, var(--accent), var(--warm));
+  box-shadow: 0 0 0 4px var(--accent-soft); transform: rotate(10deg); }
+.nav-group { margin: 0 0 17px; }
+.nav-section { display: block; padding: 4px 8px; color: var(--ink);
+  font-size: 11px; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }
+.nav-symbol { display: block; margin: 1px 0; padding: 4px 8px 4px 16px;
+  border-radius: 6px; color: var(--mute); font-size: 13px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nav-symbol:hover { background: var(--accent-soft); color: var(--accent-dark); }
+main { width: min(100%, 1040px); padding: 48px 52px 96px; }
+.hero { position: relative; overflow: hidden; padding: 28px 30px 30px; margin-bottom: 30px;
+  border: 1px solid var(--line); border-radius: 18px; background: var(--paper); box-shadow: var(--shadow); }
+h1 { position: relative; z-index: 1; font-size: clamp(28px, 4vw, 38px);
+  font-weight: 750; margin: 0 0 7px; letter-spacing: -.035em; }
+.lead { position: relative; z-index: 1; color: var(--mute); margin: 0 0 22px; max-width: 700px; }
+.search-row { position: relative; z-index: 1; display: flex; align-items: center;
+  gap: 12px; max-width: 600px; }
+.search { position: relative; flex: 1; }
+.search::before { content: "⌕"; position: absolute; left: 13px; top: 7px;
+  color: var(--accent); font-size: 21px; line-height: 1; pointer-events: none; }
+input {
+  width: 100%; border: 1px solid var(--line); background: #fbfdfd;
+  padding: 10px 38px 10px 40px; border-radius: 10px; font: inherit; color: var(--ink);
+  outline: none; transition: border-color .15s, box-shadow .15s, background .15s;
+}
+input:focus { border-color: var(--accent); background: var(--paper);
+  box-shadow: 0 0 0 4px var(--accent-soft); }
+.shortcut { position: absolute; right: 9px; top: 9px; color: var(--mute);
+  border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; font-size: 11px; }
+#result-count { min-width: 74px; color: var(--mute); font-size: 12px; text-align: right; }
+h2 { font-size: 13px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--accent-dark); margin: 38px 0 13px; font-weight: 750; }
+h2::before { content: ""; display: inline-block; width: 18px; height: 3px;
+  margin: 0 8px 3px 0; border-radius: 2px; background: var(--warm); }
+article {
+  background: var(--paper); border: 1px solid var(--line);
+  border-radius: 12px; padding: 17px 19px 12px; margin: 0 0 11px;
+  box-shadow: 0 2px 8px rgba(31, 54, 61, .035);
+  transition: border-color .15s, box-shadow .15s, transform .15s;
+}
+article:hover { border-color: #e5d399; box-shadow: var(--shadow); transform: translateY(-1px); }
+article:target { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.k { float: right; font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--accent-dark); background: var(--accent-soft); padding: 3px 8px; border-radius: 999px; }
+h3 { margin: 0 0 6px; padding-right: 72px; font-size: 15px; font-weight: 650; }
+article p { margin: 0 0 8px; color: var(--mute); }
+ul { list-style: none; margin: 8px 0 0; padding: 0; border-top: 1px solid var(--line); }
+li { padding: 7px 0; border-bottom: 1px solid var(--line); }
+li:last-child { border-bottom: 0; }
+li code { display: block; color: #293f48; }
+li span { display: block; color: var(--mute); font-size: 13px; margin-top: 2px; white-space: normal; }
+.hide { display: none !important; }
+#no-results { display: none; padding: 32px; border: 1px dashed #dfce99;
+  border-radius: 12px; color: var(--mute); text-align: center; background: rgba(255,255,255,.5); }
+#no-results.show { display: block; }
+@media (max-width: 860px) {
+  .wrap { grid-template-columns: 1fr; }
+  nav { position: relative; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+  .nav-group { display: inline-block; vertical-align: top; min-width: 150px; }
+  main { padding: 30px 22px 70px; }
+}
+@media (max-width: 520px) {
+  nav { padding: 24px 14px; }
+  .hero { padding: 23px 20px; }
+  .search-row { align-items: stretch; flex-direction: column; }
+  #result-count { text-align: left; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+<div class="brand">camber API</div>
+<div class="nav-group" data-section="core"><a class="nav-section" href="#core">Core</a>
+<a class="nav-symbol" data-target="Part" href="#Part">Part</a>
+<a class="nav-symbol" data-target="Sketch" href="#Sketch">Sketch</a>
+<a class="nav-symbol" data-target="SketchCurve" href="#SketchCurve">SketchCurve</a>
+<a class="nav-symbol" data-target="Solid" href="#Solid">Solid</a>
+<a class="nav-symbol" data-target="ProjectedSketch" href="#ProjectedSketch">ProjectedSketch</a>
+</div>
+<div class="nav-group" data-section="pose"><a class="nav-section" href="#pose">Pose</a>
+<a class="nav-symbol" data-target="Frame" href="#Frame">Frame</a>
+<a class="nav-symbol" data-target="Curve" href="#Curve">Curve</a>
+<a class="nav-symbol" data-target="LoftOptions" href="#LoftOptions">LoftOptions</a>
+<a class="nav-symbol" data-target="frame_from_axis" href="#frame_from_axis">frame_from_axis</a>
+</div>
+<div class="nav-group" data-section="assembly"><a class="nav-section" href="#assembly">Assembly</a>
+<a class="nav-symbol" data-target="Assembly" href="#Assembly">Assembly</a>
+<a class="nav-symbol" data-target="AssemblyPart" href="#AssemblyPart">AssemblyPart</a>
+<a class="nav-symbol" data-target="AssemblyPointDatum" href="#AssemblyPointDatum">AssemblyPointDatum</a>
+<a class="nav-symbol" data-target="AssemblyAxisDatum" href="#AssemblyAxisDatum">AssemblyAxisDatum</a>
+<a class="nav-symbol" data-target="AssemblyPlaneDatum" href="#AssemblyPlaneDatum">AssemblyPlaneDatum</a>
+</div>
+<div class="nav-group" data-section="vectors"><a class="nav-section" href="#vectors">Vectors</a>
+<a class="nav-symbol" data-target="vec2" href="#vec2">vec2</a>
+<a class="nav-symbol" data-target="vec3" href="#vec3">vec3</a>
+</div>
+<div class="nav-group" data-section="geom"><a class="nav-section" href="#geom">Geom</a>
+<a class="nav-symbol" data-target="RayHit" href="#RayHit">RayHit</a>
+<a class="nav-symbol" data-target="triangulate" href="#triangulate">triangulate</a>
+<a class="nav-symbol" data-target="signed_area" href="#signed_area">signed_area</a>
+<a class="nav-symbol" data-target="is_ccw" href="#is_ccw">is_ccw</a>
+<a class="nav-symbol" data-target="point_in_polygon" href="#point_in_polygon">point_in_polygon</a>
+<a class="nav-symbol" data-target="convex_hull" href="#convex_hull">convex_hull</a>
+<a class="nav-symbol" data-target="tessellate_bezier" href="#tessellate_bezier">tessellate_bezier</a>
+<a class="nav-symbol" data-target="text_outlines" href="#text_outlines">text_outlines</a>
+</div>
+<div class="nav-group" data-section="viewer"><a class="nav-section" href="#viewer">Viewer</a>
+<a class="nav-symbol" data-target="show" href="#show">show</a>
+</div>
+<div class="nav-group" data-section="constants"><a class="nav-section" href="#constants">Constants</a>
+<a class="nav-symbol" data-target="BOOLEAN_UNION" href="#BOOLEAN_UNION">BOOLEAN_UNION</a>
+<a class="nav-symbol" data-target="BOOLEAN_DIFFERENCE" href="#BOOLEAN_DIFFERENCE">BOOLEAN_DIFFERENCE</a>
+<a class="nav-symbol" data-target="BOOLEAN_INTERSECT" href="#BOOLEAN_INTERSECT">BOOLEAN_INTERSECT</a>
+</div>
+<div class="nav-group" data-section="cadquery-compat"><a class="nav-section" href="#cadquery-compat">CadQuery compat</a>
+<a class="nav-symbol" data-target="cqcompat-Workplane" href="#cqcompat-Workplane">cqcompat.Workplane</a>
+<a class="nav-symbol" data-target="cqcompat-Sketch" href="#cqcompat-Sketch">cqcompat.Sketch</a>
+<a class="nav-symbol" data-target="cqcompat-Vector" href="#cqcompat-Vector">cqcompat.Vector</a>
+<a class="nav-symbol" data-target="cqcompat-named_plane" href="#cqcompat-named_plane">cqcompat.named_plane</a>
+</div>
+</nav>
+<main>
+<header class="hero">
+<h1>camber API</h1>
+<p class="lead">Public Python surface. Points are tuples or vec2/vec3. Solids: + union, − cut, &amp; intersect. max_deviation=-1 uses the Part default. There is no Solid | operator.</p>
+<div class="search-row">
+  <label class="search">
+    <input id="q" type="search" placeholder="Search symbols and descriptions…" autocomplete="off" aria-label="Search API">
+    <span class="shortcut">/</span>
+  </label>
+  <span id="result-count" aria-live="polite"></span>
+</div>
+</header>
+<section id="core"><h2>Core</h2>
+<article class="sym" id="Part" data-search="part class part(low, high, tolerance=0.01) cad session: operating box, sketches, solids, booleans, import/export."><div class="k">class</div><h3><code>Part(low, high, tolerance=0.01)</code></h3><p>CAD session: operating box, sketches, solids, booleans, import/export.</p>
+<ul>
+<li data-search="part.max_deviation part.max_deviation default tessellation tolerance (world units)."><code>Part.max_deviation</code> <span>Default tessellation tolerance (world units).</span></li>
+<li data-search="part.name part.name part instance name."><code>Part.name</code> <span>Part instance name.</span></li>
+<li data-search="part.add_line part.add_line(start, end, name=none) 3d construction line (not a sketch). returns curve."><code>Part.add_line(start, end, name=None)</code> <span>3D construction line (not a sketch). Returns Curve.</span></li>
+<li data-search="part.add_line_by_names part.add_line_by_names(start_name, end_name, name=none) 3d line between two named points already on the part."><code>Part.add_line_by_names(start_name, end_name, name=None)</code> <span>3D line between two named points already on the part.</span></li>
+<li data-search="part.add_plane part.add_plane(plane_name, origin_anchor_name) named construction plane at a named origin point."><code>Part.add_plane(plane_name, origin_anchor_name)</code> <span>Named construction plane at a named origin point.</span></li>
+<li data-search="part.assembly part.assembly(name=none) create or get an assembly attached to this part."><code>Part.assembly(name=None)</code> <span>Create or get an Assembly attached to this part.</span></li>
+<li data-search="part.batch_boolean_chain part.batch_boolean_chain(mesh_a, steps) apply ``steps`` as ``[(solid, boolean_*), ...]`` in order onto ``mesh_a``."><code>Part.batch_boolean_chain(mesh_a, steps)</code> <span>Apply ``steps`` as ``[(solid, BOOLEAN_*), ...]`` in order onto ``mesh_a``.</span></li>
+<li data-search="part.batch_union part.batch_union(meshes) union many solids. empty list → none; one item returned as-is."><code>Part.batch_union(meshes)</code> <span>Union many solids. Empty list → None; one item returned as-is.</span></li>
+<li data-search="part.boolean part.boolean(a, b, operation, name=none) csg: ``operation`` is boolean_union / difference / intersect."><code>Part.boolean(a, b, operation, name=None)</code> <span>CSG: ``operation`` is BOOLEAN_UNION / DIFFERENCE / INTERSECT.</span></li>
+<li data-search="part.chamfer part.chamfer(solid, edges, distance, name=none, max_deviation=-1) chamfer named edges. ``edges`` is a string or list of names."><code>Part.chamfer(solid, edges, distance, name=None, max_deviation=-1)</code> <span>Chamfer named edges. ``edges`` is a string or list of names.</span></li>
+<li data-search="part.copy_solid part.copy_solid(source, name) deep-copy a solid. `name` is required and must differ from the source; all entity prefixes are rewritten."><code>Part.copy_solid(source, name)</code> <span>Deep-copy a solid. `name` is required and must differ from the source; all entity prefixes are rewritten.</span></li>
+<li data-search="part.create_metric_thread_for_bolt_negative part.create_metric_thread_for_bolt_negative(pose, major_diameter, pitch, length, name=none, max_deviation=-1, right_handed=true, outer_radius=-1) iso 60° external-thread cutter (subtract from a shank). axis is pose.z."><code>Part.create_metric_thread_for_bolt_negative(pose, major_diameter, pitch, length, name=None, max_deviation=-1, right_handed=True, outer_radius=-1)</code> <span>ISO 60° external-thread cutter (subtract from a shank). Axis is pose.z.</span></li>
+<li data-search="part.create_metric_thread_for_hole_negative part.create_metric_thread_for_hole_negative(pose, major_diameter, pitch, length, name=none, max_deviation=-1, right_handed=true, include_bore_chamfers=false) iso 60° internal-thread cutter (subtract from a holed plate). axis is pose.z."><code>Part.create_metric_thread_for_hole_negative(pose, major_diameter, pitch, length, name=None, max_deviation=-1, right_handed=True, include_bore_chamfers=False)</code> <span>ISO 60° internal-thread cutter (subtract from a holed plate). Axis is pose.z.</span></li>
+<li data-search="part.create_metric_thread_for_nut_negative part.create_metric_thread_for_nut_negative(pose, major_diameter, pitch, length, name=none, max_deviation=-1, right_handed=true, include_bore_chamfers=true) iso 60° internal-thread cutter (subtract from a nut). axis is pose.z."><code>Part.create_metric_thread_for_nut_negative(pose, major_diameter, pitch, length, name=None, max_deviation=-1, right_handed=True, include_bore_chamfers=True)</code> <span>ISO 60° internal-thread cutter (subtract from a nut). Axis is pose.z.</span></li>
+<li data-search="part.cube part.cube(pose, extent, name=none) axis-aligned cube of side ``extent`` in the pose (center at origin)."><code>Part.cube(pose, extent, name=None)</code> <span>Axis-aligned cube of side ``extent`` in the pose (center at origin).</span></li>
+<li data-search="part.cuboid part.cuboid(pose_or_min, extents_or_max, name=none) pose + local extents, or world aabb min/max."><code>Part.cuboid(pose_or_min, extents_or_max, name=None)</code> <span>Pose + local extents, or world AABB min/max.</span></li>
+<li data-search="part.cut part.cut(a, b, name=none) boolean difference ``a minus b``. same as ``a - b``."><code>Part.cut(a, b, name=None)</code> <span>Boolean difference ``a minus b``. Same as ``a - b``.</span></li>
+<li data-search="part.cylinder part.cylinder(origin, radius, height, name=none, axis=&#x27;z&#x27;, max_deviation=-1) cylinder from a point or frame. ``axis`` is ``x``/``y``/``z`` if origin is a point."><code>Part.cylinder(origin, radius, height, name=None, axis=&#x27;z&#x27;, max_deviation=-1)</code> <span>Cylinder from a point or Frame. ``axis`` is ``x``/``y``/``z`` if origin is a point.</span></li>
+<li data-search="part.cylinder_revolve part.cylinder_revolve(pose, radius, height, name=none, max_deviation=-1) cylinder as a revolve of a rectangle (same pose convention as cylinder)."><code>Part.cylinder_revolve(pose, radius, height, name=None, max_deviation=-1)</code> <span>Cylinder as a revolve of a rectangle (same pose convention as cylinder).</span></li>
+<li data-search="part.extrude part.extrude(sketch, height, name=none, both_sides=false, max_deviation=-1, twist=0) extrude along the sketch-plane normal. ``height`` world units; ``twist`` rad per unit length."><code>Part.extrude(sketch, height, name=None, both_sides=False, max_deviation=-1, twist=0)</code> <span>Extrude along the sketch-plane normal. ``height`` world units; ``twist`` rad per unit length.</span></li>
+<li data-search="part.extrude_along_curve part.extrude_along_curve(sketch, curve, name=none, max_deviation=-1, twist=0) sweep the sketch along a 3d curve."><code>Part.extrude_along_curve(sketch, curve, name=None, max_deviation=-1, twist=0)</code> <span>Sweep the sketch along a 3D Curve.</span></li>
+<li data-search="part.extrude_along_curve_strip part.extrude_along_curve_strip(sketch, curves, name=none, max_deviation=-1, twist=0) sweep the sketch along a sequence of curves (g1 strip)."><code>Part.extrude_along_curve_strip(sketch, curves, name=None, max_deviation=-1, twist=0)</code> <span>Sweep the sketch along a sequence of Curves (G1 strip).</span></li>
+<li data-search="part.extrude_along_sketch part.extrude_along_sketch(profile, guide, name=none, max_deviation=-1) sweep ``profile`` along a 3d path taken from ``guide`` sketch curves."><code>Part.extrude_along_sketch(profile, guide, name=None, max_deviation=-1)</code> <span>Sweep ``profile`` along a 3D path taken from ``guide`` sketch curves.</span></li>
+<li data-search="part.extrude_projected part.extrude_projected(projected, height, name=none) extrude a projectedsketch along stored surface normals (negative = into solid)."><code>Part.extrude_projected(projected, height, name=None)</code> <span>Extrude a ProjectedSketch along stored surface normals (negative = into solid).</span></li>
+<li data-search="part.extrude_two_sides part.extrude_two_sides(sketch, plus_z, minus_z=0.0, name=none, max_deviation=-1, twist=0) extrude ``plus_z`` along +normal and ``minus_z`` along −normal."><code>Part.extrude_two_sides(sketch, plus_z, minus_z=0.0, name=None, max_deviation=-1, twist=0)</code> <span>Extrude ``plus_z`` along +normal and ``minus_z`` along −normal.</span></li>
+<li data-search="part.fillet part.fillet(solid, edges, radius, name=none, max_deviation=-1) fillet named edges. ``edges`` is a string or list of names (joined with ``|``)."><code>Part.fillet(solid, edges, radius, name=None, max_deviation=-1)</code> <span>Fillet named edges. ``edges`` is a string or list of names (joined with ``|``).</span></li>
+<li data-search="part.intersect part.intersect(a, b, name=none) boolean intersection. same as ``a &amp; b``."><code>Part.intersect(a, b, name=None)</code> <span>Boolean intersection. Same as ``a &amp; b``.</span></li>
+<li data-search="part.load_obj part.load_obj(path, group_border_angle_deg=-1, name=none) import wavefront obj."><code>Part.load_obj(path, group_border_angle_deg=-1, name=None)</code> <span>Import Wavefront OBJ.</span></li>
+<li data-search="part.load_off part.load_off(path, group_border_angle_deg, name=none, require_watertight=true) import off mesh."><code>Part.load_off(path, group_border_angle_deg, name=None, require_watertight=True)</code> <span>Import OFF mesh.</span></li>
+<li data-search="part.load_stl part.load_stl(path, group_border_angle_deg, name=none, require_watertight=true) import stl. ``group_border_angle_deg`` splits patches at sharp edges."><code>Part.load_stl(path, group_border_angle_deg, name=None, require_watertight=True)</code> <span>Import STL. ``group_border_angle_deg`` splits patches at sharp edges.</span></li>
+<li data-search="part.loft part.loft(sketches, options=none, name=none, max_deviation=-1) loft through a sequence of sketches. ``options`` is loftoptions."><code>Part.loft(sketches, options=None, name=None, max_deviation=-1)</code> <span>Loft through a sequence of Sketches. ``options`` is LoftOptions.</span></li>
+<li data-search="part.plane_frame part.plane_frame(plane) frame of a named part plane, or none."><code>Part.plane_frame(plane)</code> <span>Frame of a named part plane, or None.</span></li>
+<li data-search="part.project_sketch part.project_sketch(sketch, solid, name=none, max_deviation=-1) tessellate sketch and project onto solid along the sketch-plane normal."><code>Part.project_sketch(sketch, solid, name=None, max_deviation=-1)</code> <span>Tessellate sketch and project onto solid along the sketch-plane normal.</span></li>
+<li data-search="part.raycast part.raycast(solid, origin, direction) nearest mesh hit along ``origin`` + t * ``direction``, or ``none``."><code>Part.raycast(solid, origin, direction)</code> <span>Nearest mesh hit along ``origin`` + t * ``direction``, or ``None``.</span></li>
+<li data-search="part.revolve part.revolve(sketch, angle, name=none, max_deviation=-1) revolve the sketch about sketch x by ``angle`` radians."><code>Part.revolve(sketch, angle, name=None, max_deviation=-1)</code> <span>Revolve the sketch about sketch X by ``angle`` radians.</span></li>
+<li data-search="part.show part.show(title=&#x27;camber&#x27;) open the 3d viewer on all meshes in this part."><code>Part.show(title=&#x27;Camber&#x27;)</code> <span>Open the 3D viewer on all meshes in this part.</span></li>
+<li data-search="part.sketch part.sketch(plane=&#x27;xy&#x27;, name=none, origin_name=none, frame=none, constrained=false) 2d sketch. ``plane`` is ``xy``/``xz``/``yz``; or pass ``frame=``."><code>Part.sketch(plane=&#x27;xy&#x27;, name=None, origin_name=None, frame=None, constrained=False)</code> <span>2D sketch. ``plane`` is ``xy``/``xz``/``yz``; or pass ``frame=``.</span></li>
+<li data-search="part.sketch_interactive part.sketch_interactive(plane=&#x27;xy&#x27;, name=none, part_var=&#x27;part&#x27;, sketch_var=&#x27;sk&#x27;, frame=none, emit_frame=false) draw a sketch in the viewer. finish copies camber python to the clipboard."><code>Part.sketch_interactive(plane=&#x27;xy&#x27;, name=None, part_var=&#x27;part&#x27;, sketch_var=&#x27;sk&#x27;, frame=None, emit_frame=False)</code> <span>Draw a sketch in the viewer. Finish copies camber Python to the clipboard.</span></li>
+<li data-search="part.smallest_unit part.smallest_unit() lattice step: operating-box extent / slices (~1e-6 of the box)."><code>Part.smallest_unit()</code> <span>Lattice step: operating-box extent / slices (~1e-6 of the box).</span></li>
+<li data-search="part.solid part.solid(name) look up a solid already registered on this part by name, or none."><code>Part.solid(name)</code> <span>Look up a Solid already registered on this part by name, or None.</span></li>
+<li data-search="part.solid_from_mesh part.solid_from_mesh(positions, triangles, name=none) build a solid from world-space vertices and ``(i, j, k)`` triangles."><code>Part.solid_from_mesh(positions, triangles, name=None)</code> <span>Build a solid from world-space vertices and ``(i, j, k)`` triangles.</span></li>
+<li data-search="part.sphere part.sphere(center, radius, name=none, max_deviation=-1) sphere at ``center`` (point or frame)."><code>Part.sphere(center, radius, name=None, max_deviation=-1)</code> <span>Sphere at ``center`` (point or Frame).</span></li>
+<li data-search="part.union part.union(a, b, name=none) boolean union. same as ``a + b``."><code>Part.union(a, b, name=None)</code> <span>Boolean union. Same as ``a + b``.</span></li>
+</ul>
+</article>
+<article class="sym" id="Sketch" data-search="sketch class sketch  # part.sketch / part.sketch(..., constrained=true) 2d sketch on a part: plotter strips, named curves, and optional constraints."><div class="k">class</div><h3><code>Sketch  # Part.sketch / Part.sketch(..., constrained=True)</code></h3><p>2D sketch on a Part: plotter strips, named curves, and optional constraints.</p>
+<ul>
+<li data-search="sketch.constraint_count sketch.constraint_count number of constraints, or -1 if this is a plotter-only sketch."><code>Sketch.constraint_count</code> <span>Number of constraints, or -1 if this is a plotter-only sketch.</span></li>
+<li data-search="sketch.curve_count sketch.curve_count number of constraint-solver curves, or -1 if this is a plotter-only sketch."><code>Sketch.curve_count</code> <span>Number of constraint-solver curves, or -1 if this is a plotter-only sketch.</span></li>
+<li data-search="sketch.frame sketch.frame world frame of this sketch plane."><code>Sketch.frame</code> <span>World Frame of this sketch plane.</span></li>
+<li data-search="sketch.name sketch.name kernel sketch name."><code>Sketch.name</code> <span>Kernel sketch name.</span></li>
+<li data-search="sketch.solve_after_every_constraint sketch.solve_after_every_constraint if true, the kernel solves after each constraint (default)."><code>Sketch.solve_after_every_constraint</code> <span>If True, the kernel solves after each constraint (default).</span></li>
+<li data-search="sketch.add_arc sketch.add_arc(start, mid, end, name=none, construction=false) circular arc through three points. returns sketchcurve."><code>Sketch.add_arc(start, mid, end, name=None, construction=False)</code> <span>Circular arc through three points. Returns SketchCurve.</span></li>
+<li data-search="sketch.add_circle sketch.add_circle(center, radius, name=none, construction=false) circle. ``center`` is xy or a named point. returns sketchcurve."><code>Sketch.add_circle(center, radius, name=None, construction=False)</code> <span>Circle. ``center`` is XY or a named point. Returns SketchCurve.</span></li>
+<li data-search="sketch.add_line sketch.add_line(start, end, name=none, construction=false) segment from start to end (xy or named points). returns sketchcurve."><code>Sketch.add_line(start, end, name=None, construction=False)</code> <span>Segment from start to end (XY or named points). Returns SketchCurve.</span></li>
+<li data-search="sketch.add_naca4 sketch.add_naca4(code, leading_edge, chord_length, chord_angle=0.0, samples_per_side=36, analytic_end_tangents=true, te_trim=0.01) closed naca 4-digit airfoil. ``code`` is ``2412`` or the integer 2412."><code>Sketch.add_naca4(code, leading_edge, chord_length, chord_angle=0.0, samples_per_side=36, analytic_end_tangents=True, te_trim=0.01)</code> <span>Closed NACA 4-digit airfoil. ``code`` is ``2412`` or the integer 2412.</span></li>
+<li data-search="sketch.add_rectangle sketch.add_rectangle(corner_a, corner_b, names=none) axis-aligned rectangle, ccw from the lower-left corner."><code>Sketch.add_rectangle(corner_a, corner_b, names=None)</code> <span>Axis-aligned rectangle, CCW from the lower-left corner.</span></li>
+<li data-search="sketch.add_rectangle_centered sketch.add_rectangle_centered(center, size_x, size_y, names=none) axis-aligned rectangle. `names` is (south, east, north, west) for the four sides."><code>Sketch.add_rectangle_centered(center, size_x, size_y, names=None)</code> <span>Axis-aligned rectangle. `names` is (south, east, north, west) for the four sides.</span></li>
+<li data-search="sketch.add_spline sketch.add_spline(points, start_tangent=none, end_tangent=none, name=none) cubic hermite spline through 2d points."><code>Sketch.add_spline(points, start_tangent=None, end_tangent=None, name=None)</code> <span>Cubic Hermite spline through 2D points.</span></li>
+<li data-search="sketch.add_text sketch.add_text(text, origin, family=&#x27;arial&#x27;, em_size=0.2, bold=false, italic=false) add truetype glyph outlines at the baseline origin (sketch xy)."><code>Sketch.add_text(text, origin, family=&#x27;Arial&#x27;, em_size=0.2, bold=False, italic=False)</code> <span>Add TrueType glyph outlines at the baseline origin (sketch XY).</span></li>
+<li data-search="sketch.angle sketch.angle(curve_a, curve_b, degrees) angle between two lines, in degrees. returns self."><code>Sketch.angle(curve_a, curve_b, degrees)</code> <span>Angle between two lines, in degrees. Returns self.</span></li>
+<li data-search="sketch.append_arc_left sketch.append_arc_left(radius, angle=none) tangential left turn of ``angle`` radians (default π/2) at ``radius``."><code>Sketch.append_arc_left(radius, angle=None)</code> <span>Tangential left turn of ``angle`` radians (default π/2) at ``radius``.</span></li>
+<li data-search="sketch.append_arc_right sketch.append_arc_right(radius, angle=none) tangential right turn of ``angle`` radians (default π/2) at ``radius``."><code>Sketch.append_arc_right(radius, angle=None)</code> <span>Tangential right turn of ``angle`` radians (default π/2) at ``radius``.</span></li>
+<li data-search="sketch.append_line sketch.append_line(end) plotter: line from the current pen to ``end``. returns self."><code>Sketch.append_line(end)</code> <span>Plotter: line from the current pen to ``end``. Returns self.</span></li>
+<li data-search="sketch.append_line_horizontal sketch.append_line_horizontal(end_x) plotter: horizontal line to sketch x = ``end_x``. returns self."><code>Sketch.append_line_horizontal(end_x)</code> <span>Plotter: horizontal line to sketch X = ``end_x``. Returns self.</span></li>
+<li data-search="sketch.append_line_vertical sketch.append_line_vertical(end_y) plotter: vertical line to sketch y = ``end_y``. returns self."><code>Sketch.append_line_vertical(end_y)</code> <span>Plotter: vertical line to sketch Y = ``end_y``. Returns self.</span></li>
+<li data-search="sketch.append_spline sketch.append_spline(points, start_tangent=none, end_tangent=none) hermite spline from the current strip end through ``points``."><code>Sketch.append_spline(points, start_tangent=None, end_tangent=None)</code> <span>Hermite spline from the current strip end through ``points``.</span></li>
+<li data-search="sketch.coincident sketch.coincident(point_a, point_b) coincident two points. each is a name (&quot;line1@1.000&quot;) or (&quot;xy&quot;, x, y)."><code>Sketch.coincident(point_a, point_b)</code> <span>Coincident two points. Each is a name (&quot;Line1@1.000&quot;) or (&quot;xy&quot;, x, y).</span></li>
+<li data-search="sketch.coincident_on_curve sketch.coincident_on_curve(point, curve, uniform) place a named point on another curve at uniform parameter u in [0, 1]."><code>Sketch.coincident_on_curve(point, curve, uniform)</code> <span>Place a named point on another curve at uniform parameter u in [0, 1].</span></li>
+<li data-search="sketch.concentric sketch.concentric(curve_a, curve_b) share a center (circles/arcs). returns self."><code>Sketch.concentric(curve_a, curve_b)</code> <span>Share a center (circles/arcs). Returns self.</span></li>
+<li data-search="sketch.distance sketch.distance(point_a, point_b, value) distance between two points. each is a name or (&quot;xy&quot;, x, y)."><code>Sketch.distance(point_a, point_b, value)</code> <span>Distance between two points. Each is a name or (&quot;xy&quot;, x, y).</span></li>
+<li data-search="sketch.distance_to_line sketch.distance_to_line(point, line_curve, value) perpendicular distance from a named point to a line."><code>Sketch.distance_to_line(point, line_curve, value)</code> <span>Perpendicular distance from a named point to a line.</span></li>
+<li data-search="sketch.equal sketch.equal(curve_a, curve_b) equal length (lines) or equal radius (circles/arcs). returns self."><code>Sketch.equal(curve_a, curve_b)</code> <span>Equal length (lines) or equal radius (circles/arcs). Returns self.</span></li>
+<li data-search="sketch.eval_xy sketch.eval_xy(point) sketch-plane xy of a named point (``line @ 1.000``, ``sk @ &quot;origin&quot;``)."><code>Sketch.eval_xy(point)</code> <span>Sketch-plane XY of a named point (``line @ 1.000``, ``sk @ &quot;origin&quot;``).</span></li>
+<li data-search="sketch.fix sketch.fix(point) pin a named point in the sketch plane. xy constants are ignored."><code>Sketch.fix(point)</code> <span>Pin a named point in the sketch plane. XY constants are ignored.</span></li>
+<li data-search="sketch.horizontal sketch.horizontal(curve) keep a line parallel to sketch x. returns self."><code>Sketch.horizontal(curve)</code> <span>Keep a line parallel to sketch X. Returns self.</span></li>
+<li data-search="sketch.horizontal_distance sketch.horizontal_distance(point_a, point_b, value) signed horizontal offset ``b.x - a.x = value``."><code>Sketch.horizontal_distance(point_a, point_b, value)</code> <span>Signed horizontal offset ``b.x - a.x = value``.</span></li>
+<li data-search="sketch.length sketch.length(curve, value) set line length. returns self."><code>Sketch.length(curve, value)</code> <span>Set line length. Returns self.</span></li>
+<li data-search="sketch.midpoint sketch.midpoint(point, line_curve) named point at the midpoint of a line. returns self."><code>Sketch.midpoint(point, line_curve)</code> <span>Named point at the midpoint of a line. Returns self.</span></li>
+<li data-search="sketch.move_to sketch.move_to(point) start a new disconnected strip at ``point``."><code>Sketch.move_to(point)</code> <span>Start a new disconnected strip at ``point``.</span></li>
+<li data-search="sketch.offset sketch.offset(curves, distance, side=&#x27;both&#x27;, join=&#x27;miter&#x27;, end_cap=&#x27;square&#x27;, open_mode=none) offset curves. closed loops without forks use ``side=&#x27;out&#x27;`` / ``&#x27;in&#x27;``."><code>Sketch.offset(curves, distance, side=&#x27;both&#x27;, join=&#x27;miter&#x27;, end_cap=&#x27;square&#x27;, open_mode=None)</code> <span>Offset curves. Closed loops without forks use ``side=&#x27;out&#x27;`` / ``&#x27;in&#x27;``.</span></li>
+<li data-search="sketch.parallel sketch.parallel(curve_a, curve_b) keep two lines parallel. returns self."><code>Sketch.parallel(curve_a, curve_b)</code> <span>Keep two lines parallel. Returns self.</span></li>
+<li data-search="sketch.perpendicular sketch.perpendicular(curve_a, curve_b) keep two lines perpendicular. returns self."><code>Sketch.perpendicular(curve_a, curve_b)</code> <span>Keep two lines perpendicular. Returns self.</span></li>
+<li data-search="sketch.point_on_circle sketch.point_on_circle(point, circle_curve) put a named point on a circle circumference."><code>Sketch.point_on_circle(point, circle_curve)</code> <span>Put a named point on a circle circumference.</span></li>
+<li data-search="sketch.point_on_line sketch.point_on_line(point, line_curve) put a named point on a line (infinite line through the segment)."><code>Sketch.point_on_line(point, line_curve)</code> <span>Put a named point on a line (infinite line through the segment).</span></li>
+<li data-search="sketch.polylines sketch.polylines(max_deviation=-1) tessellated sketch strips as a list of ``vec2`` polylines."><code>Sketch.polylines(max_deviation=-1)</code> <span>Tessellated sketch strips as a list of ``vec2`` polylines.</span></li>
+<li data-search="sketch.radius sketch.radius(curve, value) set circle/arc radius. returns self."><code>Sketch.radius(curve, value)</code> <span>Set circle/arc radius. Returns self.</span></li>
+<li data-search="sketch.remove_last_constraint sketch.remove_last_constraint() undo the last constraint. returns self."><code>Sketch.remove_last_constraint()</code> <span>Undo the last constraint. Returns self.</span></li>
+<li data-search="sketch.remove_last_curve sketch.remove_last_curve() undo the last constraint-solver curve. returns self."><code>Sketch.remove_last_curve()</code> <span>Undo the last constraint-solver curve. Returns self.</span></li>
+<li data-search="sketch.repeat_circular sketch.repeat_circular(curves, center, count, total_angle=none, include_original=false) rotational copies about ``center``. skips the 0° instance unless ``include_original``."><code>Sketch.repeat_circular(curves, center, count, total_angle=None, include_original=False)</code> <span>Rotational copies about ``center``. Skips the 0° instance unless ``include_original``.</span></li>
+<li data-search="sketch.repeat_grid sketch.repeat_grid(curves, count_x, count_y, step_x, step_y, include_original=false) grid copies. skips the (0, 0) cell unless ``include_original``."><code>Sketch.repeat_grid(curves, count_x, count_y, step_x, step_y, include_original=False)</code> <span>Grid copies. Skips the (0, 0) cell unless ``include_original``.</span></li>
+<li data-search="sketch.set_construction sketch.set_construction(curve, construction=true) mark a sketch curve as construction geometry (excluded from extrude/loft)."><code>Sketch.set_construction(curve, construction=True)</code> <span>Mark a sketch curve as construction geometry (excluded from extrude/loft).</span></li>
+<li data-search="sketch.set_start sketch.set_start(point) set the strip pen without drawing (plotter ``append*`` methods)."><code>Sketch.set_start(point)</code> <span>Set the strip pen without drawing (plotter ``Append*`` methods).</span></li>
+<li data-search="sketch.show sketch.show(title=&#x27;camber&#x27;) open the sketch viewer on this sketch&#x27;s plane (default planes: xy, yz, zx)."><code>Sketch.show(title=&#x27;Camber&#x27;)</code> <span>Open the sketch viewer on this sketch&#x27;s plane (default planes: xy, yz, zx).</span></li>
+<li data-search="sketch.solve sketch.solve() run the constraint solver. returns self."><code>Sketch.solve()</code> <span>Run the constraint solver. Returns self.</span></li>
+<li data-search="sketch.tangent sketch.tangent(line_curve, circular_curve) line tangent to a circle/arc. returns self."><code>Sketch.tangent(line_curve, circular_curve)</code> <span>Line tangent to a circle/arc. Returns self.</span></li>
+<li data-search="sketch.tangent_circles sketch.tangent_circles(curve_a, curve_b) two circles/arcs tangent to each other. returns self."><code>Sketch.tangent_circles(curve_a, curve_b)</code> <span>Two circles/arcs tangent to each other. Returns self.</span></li>
+<li data-search="sketch.triangulate sketch.triangulate(max_deviation=-1, working_volume=none, slices=none) fill closed sketch contours. nested holes and islands are handled by the kernel polygon tree."><code>Sketch.triangulate(max_deviation=-1, working_volume=None, slices=None)</code> <span>Fill closed sketch contours. Nested holes and islands are handled by the kernel polygon tree.</span></li>
+<li data-search="sketch.vertical sketch.vertical(curve) keep a line parallel to sketch y. returns self."><code>Sketch.vertical(curve)</code> <span>Keep a line parallel to sketch Y. Returns self.</span></li>
+<li data-search="sketch.vertical_distance sketch.vertical_distance(point_a, point_b, value) signed vertical offset ``b.y - a.y = value``."><code>Sketch.vertical_distance(point_a, point_b, value)</code> <span>Signed vertical offset ``b.y - a.y = value``.</span></li>
+</ul>
+</article>
+<article class="sym" id="SketchCurve" data-search="sketchcurve class sketchcurve  # sketch.add_line / add_circle / add_arc named 2d curve from add_line / add_circle / add_arc. `curve @ 1.000` is &quot;name@1.000&quot;."><div class="k">class</div><h3><code>SketchCurve  # Sketch.add_line / add_circle / add_arc</code></h3><p>Named 2D curve from add_line / add_circle / add_arc. `curve @ 1.000` is &quot;name@1.000&quot;.</p>
+</article>
+<article class="sym" id="Solid" data-search="solid class solid  # part.extrude / union / cut / … triangle mesh owned by a part. operators: ``+`` union, ``-`` cut, ``&amp;`` intersect."><div class="k">class</div><h3><code>Solid  # Part.extrude / union / cut / …</code></h3><p>Triangle mesh owned by a Part. Operators: ``+`` union, ``-`` cut, ``&amp;`` intersect.</p>
+<ul>
+<li data-search="solid.__add__ solid + solid boolean union. result keeps this solid&#x27;s name."><code>Solid + Solid</code> <span>Boolean union. Result keeps this solid&#x27;s name.</span></li>
+<li data-search="solid.__and__ solid &amp; solid boolean intersection. result keeps this solid&#x27;s name."><code>Solid &amp; Solid</code> <span>Boolean intersection. Result keeps this solid&#x27;s name.</span></li>
+<li data-search="solid.__sub__ solid - solid boolean difference (this minus other). result keeps this solid&#x27;s name."><code>Solid - Solid</code> <span>Boolean difference (this minus other). Result keeps this solid&#x27;s name.</span></li>
+<li data-search="solid.is_volume solid.is_volume true if the kernel treats this mesh as a closed volume."><code>Solid.is_volume</code> <span>True if the kernel treats this mesh as a closed volume.</span></li>
+<li data-search="solid.name solid.name kernel solid name (also used as the default boolean result name)."><code>Solid.name</code> <span>Kernel solid name (also used as the default boolean result name).</span></li>
+<li data-search="solid.triangle_count solid.triangle_count number of triangles in the kernel mesh."><code>Solid.triangle_count</code> <span>Number of triangles in the kernel mesh.</span></li>
+<li data-search="solid.is_watertight solid.is_watertight() true if every edge is shared by exactly two triangles."><code>Solid.is_watertight()</code> <span>True if every edge is shared by exactly two triangles.</span></li>
+<li data-search="solid.mesh solid.mesh() raw kernel triangles: ``(points, triangles)`` as ``vec3`` and ``(i, j, k)``."><code>Solid.mesh()</code> <span>Raw kernel triangles: ``(points, triangles)`` as ``vec3`` and ``(i, j, k)``.</span></li>
+<li data-search="solid.save_iges solid.save_iges(path) write iges (faceted)."><code>Solid.save_iges(path)</code> <span>Write IGES (faceted).</span></li>
+<li data-search="solid.save_obj solid.save_obj(path) write wavefront obj."><code>Solid.save_obj(path)</code> <span>Write Wavefront OBJ.</span></li>
+<li data-search="solid.save_off solid.save_off(path) write off mesh."><code>Solid.save_off(path)</code> <span>Write OFF mesh.</span></li>
+<li data-search="solid.save_step solid.save_step(path) write step (faceted)."><code>Solid.save_step(path)</code> <span>Write STEP (faceted).</span></li>
+<li data-search="solid.save_stl solid.save_stl(path, binary=true) write stl. ``binary=false`` is ascii."><code>Solid.save_stl(path, binary=True)</code> <span>Write STL. ``binary=False`` is ASCII.</span></li>
+<li data-search="solid.show solid.show(title=&#x27;camber&#x27;) open the 3d viewer on this solid."><code>Solid.show(title=&#x27;Camber&#x27;)</code> <span>Open the 3D viewer on this solid.</span></li>
+<li data-search="solid.signed_volume solid.signed_volume() signed tetrahedron volume. negative means inward orientation."><code>Solid.signed_volume()</code> <span>Signed tetrahedron volume. Negative means inward orientation.</span></li>
+<li data-search="solid.volume solid.volume() absolute volume of a watertight mesh."><code>Solid.volume()</code> <span>Absolute volume of a watertight mesh.</span></li>
+</ul>
+</article>
+<article class="sym" id="ProjectedSketch" data-search="projectedsketch class projectedsketch  # part.project_sketch result of part.project_sketch: named 3d polylines on a mesh with surface normals."><div class="k">class</div><h3><code>ProjectedSketch  # Part.project_sketch</code></h3><p>Result of Part.project_sketch: named 3D polylines on a mesh with surface normals.</p>
+<ul>
+<li data-search="projectedsketch.curve_count projectedsketch.curve_count number of projected 3d polylines."><code>ProjectedSketch.curve_count</code> <span>Number of projected 3D polylines.</span></li>
+<li data-search="projectedsketch.name projectedsketch.name kernel name of the projected sketch."><code>ProjectedSketch.name</code> <span>Kernel name of the projected sketch.</span></li>
+<li data-search="projectedsketch.curve_name_at projectedsketch.curve_name_at(index) name of the polyline at ``index``."><code>ProjectedSketch.curve_name_at(index)</code> <span>Name of the polyline at ``index``.</span></li>
+</ul>
+</article>
+</section>
+<section id="pose"><h2>Pose</h2>
+<article class="sym" id="Frame" data-search="frame class frame(origin=none, x=none, y=none, z=none) world pose: origin + right-handed orthonormal axes (geoapi coordinatesystem)."><div class="k">class</div><h3><code>Frame(origin=None, x=None, y=None, z=None)</code></h3><p>World pose: origin + right-handed orthonormal axes (GeoAPI CoordinateSystem).</p>
+<ul>
+<li data-search="frame.from_plane frame.from_plane(origin, normal, x, y) same pose as curves.plane3d(origin, normal, x, y).getcoordinatesystem()."><code>Frame.from_plane(origin, normal, x, y)</code> <span>Same pose as Curves.Plane3D(origin, normal, x, y).GetCoordinateSystem().</span></li>
+<li data-search="frame.offset frame.offset(delta) translate origin by ``delta`` (vec3 or 3-tuple). axes unchanged."><code>Frame.offset(delta)</code> <span>Translate origin by ``delta`` (vec3 or 3-tuple). Axes unchanged.</span></li>
+<li data-search="frame.to_global frame.to_global(local) map a frame given in this local space into world. returns a frame."><code>Frame.to_global(local)</code> <span>Map a frame given in this local space into world. Returns a Frame.</span></li>
+<li data-search="frame.to_local frame.to_local(other) express ``other`` in this frame. returns a frame."><code>Frame.to_local(other)</code> <span>Express ``other`` in this frame. Returns a Frame.</span></li>
+</ul>
+</article>
+<article class="sym" id="Curve" data-search="curve class curve  # curve.line / helix / circle / arc / spiral 3d guide curve (line3d / helix3d / circle3d / arc3d / spiral3d)."><div class="k">class</div><h3><code>Curve  # Curve.line / helix / circle / arc / spiral</code></h3><p>3D guide curve (Line3D / Helix3D / Circle3D / Arc3D / Spiral3D).</p>
+<ul>
+<li data-search="curve.name curve.name kernel entity name."><code>Curve.name</code> <span>Kernel entity name.</span></li>
+<li data-search="curve.arc curve.arc(origin, x_axis, y_axis, radius, start_angle, sweep_angle, name=none) circular arc. angles in radians, from ``x_axis`` toward ``y_axis``."><code>Curve.arc(origin, x_axis, y_axis, radius, start_angle, sweep_angle, name=None)</code> <span>Circular arc. Angles in radians, from ``x_axis`` toward ``y_axis``.</span></li>
+<li data-search="curve.circle curve.circle(origin, x_axis, y_axis, radius, name=none) full circle in the x/y plane of the given axes."><code>Curve.circle(origin, x_axis, y_axis, radius, name=None)</code> <span>Full circle in the x/y plane of the given axes.</span></li>
+<li data-search="curve.helix curve.helix(origin, x_axis, y_axis, radius, pitch, turns, right_handed=true, name=none) helix in the plane of ``x_axis``/``y_axis``; axis is their cross. ``pitch`` is z per turn."><code>Curve.helix(origin, x_axis, y_axis, radius, pitch, turns, right_handed=True, name=None)</code> <span>Helix in the plane of ``x_axis``/``y_axis``; axis is their cross. ``pitch`` is z per turn.</span></li>
+<li data-search="curve.line curve.line(start, end, name=none) world-space line from ``start`` to ``end`` (vec3 or 3-tuple)."><code>Curve.line(start, end, name=None)</code> <span>World-space line from ``start`` to ``end`` (vec3 or 3-tuple).</span></li>
+<li data-search="curve.spiral curve.spiral(origin, x_axis, y_axis, start_radius, end_radius, z_per_turn, turns, right_handed=true, name=none) planar spiral with optional z advance (``z_per_turn``). radii in the x/y plane."><code>Curve.spiral(origin, x_axis, y_axis, start_radius, end_radius, z_per_turn, turns, right_handed=True, name=None)</code> <span>Planar spiral with optional z advance (``z_per_turn``). Radii in the x/y plane.</span></li>
+</ul>
+</article>
+<article class="sym" id="LoftOptions" data-search="loftoptions class loftoptions(native=none) geoapi loftoptions. enum fields are ints (see loft_style_*)."><div class="k">class</div><h3><code>LoftOptions(native=None)</code></h3><p>GeoAPI LoftOptions. Enum fields are ints (see LOFT_STYLE_*).</p>
+<ul>
+<li data-search="loftoptions.propeller_blade loftoptions.propeller_blade() preset loft options for a propeller blade (smooth + robust caps)."><code>LoftOptions.propeller_blade()</code> <span>Preset loft options for a propeller blade (smooth + robust caps).</span></li>
+</ul>
+</article>
+<article class="sym" id="frame_from_axis" data-search="frame_from_axis function frame_from_axis(origin, axis=&#x27;z&#x27;) pose whose local +z is world +axis (createcylinder extrudes along local +z)."><div class="k">function</div><h3><code>frame_from_axis(origin, axis=&#x27;z&#x27;)</code></h3><p>Pose whose local +Z is world +axis (CreateCylinder extrudes along local +Z).</p>
+</article>
+</section>
+<section id="assembly"><h2>Assembly</h2>
+<article class="sym" id="Assembly" data-search="assembly class assembly  # part.assembly rigid-part assembly solved by c# geo assembly constraints."><div class="k">class</div><h3><code>Assembly  # Part.assembly</code></h3><p>Rigid-part assembly solved by C# Geo Assembly constraints.</p>
+<ul>
+<li data-search="assembly.name assembly.name assembly instance name."><code>Assembly.name</code> <span>Assembly instance name.</span></li>
+<li data-search="assembly.solve_after_every_constraint assembly.solve_after_every_constraint if true, the kernel solves after each constraint."><code>Assembly.solve_after_every_constraint</code> <span>If True, the kernel solves after each constraint.</span></li>
+<li data-search="assembly.add_part assembly.add_part(solid, position=(0, 0, 0), orientation=(0, 0, 0, 1)) place ``solid`` at ``position`` with quaternion ``orientation`` (x,y,z,w). returns assemblypart."><code>Assembly.add_part(solid, position=(0, 0, 0), orientation=(0, 0, 0, 1))</code> <span>Place ``solid`` at ``position`` with quaternion ``orientation`` (x,y,z,w). Returns AssemblyPart.</span></li>
+<li data-search="assembly.angle assembly.angle(a, b, radians) angle between two axis datums, in radians."><code>Assembly.angle(a, b, radians)</code> <span>Angle between two axis datums, in radians.</span></li>
+<li data-search="assembly.coincident assembly.coincident(a, b, opposite_normals=none) coincide two matching datums (point/point, axis/axis, plane/plane)."><code>Assembly.coincident(a, b, opposite_normals=None)</code> <span>Coincide two matching datums (point/point, axis/axis, plane/plane).</span></li>
+<li data-search="assembly.concentric assembly.concentric(a, b) concentric axes/cylinders (two datums)."><code>Assembly.concentric(a, b)</code> <span>Concentric axes/cylinders (two datums).</span></li>
+<li data-search="assembly.distance assembly.distance(a, b, value) distance between two point datums."><code>Assembly.distance(a, b, value)</code> <span>Distance between two point datums.</span></li>
+<li data-search="assembly.fix assembly.fix(part) lock an assemblypart in world (ground)."><code>Assembly.fix(part)</code> <span>Lock an AssemblyPart in world (ground).</span></li>
+<li data-search="assembly.parallel assembly.parallel(a, b) keep two axis datums parallel."><code>Assembly.parallel(a, b)</code> <span>Keep two axis datums parallel.</span></li>
+<li data-search="assembly.perpendicular assembly.perpendicular(a, b) keep two axis datums perpendicular."><code>Assembly.perpendicular(a, b)</code> <span>Keep two axis datums perpendicular.</span></li>
+<li data-search="assembly.plane_frame assembly.plane_frame(reference) world frame of a named assembly plane, or none."><code>Assembly.plane_frame(reference)</code> <span>World Frame of a named assembly plane, or None.</span></li>
+<li data-search="assembly.show assembly.show(title=&#x27;camber&#x27;) open the 3d viewer on this assembly."><code>Assembly.show(title=&#x27;Camber&#x27;)</code> <span>Open the 3D viewer on this assembly.</span></li>
+<li data-search="assembly.solve assembly.solve() run the assembly constraint solver. returns a status string (may print it)."><code>Assembly.solve()</code> <span>Run the assembly constraint solver. Returns a status string (may print it).</span></li>
+</ul>
+</article>
+<article class="sym" id="AssemblyPart" data-search="assemblypart class assemblypart  # assembly.add_part an instance of a solid in an assembly (pose + named datums)."><div class="k">class</div><h3><code>AssemblyPart  # Assembly.add_part</code></h3><p>An instance of a Solid in an Assembly (pose + named datums).</p>
+<ul>
+<li data-search="assemblypart.name assemblypart.name instance name."><code>AssemblyPart.name</code> <span>Instance name.</span></li>
+<li data-search="assemblypart.pose assemblypart.pose world translation as ``(x, y, z)``."><code>AssemblyPart.pose</code> <span>World translation as ``(x, y, z)``.</span></li>
+<li data-search="assemblypart.axis assemblypart.axis(reference) axis datum from a named entity on this part (edge/axis string)."><code>AssemblyPart.axis(reference)</code> <span>Axis datum from a named entity on this part (edge/axis string).</span></li>
+<li data-search="assemblypart.axis_at assemblypart.axis_at(point, direction) axis through ``point`` along ``direction`` (world vec3)."><code>AssemblyPart.axis_at(point, direction)</code> <span>Axis through ``point`` along ``direction`` (world vec3).</span></li>
+<li data-search="assemblypart.plane assemblypart.plane(reference) plane datum from a named entity on this part."><code>AssemblyPart.plane(reference)</code> <span>Plane datum from a named entity on this part.</span></li>
+<li data-search="assemblypart.plane_at assemblypart.plane_at(origin, normal) plane datum at ``origin`` with world ``normal``."><code>AssemblyPart.plane_at(origin, normal)</code> <span>Plane datum at ``origin`` with world ``normal``.</span></li>
+<li data-search="assemblypart.point assemblypart.point(reference) point datum from a named entity on this part."><code>AssemblyPart.point(reference)</code> <span>Point datum from a named entity on this part.</span></li>
+<li data-search="assemblypart.point_at assemblypart.point_at(point) point datum at a world location."><code>AssemblyPart.point_at(point)</code> <span>Point datum at a world location.</span></li>
+</ul>
+</article>
+<article class="sym" id="AssemblyPointDatum" data-search="assemblypointdatum class assemblypointdatum  # assemblypart.point / point_at named point on an assembly part (for constraints)."><div class="k">class</div><h3><code>AssemblyPointDatum  # AssemblyPart.point / point_at</code></h3><p>Named point on an assembly part (for constraints).</p>
+</article>
+<article class="sym" id="AssemblyAxisDatum" data-search="assemblyaxisdatum class assemblyaxisdatum  # assemblypart.axis / axis_at named axis on an assembly part (for constraints)."><div class="k">class</div><h3><code>AssemblyAxisDatum  # AssemblyPart.axis / axis_at</code></h3><p>Named axis on an assembly part (for constraints).</p>
+</article>
+<article class="sym" id="AssemblyPlaneDatum" data-search="assemblyplanedatum class assemblyplanedatum  # assemblypart.plane / plane_at named plane on an assembly part (for constraints)."><div class="k">class</div><h3><code>AssemblyPlaneDatum  # AssemblyPart.plane / plane_at</code></h3><p>Named plane on an assembly part (for constraints).</p>
+</article>
+</section>
+<section id="vectors"><h2>Vectors</h2>
+<article class="sym" id="vec2" data-search="vec2 class vec2(x, y=none) 2d vector ``(x, y)``. accepts ``vec2(x, y)``, ``vec2((x, y))``, or another vec2."><div class="k">class</div><h3><code>vec2(x, y=None)</code></h3><p>2D vector ``(x, y)``. Accepts ``vec2(x, y)``, ``vec2((x, y))``, or another vec2.</p>
+<ul>
+<li data-search="vec2.__add__ vec2 + vec2 component-wise add. tuples work."><code>vec2 + vec2</code> <span>Component-wise add. Tuples work.</span></li>
+<li data-search="vec2.__mul__ vec2 * vec2 scalar or component-wise multiply."><code>vec2 * vec2</code> <span>Scalar or component-wise multiply.</span></li>
+<li data-search="vec2.__neg__ -vec2 negate both components."><code>-vec2</code> <span>Negate both components.</span></li>
+<li data-search="vec2.__sub__ vec2 - vec2 component-wise subtract."><code>vec2 - vec2</code> <span>Component-wise subtract.</span></li>
+<li data-search="vec2.copy vec2.copy() return a new vec2 with the same components."><code>vec2.copy()</code> <span>Return a new vec2 with the same components.</span></li>
+<li data-search="vec2.dot vec2.dot(other) dot product with a vec2 or 2-tuple."><code>vec2.dot(other)</code> <span>Dot product with a vec2 or 2-tuple.</span></li>
+<li data-search="vec2.norm vec2.norm() euclidean length."><code>vec2.norm()</code> <span>Euclidean length.</span></li>
+<li data-search="vec2.tolist vec2.tolist() return ``[x, y]``."><code>vec2.tolist()</code> <span>Return ``[x, y]``.</span></li>
+</ul>
+</article>
+<article class="sym" id="vec3" data-search="vec3 class vec3(x, y=none, z=none) 3d vector ``(x, y, z)``. ``vec3(s)`` fills all axes; tuples and vec3 copy."><div class="k">class</div><h3><code>vec3(x, y=None, z=None)</code></h3><p>3D vector ``(x, y, z)``. ``vec3(s)`` fills all axes; tuples and vec3 copy.</p>
+<ul>
+<li data-search="vec3.__add__ vec3 + vec3 component-wise add. tuples work."><code>vec3 + vec3</code> <span>Component-wise add. Tuples work.</span></li>
+<li data-search="vec3.__mul__ vec3 * vec3 scalar or component-wise multiply."><code>vec3 * vec3</code> <span>Scalar or component-wise multiply.</span></li>
+<li data-search="vec3.__neg__ -vec3 negate all components."><code>-vec3</code> <span>Negate all components.</span></li>
+<li data-search="vec3.__sub__ vec3 - vec3 component-wise subtract."><code>vec3 - vec3</code> <span>Component-wise subtract.</span></li>
+<li data-search="vec3.__truediv__ vec3 / vec3 divide by a scalar."><code>vec3 / vec3</code> <span>Divide by a scalar.</span></li>
+<li data-search="vec3.copy vec3.copy() return a new vec3 with the same components."><code>vec3.copy()</code> <span>Return a new vec3 with the same components.</span></li>
+<li data-search="vec3.cross vec3.cross(other) right-handed cross product. returns vec3."><code>vec3.cross(other)</code> <span>Right-handed cross product. Returns vec3.</span></li>
+<li data-search="vec3.dot vec3.dot(other) dot product with a vec3 or 3-tuple."><code>vec3.dot(other)</code> <span>Dot product with a vec3 or 3-tuple.</span></li>
+<li data-search="vec3.norm vec3.norm() euclidean length."><code>vec3.norm()</code> <span>Euclidean length.</span></li>
+<li data-search="vec3.normalized vec3.normalized() unit vector, or (0,0,0) if length is 0."><code>vec3.normalized()</code> <span>Unit vector, or (0,0,0) if length is 0.</span></li>
+<li data-search="vec3.tolist vec3.tolist() return ``[x, y, z]``."><code>vec3.tolist()</code> <span>Return ``[x, y, z]``.</span></li>
+</ul>
+</article>
+</section>
+<section id="geom"><h2>Geom</h2>
+<article class="sym" id="RayHit" data-search="rayhit class rayhit  # part.raycast nearest hit from ``part.raycast``. ``t`` is 0 at the origin and 1 at the far end of the cast segment used by the kernel."><div class="k">class</div><h3><code>RayHit  # Part.raycast</code></h3><p>Nearest hit from ``Part.raycast``. ``t`` is 0 at the origin and 1 at the far end of the cast segment used by the kernel.</p>
+</article>
+<article class="sym" id="triangulate" data-search="triangulate function triangulate(loops, *holes, working_volume=none, slices=none) fill polygons. nested holes and islands are classified by a polygon tree."><div class="k">function</div><h3><code>triangulate(loops, *holes, working_volume=None, slices=None)</code></h3><p>Fill polygons. Nested holes and islands are classified by a polygon tree.</p>
+</article>
+<article class="sym" id="signed_area" data-search="signed_area function signed_area(loop, working_volume=none, slices=none) shoelace area on the working-volume lattice, converted back to world units. positive is ccw. pass the same ``working_volume`` as ``triangulate`` when comparing."><div class="k">function</div><h3><code>signed_area(loop, working_volume=None, slices=None)</code></h3><p>Shoelace area on the working-volume lattice, converted back to world units. Positive is CCW. Pass the same ``working_volume`` as ``triangulate`` when comparing.</p>
+</article>
+<article class="sym" id="is_ccw" data-search="is_ccw function is_ccw(loop, working_volume=none, slices=none) true if ``signed_area(loop)`` is positive (ccw in sketch xy)."><div class="k">function</div><h3><code>is_ccw(loop, working_volume=None, slices=None)</code></h3><p>True if ``signed_area(loop)`` is positive (CCW in sketch XY).</p>
+</article>
+<article class="sym" id="point_in_polygon" data-search="point_in_polygon function point_in_polygon(loop, point, on_edge=true, working_volume=none, slices=none) true if ``point`` is inside ``loop``. boundary counts as inside unless ``on_edge=false``."><div class="k">function</div><h3><code>point_in_polygon(loop, point, on_edge=True, working_volume=None, slices=None)</code></h3><p>True if ``point`` is inside ``loop``. Boundary counts as inside unless ``on_edge=False``.</p>
+</article>
+<article class="sym" id="convex_hull" data-search="convex_hull function convex_hull(points, working_volume=none, slices=none) 2d convex hull as a ccw list of ``vec2`` (no closing duplicate)."><div class="k">function</div><h3><code>convex_hull(points, working_volume=None, slices=None)</code></h3><p>2D convex hull as a CCW list of ``vec2`` (no closing duplicate).</p>
+</article>
+<article class="sym" id="tessellate_bezier" data-search="tessellate_bezier function tessellate_bezier(controls, max_deviation=0.01) adaptive polyline for a 2d bezier given control points."><div class="k">function</div><h3><code>tessellate_bezier(controls, max_deviation=0.01)</code></h3><p>Adaptive polyline for a 2D Bezier given control points.</p>
+</article>
+<article class="sym" id="text_outlines" data-search="text_outlines function text_outlines(text, origin=(0, 0), family=&#x27;arial&#x27;, em_size=0.2, bold=false, italic=false) tessellated glyph contours as a list of loops (``vec2``)."><div class="k">function</div><h3><code>text_outlines(text, origin=(0, 0), family=&#x27;Arial&#x27;, em_size=0.2, bold=False, italic=False)</code></h3><p>Tessellated glyph contours as a list of loops (``vec2``).</p>
+</article>
+</section>
+<section id="viewer"><h2>Viewer</h2>
+<article class="sym" id="show" data-search="show function show(obj, title=&#x27;camber&#x27;) open the 3d viewer (pyglet + imgui). requires: pip install pyglet imgui[pyglet] numpy."><div class="k">function</div><h3><code>show(obj, title=&#x27;Camber&#x27;)</code></h3><p>Open the 3D viewer (pyglet + imgui). Requires: pip install pyglet imgui[pyglet] numpy.</p>
+</article>
+</section>
+<section id="constants"><h2>Constants</h2>
+<article class="sym" id="BOOLEAN_UNION" data-search="boolean_union const boolean_union = 0 csg union. same as solid + solid / part.union."><div class="k">const</div><h3><code>BOOLEAN_UNION = 0</code></h3><p>CSG union. Same as Solid + Solid / Part.union.</p>
+</article>
+<article class="sym" id="BOOLEAN_DIFFERENCE" data-search="boolean_difference const boolean_difference = 1 csg difference. same as solid - solid / part.cut."><div class="k">const</div><h3><code>BOOLEAN_DIFFERENCE = 1</code></h3><p>CSG difference. Same as Solid - Solid / Part.cut.</p>
+</article>
+<article class="sym" id="BOOLEAN_INTERSECT" data-search="boolean_intersect const boolean_intersect = 2 csg intersection. same as solid &amp; solid / part.intersect."><div class="k">const</div><h3><code>BOOLEAN_INTERSECT = 2</code></h3><p>CSG intersection. Same as Solid &amp; Solid / Part.intersect.</p>
+</article>
+</section>
+<section id="cadquery-compat"><h2>CadQuery compat</h2>
+<article class="sym" id="cqcompat-Workplane" data-search="cqcompat.workplane class cqcompat.workplane(inplane=&#x27;xy&#x27;, origin=none, obj=none, part=none, size=1000.0, tolerance=0.01) cadquery-shaped modelling context backed by one shared camber ``part``."><div class="k">class</div><h3><code>cqcompat.Workplane(inPlane=&#x27;XY&#x27;, origin=None, obj=None, part=None, size=1000.0, tolerance=0.01)</code></h3><p>CadQuery-shaped modelling context backed by one shared camber ``Part``.</p>
+<ul>
+<li data-search="cqcompat.workplane.__add__ workplane + workplane same as ``union``."><code>Workplane + Workplane</code> <span>Same as ``union``.</span></li>
+<li data-search="cqcompat.workplane.__and__ workplane &amp; workplane same as ``intersect``."><code>Workplane &amp; Workplane</code> <span>Same as ``intersect``.</span></li>
+<li data-search="cqcompat.workplane.__sub__ workplane - workplane same as ``cut``."><code>Workplane - Workplane</code> <span>Same as ``cut``.</span></li>
+<li data-search="cqcompat.workplane.box workplane.box(length, width, height, centered=true, combine=true, clean=true) cuboid along the current workplane. ``clean`` is unused."><code>Workplane.box(length, width, height, centered=True, combine=True, clean=True)</code> <span>Cuboid along the current workplane. ``clean`` is unused.</span></li>
+<li data-search="cqcompat.workplane.cborehole workplane.cborehole(diameter, cborediameter, cboredepth, depth=none, clean=true) counterbore: thru/blind hole then a larger blind cut."><code>Workplane.cboreHole(diameter, cboreDiameter, cboreDepth, depth=None, clean=True)</code> <span>Counterbore: thru/blind hole then a larger blind cut.</span></li>
+<li data-search="cqcompat.workplane.center workplane.center(x, y) shift the workplane origin in the current xy."><code>Workplane.center(x, y)</code> <span>Shift the workplane origin in the current XY.</span></li>
+<li data-search="cqcompat.workplane.chamfer workplane.chamfer(length, length2=none) chamfer currently selected edges. asymmetric ``length2`` is not implemented."><code>Workplane.chamfer(length, length2=None)</code> <span>Chamfer currently selected edges. Asymmetric ``length2`` is not implemented.</span></li>
+<li data-search="cqcompat.workplane.circle workplane.circle(radius, forconstruction=false) pending circle. construction flag is ignored (not drawn)."><code>Workplane.circle(radius, forConstruction=False)</code> <span>Pending circle. Construction flag is ignored (not drawn).</span></li>
+<li data-search="cqcompat.workplane.close workplane.close() close the open path into a pending wire."><code>Workplane.close()</code> <span>Close the open path into a pending wire.</span></li>
+<li data-search="cqcompat.workplane.cut workplane.cut(tocut, clean=true, tol=none) boolean cut: this solid minus ``tocut`` (workplane or solid)."><code>Workplane.cut(toCut, clean=True, tol=None)</code> <span>Boolean cut: this solid minus ``toCut`` (Workplane or Solid).</span></li>
+<li data-search="cqcompat.workplane.cutblind workplane.cutblind(until, clean=true, both=false, taper=0) cut pending wires to a depth. ``taper`` is not implemented."><code>Workplane.cutBlind(until, clean=True, both=False, taper=0)</code> <span>Cut pending wires to a depth. ``taper`` is not implemented.</span></li>
+<li data-search="cqcompat.workplane.cutthruall workplane.cutthruall(clean=true, taper=0) cut pending wires through the part aabb. ``taper`` is not implemented."><code>Workplane.cutThruAll(clean=True, taper=0)</code> <span>Cut pending wires through the part AABB. ``taper`` is not implemented.</span></li>
+<li data-search="cqcompat.workplane.cylinder workplane.cylinder(height, radius, direct=none, angle=360, centered=true, combine=true, clean=true) cylinder. ``direct`` is the axis (default workplane z). full 360° only."><code>Workplane.cylinder(height, radius, direct=None, angle=360, centered=True, combine=True, clean=True)</code> <span>Cylinder. ``direct`` is the axis (default workplane Z). Full 360° only.</span></li>
+<li data-search="cqcompat.workplane.each workplane.each(callback, uselocalcoordinates=false, combine=true, clean=true) not implemented."><code>Workplane.each(callback, useLocalCoordinates=False, combine=True, clean=True)</code> <span>Not implemented.</span></li>
+<li data-search="cqcompat.workplane.eachpoint workplane.eachpoint(callback, uselocalcoordinates=false, combine=true, clean=true) not implemented."><code>Workplane.eachpoint(callback, useLocalCoordinates=False, combine=True, clean=True)</code> <span>Not implemented.</span></li>
+<li data-search="cqcompat.workplane.edges workplane.edges(selector=none) select registered edges (``|z``, ``#z``, named patches)."><code>Workplane.edges(selector=None)</code> <span>Select registered edges (``|Z``, ``#Z``, named patches).</span></li>
+<li data-search="cqcompat.workplane.extrude workplane.extrude(until, combine=true, clean=true, both=false, taper=0) extrude pending 2d wires. ``taper`` is not implemented."><code>Workplane.extrude(until, combine=True, clean=True, both=False, taper=0)</code> <span>Extrude pending 2D wires. ``taper`` is not implemented.</span></li>
+<li data-search="cqcompat.workplane.faces workplane.faces(selector=none) select registered faces (``&gt;z``, ``|z``, named patches)."><code>Workplane.faces(selector=None)</code> <span>Select registered faces (``&gt;Z``, ``|Z``, named patches).</span></li>
+<li data-search="cqcompat.workplane.fillet workplane.fillet(radius) fillet currently selected edges."><code>Workplane.fillet(radius)</code> <span>Fillet currently selected edges.</span></li>
+<li data-search="cqcompat.workplane.hline workplane.hline(distance) horizontal relative line."><code>Workplane.hLine(distance)</code> <span>Horizontal relative line.</span></li>
+<li data-search="cqcompat.workplane.hlineto workplane.hlineto(x) horizontal line to absolute x."><code>Workplane.hLineTo(x)</code> <span>Horizontal line to absolute X.</span></li>
+<li data-search="cqcompat.workplane.hole workplane.hole(diameter, depth=none, clean=true) circular hole. ``depth=none`` means thru-all."><code>Workplane.hole(diameter, depth=None, clean=True)</code> <span>Circular hole. ``depth=None`` means thru-all.</span></li>
+<li data-search="cqcompat.workplane.intersect workplane.intersect(tointersect, clean=true, tol=none) boolean intersection with another workplane or solid."><code>Workplane.intersect(toIntersect, clean=True, tol=None)</code> <span>Boolean intersection with another Workplane or Solid.</span></li>
+<li data-search="cqcompat.workplane.largestdimension workplane.largestdimension() diagonal of the part aabb used when this workplane created a part."><code>Workplane.largestDimension()</code> <span>Diagonal of the Part AABB used when this Workplane created a Part.</span></li>
+<li data-search="cqcompat.workplane.line workplane.line(xdist, ydist) relative line from the cursor."><code>Workplane.line(xDist, yDist)</code> <span>Relative line from the cursor.</span></li>
+<li data-search="cqcompat.workplane.lineto workplane.lineto(x, y) line from the cursor to an absolute 2d point."><code>Workplane.lineTo(x, y)</code> <span>Line from the cursor to an absolute 2D point.</span></li>
+<li data-search="cqcompat.workplane.loft workplane.loft(ruled=false, combine=true, clean=true) loft stacked ``workplane()`` sections. ``ruled=true`` uses loft_style_ruled."><code>Workplane.loft(ruled=False, combine=True, clean=True)</code> <span>Loft stacked ``workplane()`` sections. ``ruled=True`` uses LOFT_STYLE_RULED.</span></li>
+<li data-search="cqcompat.workplane.mirror workplane.mirror(mirrorplane=&#x27;xy&#x27;, basepointvector=(0, 0, 0), union=false) not implemented (kernel has no solid transform yet)."><code>Workplane.mirror(mirrorPlane=&#x27;XY&#x27;, basePointVector=(0, 0, 0), union=False)</code> <span>Not implemented (kernel has no solid transform yet).</span></li>
+<li data-search="cqcompat.workplane.move workplane.move(xdist, ydist) relative move of the 2d cursor."><code>Workplane.move(xDist, yDist)</code> <span>Relative move of the 2D cursor.</span></li>
+<li data-search="cqcompat.workplane.moveto workplane.moveto(x, y) set the 2d cursor and start a new open path."><code>Workplane.moveTo(x, y)</code> <span>Set the 2D cursor and start a new open path.</span></li>
+<li data-search="cqcompat.workplane.offset2d workplane.offset2d(d, kind=&#x27;arc&#x27;, forconstruction=false) not implemented on workplane; use camber.sketch.offset instead."><code>Workplane.offset2D(d, kind=&#x27;arc&#x27;, forConstruction=False)</code> <span>Not implemented on Workplane; use camber.Sketch.offset instead.</span></li>
+<li data-search="cqcompat.workplane.placesketch workplane.placesketch(*sketches) append wires from ``cqcompat.sketch`` instances as pending geometry."><code>Workplane.placeSketch(*sketches)</code> <span>Append wires from ``cqcompat.Sketch`` instances as pending geometry.</span></li>
+<li data-search="cqcompat.workplane.polararray workplane.polararray(radius, startangle, angle, count, fill=true, rotate=true) polar array of locations. angles in degrees. ``rotate`` is unused."><code>Workplane.polarArray(radius, startAngle, angle, count, fill=True, rotate=True)</code> <span>Polar array of locations. Angles in degrees. ``rotate`` is unused.</span></li>
+<li data-search="cqcompat.workplane.polygon workplane.polygon(nsides, diameter, forconstruction=false) regular polygon inscribed in a circle of ``diameter``."><code>Workplane.polygon(nSides, diameter, forConstruction=False)</code> <span>Regular polygon inscribed in a circle of ``diameter``.</span></li>
+<li data-search="cqcompat.workplane.polyline workplane.polyline(listofxy, includecurrent=false) open path through 2d points (does not close)."><code>Workplane.polyline(listOfXY, includeCurrent=False)</code> <span>Open path through 2D points (does not close).</span></li>
+<li data-search="cqcompat.workplane.pushpoints workplane.pushpoints(pntlist) set 2d locations for the next primitive (rect/circle/box)."><code>Workplane.pushPoints(pntList)</code> <span>Set 2D locations for the next primitive (rect/circle/box).</span></li>
+<li data-search="cqcompat.workplane.radiusarc workplane.radiusarc(endpoint, radius) arc from the cursor to ``endpoint`` with signed radius (ccw if positive)."><code>Workplane.radiusArc(endPoint, radius)</code> <span>Arc from the cursor to ``endPoint`` with signed radius (CCW if positive).</span></li>
+<li data-search="cqcompat.workplane.rarray workplane.rarray(xspacing, yspacing, xcount, ycount, center=true) rectangular array of locations in the workplane."><code>Workplane.rarray(xSpacing, ySpacing, xCount, yCount, center=True)</code> <span>Rectangular array of locations in the workplane.</span></li>
+<li data-search="cqcompat.workplane.rect workplane.rect(xlen, ylen, centered=true, forconstruction=false) pending rectangle. construction flag is ignored (not drawn)."><code>Workplane.rect(xLen, yLen, centered=True, forConstruction=False)</code> <span>Pending rectangle. Construction flag is ignored (not drawn).</span></li>
+<li data-search="cqcompat.workplane.revolve workplane.revolve(angledegrees=360, axisstart=none, axisend=none, combine=true, clean=true) revolve pending wires. default axis is workplane x through the origin."><code>Workplane.revolve(angleDegrees=360, axisStart=None, axisEnd=None, combine=True, clean=True)</code> <span>Revolve pending wires. Default axis is workplane X through the origin.</span></li>
+<li data-search="cqcompat.workplane.rotate workplane.rotate(axisstart, axisend, angledegrees) not implemented (kernel has no solid transform yet)."><code>Workplane.rotate(axisStart, axisEnd, angleDegrees)</code> <span>Not implemented (kernel has no solid transform yet).</span></li>
+<li data-search="cqcompat.workplane.shell workplane.shell(thickness) not implemented (no offset-solid in the kernel yet)."><code>Workplane.shell(thickness)</code> <span>Not implemented (no offset-solid in the kernel yet).</span></li>
+<li data-search="cqcompat.workplane.shells workplane.shells(selector=none) not implemented (needs brep topology)."><code>Workplane.shells(selector=None)</code> <span>Not implemented (needs BRep topology).</span></li>
+<li data-search="cqcompat.workplane.show workplane.show(title=&#x27;camber&#x27;) open the 3d viewer on ``val()``."><code>Workplane.show(title=&#x27;Camber&#x27;)</code> <span>Open the 3D viewer on ``val()``.</span></li>
+<li data-search="cqcompat.workplane.sketch workplane.sketch() enter a cadquery-shaped 2d sketch; call ``finalize()`` to resume."><code>Workplane.sketch()</code> <span>Enter a CadQuery-shaped 2D Sketch; call ``finalize()`` to resume.</span></li>
+<li data-search="cqcompat.workplane.slot2d workplane.slot2d(length, diameter, angle=0) stadium outline. ``angle`` is degrees in the workplane."><code>Workplane.slot2D(length, diameter, angle=0)</code> <span>Stadium outline. ``angle`` is degrees in the workplane.</span></li>
+<li data-search="cqcompat.workplane.solids workplane.solids(selector=none) no-op selector; returns this workplane (single solid)."><code>Workplane.solids(selector=None)</code> <span>No-op selector; returns this Workplane (single solid).</span></li>
+<li data-search="cqcompat.workplane.sphere workplane.sphere(radius, direct=none, angle1=-90, angle2=90, angle3=360, centered=true, combine=true, clean=true) full sphere at the workplane origin. partial spheres are not implemented."><code>Workplane.sphere(radius, direct=None, angle1=-90, angle2=90, angle3=360, centered=True, combine=True, clean=True)</code> <span>Full sphere at the workplane origin. Partial spheres are not implemented.</span></li>
+<li data-search="cqcompat.workplane.spline workplane.spline(listofxy, tangents=none, periodic=false, includecurrent=false) not implemented on workplane; use camber.sketch.add_spline instead."><code>Workplane.spline(listOfXY, tangents=None, periodic=False, includeCurrent=False)</code> <span>Not implemented on Workplane; use camber.Sketch.add_spline instead.</span></li>
+<li data-search="cqcompat.workplane.sweep workplane.sweep(path, combine=true, clean=true) sweep pending profile along ``path`` (a workplane with an open 2d path)."><code>Workplane.sweep(path, combine=True, clean=True)</code> <span>Sweep pending profile along ``path`` (a Workplane with an open 2D path).</span></li>
+<li data-search="cqcompat.workplane.threepointarc workplane.threepointarc(point1, point2) arc from the cursor through ``point1`` to ``point2``."><code>Workplane.threePointArc(point1, point2)</code> <span>Arc from the cursor through ``point1`` to ``point2``.</span></li>
+<li data-search="cqcompat.workplane.transformed workplane.transformed(rotate=(0, 0, 0), offset=(0, 0, 0)) rotate then translate the workplane (degrees, local xyz)."><code>Workplane.transformed(rotate=(0, 0, 0), offset=(0, 0, 0))</code> <span>Rotate then translate the workplane (degrees, local XYZ).</span></li>
+<li data-search="cqcompat.workplane.translate workplane.translate(vec) not implemented (kernel has no solid transform yet)."><code>Workplane.translate(vec)</code> <span>Not implemented (kernel has no solid transform yet).</span></li>
+<li data-search="cqcompat.workplane.twistextrude workplane.twistextrude(distance, angledegrees, combine=true, clean=true) extrude with twist (degrees along the height)."><code>Workplane.twistExtrude(distance, angleDegrees, combine=True, clean=True)</code> <span>Extrude with twist (degrees along the height).</span></li>
+<li data-search="cqcompat.workplane.union workplane.union(tounion=none, clean=true, glue=false, tol=none) boolean union with another workplane or solid."><code>Workplane.union(toUnion=None, clean=True, glue=False, tol=None)</code> <span>Boolean union with another Workplane or Solid.</span></li>
+<li data-search="cqcompat.workplane.val workplane.val() the current camber solid (raises if none)."><code>Workplane.val()</code> <span>The current camber Solid (raises if none).</span></li>
+<li data-search="cqcompat.workplane.vals workplane.vals() list of solids (empty or one item)."><code>Workplane.vals()</code> <span>List of solids (empty or one item).</span></li>
+<li data-search="cqcompat.workplane.vertices workplane.vertices(selector=none) not implemented (needs brep topology)."><code>Workplane.vertices(selector=None)</code> <span>Not implemented (needs BRep topology).</span></li>
+<li data-search="cqcompat.workplane.vline workplane.vline(distance) vertical relative line."><code>Workplane.vLine(distance)</code> <span>Vertical relative line.</span></li>
+<li data-search="cqcompat.workplane.vlineto workplane.vlineto(y) vertical line to absolute y."><code>Workplane.vLineTo(y)</code> <span>Vertical line to absolute Y.</span></li>
+<li data-search="cqcompat.workplane.wires workplane.wires(selector=none) not implemented (needs brep topology)."><code>Workplane.wires(selector=None)</code> <span>Not implemented (needs BRep topology).</span></li>
+<li data-search="cqcompat.workplane.workplane workplane.workplane(offset=0, invert=false, centeroption=&#x27;centerofmass&#x27;) new plane offset along +z of the current plane or selected face."><code>Workplane.workplane(offset=0, invert=False, centerOption=&#x27;CenterOfMass&#x27;)</code> <span>New plane offset along +Z of the current plane or selected face.</span></li>
+</ul>
+</article>
+<article class="sym" id="cqcompat-Sketch" data-search="cqcompat.sketch class cqcompat.sketch  # workplane.sketch cadquery-shaped 2d sketch. ``finalize()`` returns the parent workplane."><div class="k">class</div><h3><code>cqcompat.Sketch  # Workplane.sketch</code></h3><p>CadQuery-shaped 2D sketch. ``finalize()`` returns the parent Workplane.</p>
+<ul>
+<li data-search="cqcompat.sketch.circle sketch.circle(radius, mode=&#x27;a&#x27;) add a circle at the parent workplane locations. ``mode`` is unused."><code>Sketch.circle(radius, mode=&#x27;a&#x27;)</code> <span>Add a circle at the parent Workplane locations. ``mode`` is unused.</span></li>
+<li data-search="cqcompat.sketch.fillet sketch.fillet(radius) not implemented on cqcompat.sketch."><code>Sketch.fillet(radius)</code> <span>Not implemented on cqcompat.Sketch.</span></li>
+<li data-search="cqcompat.sketch.finalize sketch.finalize() return a workplane with this sketch&#x27;s wires pending."><code>Sketch.finalize()</code> <span>Return a Workplane with this sketch&#x27;s wires pending.</span></li>
+<li data-search="cqcompat.sketch.push sketch.push(locs) set 2d locations (same as workplane.pushpoints)."><code>Sketch.push(locs)</code> <span>Set 2D locations (same as Workplane.pushPoints).</span></li>
+<li data-search="cqcompat.sketch.rect sketch.rect(xlen, ylen, centered=true, mode=&#x27;a&#x27;) add a rectangle at the parent workplane locations. ``mode`` is unused."><code>Sketch.rect(xLen, yLen, centered=True, mode=&#x27;a&#x27;)</code> <span>Add a rectangle at the parent Workplane locations. ``mode`` is unused.</span></li>
+<li data-search="cqcompat.sketch.vertices sketch.vertices(selector=none) not implemented on cqcompat.sketch."><code>Sketch.vertices(selector=None)</code> <span>Not implemented on cqcompat.Sketch.</span></li>
+</ul>
+</article>
+<article class="sym" id="cqcompat-Vector" data-search="cqcompat.vector class cqcompat.vector(x, y=none, z=none) 3d vector ``(x, y, z)``. ``vec3(s)`` fills all axes; tuples and vec3 copy."><div class="k">class</div><h3><code>cqcompat.Vector(x, y=None, z=None)</code></h3><p>3D vector ``(x, y, z)``. ``vec3(s)`` fills all axes; tuples and vec3 copy.</p>
+<ul>
+<li data-search="cqcompat.vector.__add__ vector + vector component-wise add. tuples work."><code>Vector + Vector</code> <span>Component-wise add. Tuples work.</span></li>
+<li data-search="cqcompat.vector.__mul__ vector * vector scalar or component-wise multiply."><code>Vector * Vector</code> <span>Scalar or component-wise multiply.</span></li>
+<li data-search="cqcompat.vector.__neg__ -vector negate all components."><code>-vector</code> <span>Negate all components.</span></li>
+<li data-search="cqcompat.vector.__sub__ vector - vector component-wise subtract."><code>Vector - Vector</code> <span>Component-wise subtract.</span></li>
+<li data-search="cqcompat.vector.__truediv__ vector / vector divide by a scalar."><code>Vector / Vector</code> <span>Divide by a scalar.</span></li>
+<li data-search="cqcompat.vector.copy vector.copy() return a new vec3 with the same components."><code>Vector.copy()</code> <span>Return a new vec3 with the same components.</span></li>
+<li data-search="cqcompat.vector.cross vector.cross(other) right-handed cross product. returns vec3."><code>Vector.cross(other)</code> <span>Right-handed cross product. Returns vec3.</span></li>
+<li data-search="cqcompat.vector.dot vector.dot(other) dot product with a vec3 or 3-tuple."><code>Vector.dot(other)</code> <span>Dot product with a vec3 or 3-tuple.</span></li>
+<li data-search="cqcompat.vector.norm vector.norm() euclidean length."><code>Vector.norm()</code> <span>Euclidean length.</span></li>
+<li data-search="cqcompat.vector.normalized vector.normalized() unit vector, or (0,0,0) if length is 0."><code>Vector.normalized()</code> <span>Unit vector, or (0,0,0) if length is 0.</span></li>
+<li data-search="cqcompat.vector.tolist vector.tolist() return ``[x, y, z]``."><code>Vector.tolist()</code> <span>Return ``[x, y, z]``.</span></li>
+</ul>
+</article>
+<article class="sym" id="cqcompat-named_plane" data-search="cqcompat.named_plane function cqcompat.named_plane(name, origin=none) return a camber frame for a cadquery plane name (``xy``, ``front``, …)."><div class="k">function</div><h3><code>cqcompat.named_plane(name, origin=None)</code></h3><p>Return a camber Frame for a CadQuery plane name (``XY``, ``front``, …).</p>
+</article>
+</section>
+<div id="no-results">No API symbols match this search.</div>
+</main>
+</div>
+<script>
+const q = document.getElementById("q");
+const symbols = Array.from(document.querySelectorAll(".sym"));
+const sections = Array.from(document.querySelectorAll("main section"));
+const navSymbols = Array.from(document.querySelectorAll(".nav-symbol"));
+const resultCount = document.getElementById("result-count");
+const noResults = document.getElementById("no-results");
+
+function matches(text, terms) {
+  return terms.every(term => text.includes(term));
+}
+
+function applyFilter() {
+  const terms = q.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  let visibleCount = 0;
+  symbols.forEach(el => {
+    const ownHit = !terms.length || matches(el.dataset.search || "", terms);
+    let memberHit = false;
+    el.querySelectorAll("li").forEach(li => {
+      const hit = !terms.length || ownHit || matches(li.dataset.search || "", terms);
+      li.classList.toggle("hide", !hit);
+      memberHit = memberHit || hit;
+    });
+    const hit = ownHit || memberHit;
+    el.classList.toggle("hide", !hit);
+    if (hit) visibleCount++;
+  });
+
+  sections.forEach(sec => {
+    const any = Array.from(sec.querySelectorAll(".sym"))
+      .some(el => !el.classList.contains("hide"));
+    sec.classList.toggle("hide", !any);
+  });
+
+  navSymbols.forEach(link => {
+    const target = document.getElementById(link.dataset.target);
+    link.classList.toggle("hide", !target || target.classList.contains("hide"));
+  });
+  document.querySelectorAll(".nav-group").forEach(group => {
+    const section = document.getElementById(group.dataset.section);
+    group.classList.toggle("hide", !section || section.classList.contains("hide"));
+  });
+
+  resultCount.textContent = visibleCount + (visibleCount === 1 ? " symbol" : " symbols");
+  noResults.classList.toggle("show", visibleCount === 0);
+}
+
+q.addEventListener("input", applyFilter);
+q.addEventListener("search", applyFilter);
+document.addEventListener("keydown", event => {
+  if (event.key === "/" && document.activeElement !== q) {
+    event.preventDefault();
+    q.focus();
+  } else if (event.key === "Escape" && document.activeElement === q) {
+    q.value = "";
+    applyFilter();
+    q.blur();
+  }
+});
+applyFilter();
+</script>
+</body>
+</html>

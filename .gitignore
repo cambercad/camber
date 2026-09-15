@@ -1,0 +1,47 @@
+# Build (.NET)
+.vs/
+**/bin/
+**/obj/
+TestResults/
+packages/
+*.nupkg
+
+# Python
+.venv/
+venv/
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Wheels / publish staging (repo-root dist/ holds Win + Linux wheels)
+dist/
+**/*.whl
+Geo.Python/dist/
+Geo.Python/_wheel_stage/
+Geo.Python/_wheel_venv/
+Geo.Python/python_project_root/
+Geo.Python/python-package-root/
+
+# Viewer / local UI state
+**/.polyscope.ini
+**/imgui.ini
+
+# Local overrides
+Directory.Build.user.props
+Directory.Build.user.targets
+*.user
+*.suo
+*.rsuser
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# IDE
+.idea/

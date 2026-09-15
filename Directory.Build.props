@@ -1,0 +1,8 @@
+<Project>
+  <PropertyGroup>
+    <Nullable>disable</Nullable>
+    <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
+    <PublishRepositoryUrl>false</PublishRepositoryUrl>
+    <NoWarn>$(NoWarn);WFO1000</NoWarn>
+  </PropertyGroup>
+</Project>
