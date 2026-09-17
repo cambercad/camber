@@ -81,7 +81,7 @@ namespace GeoCore
 
     public struct BigRationalHybrid : IEquatable<BigRationalHybrid>
     {
-        private BigRationalClass rationalValue; // Lazy initialization for performance
+        private BigRationalClass rationalValue; // Shared by ordinary struct copies; detach before mutation
         private long value;
         private bool isSimplified;
         private bool isLongValue; // true if long value is active, false if rationalValue is active
@@ -92,14 +92,14 @@ namespace GeoCore
         public BigRationalHybrid(int value)
         {
             this.value = value;
-            rationalValue = null; // Lazy initialization in GetRationalValue()
+            rationalValue = null;
             isSimplified = true;
             isLongValue = true;
         }
         public BigRationalHybrid(long value)
         {
             this.value = value;
-            rationalValue = null; // Lazy initialization in GetRationalValue()
+            rationalValue = null;
             isSimplified = true;
             isLongValue = true;
         }
@@ -130,15 +130,15 @@ namespace GeoCore
         }
 
 
-        // Copy constructor
+        // Value copies can share the read-only wrapper. Simplify detaches before
+        // mutation, so eager deep copies would allocate twice when a copied key
+        // is normalized. Neither hashing nor arithmetic writes the wrapper.
+        // Keep field-wise copying: whole-struct assignment caused a measured
+        // .NET 10 deduplication regression (see benchmarks/RationalHashing).
         public BigRationalHybrid(BigRationalHybrid source)
         {
-            this.value = source.value;
-            // Only copy rationalValue if it was already initialized
-            if (source.rationalValue != null)
-                rationalValue = new BigRationalClass(source.rationalValue.Value);
-            else
-                rationalValue = null;
+            value = source.value;
+            rationalValue = source.rationalValue;
             isSimplified = source.isSimplified;
             isLongValue = source.isLongValue;
         }
@@ -151,12 +151,18 @@ namespace GeoCore
             isLongValue = false;
         }
 
-        // This should be the only method that mutates a BigRationalHybrid in place
+        // This is the only method that mutates a BigRationalHybrid in place.
         public void Simplify()
         {
             if (isSimplified)
                 return;
             
+            // Ordinary struct assignment shares this wrapper. Detach before
+            // normalization so another copy (including a dictionary key or a
+            // concurrent reader) never observes partially updated numerator/denominator.
+            rationalValue = rationalValue == null
+                ? new BigRationalClass((Rat)value)
+                : new BigRationalClass(rationalValue.Value);
             rationalValue.Simplify();
 
             if(rationalValue.Denominator() == 1)
@@ -603,10 +609,9 @@ namespace GeoCore
 
         private Rat GetRationalValue()
         {
-            // Lazy initialization: create rationalValue if it doesn't exist yet
-            if (rationalValue == null)
-                rationalValue = new BigRationalClass((Rat)value);
-            return rationalValue.Value;
+            // Reading/comparing a number does not mutate it or allocate a shared
+            // wrapper for the long fast path. A default hybrid represents zero.
+            return isLongValue || rationalValue == null ? (Rat)value : rationalValue.Value;
         }
 
 
@@ -779,37 +784,51 @@ namespace GeoCore
             }
         }
 
-        public override int GetHashCode()
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        public override readonly int GetHashCode()
         {
-#if DEBUG
-            if (!isSimplified)
-                throw new Exception("Hash code is not necessarily unique for non simplified values");
-#endif
-            int result = 0;
-            if (!isLongValue)
-                result = rationalValue.Value.GetHashCode();
-            else
-                result = value.GetHashCode();
-
-            //Console.WriteLine("Hash: " + result);
-            return result;
+            // Keep normalized keys on the same direct path as integer keys.
+            // The GCD fallback is isolated so it does not inhibit inlining.
+            if (isLongValue)
+                return value.GetHashCode();
+            if (isSimplified)
+                return HashCode.Combine(rationalValue.Numerator().GetHashCode(), rationalValue.Denominator().GetHashCode());
+            return GetRationalHashCode();
         }
 
-        public bool Equals(BigRationalHybrid other)
+        private readonly int GetRationalHashCode()
         {
-#if DEBUG
-            if (!isSimplified)
-                throw new Exception("Hash code is not necessarily unique for non simplified values");
-            if (!other.isSimplified)
-                throw new Exception("Hash code is not necessarily unique for non simplified values");
-#endif
-            if (isLongValue != other.isLongValue)
-                return false;
-            if (!isLongValue)
-                return rationalValue.Value == other.rationalValue.Value;
+            // Equality is by exact value, including unreduced fractions and integers
+            // stored as rationals. Normalize local integers only: struct copies can
+            // share rationalValue, so hashing must not mutate that wrapper.
+            if (rationalValue == null)
+                return value.GetHashCode();
 
-            return value == other.value;
+            var numerator = rationalValue.Numerator();
+            // Rational constructors guarantee a positive denominator. GCD
+            // reduction then gives one representation for each exact value.
+            // This does NOT cache normalization: an unsimplified value pays for
+            // GCD on every hash call. Hot collection paths should Simplify once
+            // before insertion/lookup, as geometry deduplication already does.
+            var denominator = rationalValue.Denominator();
+            if (!isSimplified)
+            {
+                var gcd = BigInteger.GreatestCommonDivisor(numerator, denominator);
+                numerator /= gcd;
+                denominator /= gcd;
+            }
+            if (denominator.IsOne && numerator >= long.MinValue && numerator <= long.MaxValue)
+                return ((long)numerator).GetHashCode();
+            return HashCode.Combine(numerator.GetHashCode(), denominator.GetHashCode());
         }
+
+        // Previously Equals/GetHashCode required callers to Simplify first (checked
+        // only in Debug). That protected representation-based hashing, but made
+        // IEquatable disagree with == for a rational integer versus a long.
+        // Exact comparison plus canonical hashing removes that precondition.
+        // Hash collisions between unequal values are valid: collections use this
+        // exact comparison to distinguish them. No floating-point conversion is used.
+        public bool Equals(BigRationalHybrid other) => this == other;
 
         public override bool Equals(object obj)
         {

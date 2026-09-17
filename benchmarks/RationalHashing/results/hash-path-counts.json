@@ -1,0 +1,7 @@
+{
+  "workload": "56 cylinder Boolean constructions (2 warmups plus 5 samples of 8)",
+  "integer_hash_calls": 251272,
+  "normalized_rational_hash_calls": 69888,
+  "unsimplified_rational_hash_calls": 0,
+  "instrumented_timings_excluded": true
+}

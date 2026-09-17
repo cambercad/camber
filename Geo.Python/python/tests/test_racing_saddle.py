@@ -3,9 +3,9 @@ import os
 import sys
 import unittest
 sys.path.insert(0,os.path.join(os.path.dirname(__file__),'..'))
-from camber import Part,set_progress_log
+from camber import Part,set_progress_log,vec3
 from racing_bike import build_saddle
-from racing_saddle import BOLT_X,RAIL_Z
+from racing_saddle import BOLT_X,RAIL_Z,rail_socket_frames
 
 
 class SaddleClampTests(unittest.TestCase):
@@ -35,11 +35,34 @@ class SaddleClampTests(unittest.TestCase):
                 self.assertAlmostEqual(RAIL_Z+3.5,rail.point.z,delta=.015)
                 self.assertAlmostEqual(RAIL_Z+3.52,top.point.z,delta=.015)
                 self.assertAlmostEqual(RAIL_Z-3.52,bottom.point.z,delta=.015)
-            for x,z in ((117,963),(260,959)):
-                roof=part.raycast(shell,(x,side*22,z),(0,0,1))
-                self.assertIsNotNone(roof)
-                self.assertGreater(roof.point.z,z)
-                self.assertLess(roof.point.z-z,12)
+            for end,datum in rail_socket_frames(side):
+                for depth in (3,7,10):
+                    with self.subTest(side=side,end=end,depth=depth):
+                        center=datum.origin+datum.z*depth
+                        inside=part.raycast(shell,center,(0,side,0))
+                        outside=part.raycast(shell,center+vec3(0,side*25,0),(0,-side,0))
+                        self.assertIsNotNone(inside)
+                        self.assertIsNotNone(outside)
+                        inner_radius=(inside.point-center).dot(vec3(0,side,0))
+                        outer_radius=(outside.point-center).dot(vec3(0,side,0))
+                        self.assertAlmostEqual(inner_radius,3.5,delta=.02)
+                        self.assertGreater(outer_radius-inner_radius,1.5)
+                # The pocket is blind: the rail end stops against material,
+                # with shell/socket material remaining behind the end face.
+                floor=part.raycast(shell,datum.origin+datum.z*5,-datum.z)
+                self.assertIsNotNone(floor)
+                self.assertAlmostEqual((floor.point-datum.origin).dot(datum.z),0,delta=.02)
+        # Socket bosses must belong to the shell, never float beside it.
+        points,triangles=shell.mesh()
+        parents=list(range(len(points)))
+        def root(i):
+            while parents[i]!=i:
+                parents[i]=parents[parents[i]];i=parents[i]
+            return i
+        used=set()
+        for a,b,c in triangles:
+            used.update((a,b,c));parents[root(b)]=root(a);parents[root(c)]=root(a)
+        self.assertEqual(1,len({root(i) for i in used}))
         for x in BOLT_X:
             screw=part.solid(f'saddle_clamp_screw_{x}')
             bearing_face=part.raycast(lower,(x,3,918),(0,0,1))
@@ -54,7 +77,7 @@ class SaddleClampTests(unittest.TestCase):
 
 class SeatCollarTests(unittest.TestCase):
     def test_split_collar_seats_on_actual_frame_neck(self):
-        from racing_bike import build_frame_body,SEAT,SEATPOST_AXIS
+        from racing_bike import build_frame_body,SEAT_COLLAR_TOP as SEAT,SEATPOST_AXIS
         from racing_saddle import seat_collar_frame
         set_progress_log(False)
         part=Part((-420,-300,-50),(1420,300,1120),tolerance=.2)

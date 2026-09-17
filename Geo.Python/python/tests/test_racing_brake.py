@@ -29,9 +29,9 @@ class CaliperTests(unittest.TestCase):
         set_progress_log(False)
         part = Part((-100,-100,-100),(100,100,100),tolerance=.2)
         caliper = build_caliper(part)
-        self.assertEqual(8,len(caliper.parts))
+        self.assertEqual(9,len(caliper.parts))
         self.assertEqual(1,sum(c['kind']=='FixPart' for c in caliper.constraints))
-        self.assertEqual(7,sum(c['kind']=='Concentric' for c in caliper.constraints))
+        self.assertEqual(8,sum(c['kind']=='Concentric' for c in caliper.constraints))
 
 
 class BrakeInstallationTests(unittest.TestCase):
@@ -140,14 +140,16 @@ class BrakeInstallationTests(unittest.TestCase):
                                 FRONT_BRAKE_ANGLE if front else REAR_BRAKE_ANGLE).to_global(
                                     brake_mount_frame(front=front))
             brake = model.subassemblies[0]
-            for item in (*brake.parts,*brake.subassemblies[0].parts):
+            frame_screws = [item for item in model.parts if item.name.startswith("rear_caliper_mount_screw_")]
+            for item in (*brake.parts,*brake.subassemblies[0].parts,*frame_screws):
                 with self.subTest(front=front,component=item.name):
                     contact = part.intersect(support,part.solid(item.name))
                     seat_depth = None
                     if front and item.name == "front_brake_adapter":
                         seat_depth = -6
                     elif not front and "mount_screw" in item.name:
-                        seat_depth = -10
+                        from racing_brake import REAR_FRAME_MOUNT_THICKNESS
+                        seat_depth = -REAR_FRAME_MOUNT_THICKNESS
                     elif not front and item.name == "rear_caliper_housing":
                         seat_depth = 0
                     if seat_depth is None:

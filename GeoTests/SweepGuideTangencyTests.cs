@@ -38,17 +38,37 @@ public class SweepGuideTangencyTests : IDisposable
         var cap=a.AddPlaneDatum("oblique-ExtrudeTop");
         Assert.True(Math.Abs(Vec3DOps.Dot(cap.LocalNormal,new Vec3D(0,0,1)))>1-1e-10);
     }
-    [Fact]
-    public void ClosedTangentArcsRemainSupported()
+    [Theory]
+    [InlineData(2, false)]
+    [InlineData(2, true)]
+    [InlineData(4, false)]
+    [InlineData(4, true)]
+    public void ClosedTangentArcsRemainSupported(int segments, bool reverseOrder)
     {
         var api=Api();
+        // The profile is offset on a global plane; its plane origin is the
+        // guide's center and cannot determine the correct starting segment.
         var profile=api.GetPlotterSketcher(DefaultPlanes.OriginYZ,"ring_profile");
         profile.AddCircle(new Vec2D(0,10),.5);
-        var curves=new List<Curve3D>{
-            new Arc3D(new Vec3D(0),new Vec3D(0,0,1),new Vec3D(1,0,0),10,0,Math.PI,"half_a"),
-            new Arc3D(new Vec3D(0),new Vec3D(0,0,1),new Vec3D(1,0,0),10,Math.PI,Math.PI,"half_b")};
+        var curves = Enumerable.Range(0, segments).Select(i => (Curve3D)new Arc3D(
+            new Vec3D(0), new Vec3D(0,0,1), new Vec3D(1,0,0), 10,
+            i * 2 * Math.PI / segments, 2 * Math.PI / segments, $"arc_{i}")).ToList();
+        if (reverseOrder) curves.Reverse();
         var mesh=api.ExtrudeAlongCurveStrip(profile,curves,maxDeviation:.05,name:"ring");
         Assert.NotEmpty(mesh.Mesh.Triangles);
+        MeshPipelineTestHelpers.AssertWatertightAllowTouch(mesh.Mesh);
+        Assert.True(MeshAnalysis.ComputeSignedMeshVolume(mesh.Mesh.PrecisionPositions, mesh.Mesh.Triangles) > BigRationalHybrid.Zero);
+        Assert.InRange(MeshAnalysis.ComputeSignedMeshVolume(mesh.Mesh.Positions, mesh.Mesh.Triangles), 35, 55);
+        for (int i = 0; i < mesh.Mesh.Triangles.Count; i++)
+        {
+            var triangle = mesh.Mesh.Triangles[i];
+            var center = (mesh.Mesh.Positions[triangle.A] + mesh.Mesh.Positions[triangle.B] + mesh.Mesh.Positions[triangle.C]) / 3;
+            double angle = Math.Atan2(center.X, center.Z);
+            if (angle < 0) angle += 2 * Math.PI;
+            int guideIndex = Math.Min(segments - 1, (int)(angle / (2 * Math.PI / segments)));
+            string groupName = mesh.groupIdToExtendedName[mesh.Mesh.TrianglesEx[i].GroupId];
+            Assert.EndsWith($"-arc_{guideIndex}", groupName);
+        }
     }
     [Fact]
     public void ClosingSeamIsValidatedEvenWhenInternalJoinIsTangent()

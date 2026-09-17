@@ -689,7 +689,7 @@ End caps generated for open guides; closed guides give no caps.")]
             
             // Orient the curve vertex frames to match the profile's coordinate system
             var s = new List<List<CurveVertex3D>> { curvePoints3D };
-            var curveSegments = OrientCurveFramesToProfile(s, sketch.CoordinateSystem, out Vec3D sweepStartTangent, referenceDirection);
+            var curveSegments = OrientCurveFramesToProfile(s, sketch.CoordinateSystem, out Vec3D sweepStartTangent, out _, referenceDirection, SweepProfileCenter(contour, sketch.CoordinateSystem));
 
             var output = new MeshOutput();
             int numGroups = Extruder.GenerateExtrudeAlongCurve(converter, CoordinateSystem.Default, contour, contourN,
@@ -755,7 +755,10 @@ Each per-segment surface patch is named ""<meshName>-<contourSegmentName>-<guide
 
             // Orient the curve vertex frames to match the profile's coordinate system
             // This ensures the profile is placed correctly at each point along the guide
-            var curveSegments = OrientCurveFramesToProfile(s, sketch.CoordinateSystem, out Vec3D sweepStartTangent);
+            var curveSegments = OrientCurveFramesToProfile(s, sketch.CoordinateSystem, out Vec3D sweepStartTangent, out int startSegment, profileCenter: SweepProfileCenter(contour, sketch.CoordinateSystem));
+            // Keep named surfaces attached to their guide segment after rotation.
+            guideCurveNames = Enumerable.Range(0, guideCurveNames.Count)
+                .Select(i => guideCurveNames[(i + startSegment) % guideCurveNames.Count]).ToList();
 
             var output = new MeshOutput();
             int numGroups = Extruder.GenerateExtrudeAlongCurveStripSectioned(converter, CoordinateSystem.Default, contour, contourN,
@@ -1051,53 +1054,57 @@ Extrudes profileSketch along the curves of guideSketch (lifted to 3D using the g
                 Check(curves.Count - 1, 0);
         }
 
-        private List<List<CurveVertex3D>> CyclicRotate(List<List<CurveVertex3D>> curveSegments, CoordinateSystem profileCS)
+        private static Vec3D SweepProfileCenter(List<List<List<Vec2D>>> contours, CoordinateSystem profileCS)
         {
-            var lastSeg = curveSegments[curveSegments.Count - 1];
-            bool isClosedLoop = (curveSegments[0][0].Origin - lastSeg[lastSeg.Count - 1].Origin).LengthSquared() < 1e-12;
-
-            //Either search the start or end of the curve segment that is closest to profile CS and then cyclically rotate
-            double minDistSquared = double.MaxValue;
-            int id = -1;
-            for (int i = 0; i < curveSegments.Count; i++)
-            {
-                var seg = curveSegments[i];
-                var s = seg[0].Origin;
-                var e = seg[1].Origin;
-
-                var d = (s - profileCS.Origin).LengthSquared();
-                if (d < minDistSquared)
-                {
-                    minDistSquared = d;
-                    id = i;
-                }
-                d = (e - profileCS.Origin).LengthSquared();
-                if (d < minDistSquared)
-                {
-                    minDistSquared = d;
-                    id = i + 1;
-                }
-            }
-
-            if (isClosedLoop)
-            {
-                List<List<CurveVertex3D>> res = new List<List<CurveVertex3D>>(curveSegments.Count);
-                for (int i = 0; i < curveSegments.Count; i++)
-                {
-                    var seg = curveSegments[(i + id) % curveSegments.Count];
-                    res.Add(seg);
-                }
-                return res;
-            }
-
-
-            return curveSegments;
+            double minX = double.PositiveInfinity, minY = double.PositiveInfinity;
+            double maxX = double.NegativeInfinity, maxY = double.NegativeInfinity;
+            foreach (var loop in contours)
+                foreach (var segment in loop)
+                    foreach (var point in segment)
+                    {
+                        minX = Math.Min(minX, point.X); minY = Math.Min(minY, point.Y);
+                        maxX = Math.Max(maxX, point.X); maxY = Math.Max(maxY, point.Y);
+                    }
+            return double.IsFinite(minX)
+                ? profileCS.PointTo3D(new Vec2D(minX / 2 + maxX / 2, minY / 2 + maxY / 2))
+                : profileCS.Origin;
         }
 
-
-        private List<List<CoordinateSystem>> OrientCurveFramesToProfile(List<List<CurveVertex3D>> curveSegments, CoordinateSystem profileCS, out Vec3D sweepStartTangentWorld, Vec3D? referenceDirection = null)
+        private List<List<CurveVertex3D>> CyclicRotate(List<List<CurveVertex3D>> curveSegments, Vec3D profileCenter, out int startSegment)
         {
-            curveSegments = CyclicRotate(curveSegments, profileCS);
+            startSegment = 0;
+            var lastSeg = curveSegments[^1];
+            bool isClosedLoop = (curveSegments[0][0].Origin - lastSeg[^1].Origin).LengthSquared() < 1e-12;
+            if (!isClosedLoop)
+                return curveSegments;
+
+            // SegmentConnector may start a closed strip at any segment. Select
+            // the boundary nearest the actual profile, not the sketch plane's
+            // origin: a profile offset on a global plane can otherwise start on
+            // the opposite side of its guide and sweep with inverted orientation.
+            // Only segment starts are rotation boundaries; an interior sample
+            // cannot select the next segment. Each closed-strip end is a start.
+            int id = 0;
+            double minDistSquared = double.PositiveInfinity;
+            for (int i = 0; i < curveSegments.Count; i++)
+            {
+                double distance = (curveSegments[i][0].Origin - profileCenter).LengthSquared();
+                if (distance < minDistSquared)
+                {
+                    minDistSquared = distance;
+                    id = i;
+                }
+            }
+            startSegment = id;
+            var result = new List<List<CurveVertex3D>>(curveSegments.Count);
+            for (int i = 0; i < curveSegments.Count; i++)
+                result.Add(curveSegments[(i + id) % curveSegments.Count]);
+            return result;
+        }
+
+        private List<List<CoordinateSystem>> OrientCurveFramesToProfile(List<List<CurveVertex3D>> curveSegments, CoordinateSystem profileCS, out Vec3D sweepStartTangentWorld, out int startSegment, Vec3D? referenceDirection = null, Vec3D? profileCenter = null)
+        {
+            curveSegments = CyclicRotate(curveSegments, profileCenter ?? profileCS.Origin, out startSegment);
             sweepStartTangentWorld = curveSegments[0][0].Tangent;
             if (referenceDirection.HasValue)
             {

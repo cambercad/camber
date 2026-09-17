@@ -366,7 +366,11 @@ namespace GeoCore
 
         public override int GetHashCode()
         {
-            return HashCode.Combine(Numerator.GetHashCode() , Denominator.GetHashCode());
+            // Arithmetic permits unreduced fractions; hash the exact canonical
+            // value without mutating the caller's representation.
+            var canonical = this;
+            canonical.Simplify();
+            return HashCode.Combine(canonical.Numerator.GetHashCode(), canonical.Denominator.GetHashCode());
         }
 
         // IComparable

@@ -24,8 +24,9 @@ class ControlTests(unittest.TestCase):
                 stem_fit.add_part(solid, occurrence.pose)
         stem_fit.add_part(washer(part, "steerer_fit", HEAD_BOTTOM, 14.3, 0,
             (HEAD_TOP-HEAD_BOTTOM).norm()+48, axis=STEERING_AXIS))
-        stem_fit.add_part(washer(part, "spacer_fit", HEAD_TOP+STEERING_AXIS*16,
-            21, 14.5, 7, axis=STEERING_AXIS))
+        from racing_stem import headset_stack
+        for spacer in headset_stack(part,HEAD_TOP,STEERING_AXIS):
+            stem_fit.add_part(spacer)
         self.assertEqual([], stem_fit.interferences(min_volume=.01))
         for side in (-1,1):
             with self.subTest(side=side, interface="hood_receives_wrapped_bar"):

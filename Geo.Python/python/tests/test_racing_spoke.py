@@ -6,7 +6,7 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from camber import Part, set_progress_log
+from camber import Part, Frame, set_progress_log
 from bike_wheel import (
     spoke_placements,
     weave_contacts,
@@ -14,11 +14,11 @@ from bike_wheel import (
     create_front_hub,
     THROUGH_LEN,
 )
-from racing_hub import rear_hub_parts
+from racing_hub import rear_hub_parts, DRIVE_FLANGE_INBOARD, DRIVE_FLANGE_OUTBOARD
 
 
 def layout(front=False):
-    right = 32 if front else 21
+    right = 32 if front else DRIVE_FLANGE_INBOARD
     return dict(
         left_z=-32,
         right_z=right,
@@ -51,7 +51,7 @@ class SpokeTests(unittest.TestCase):
         for i, spoke in enumerate(spokes):
             self.assertAlmostEqual(math.hypot(spoke.head.x, spoke.head.y), 21)
             # The head is on a real planar flange face, with alternate insertion.
-            expected = (24, 21)[i % 2] if i < 12 else (-35, -32)[i % 2]
+            expected = (DRIVE_FLANGE_OUTBOARD, DRIVE_FLANGE_INBOARD)[i % 2] if i < 12 else (-35, -32)[i % 2]
             self.assertEqual(expected, spoke.head.z)
             point = contacts[spoke.label]
             others = [q for key, q in contacts.items() if key != spoke.label]
@@ -79,6 +79,17 @@ class SpokeTests(unittest.TestCase):
                 ):
                     self.assertTrue(spoke.is_watertight())
                     assembly.fix(assembly.add_part(spoke))
+                if not front:
+                    # The largest cog rotates independently of the spokes. Its
+                    # full annular sweep must clear every J-bend, at every phase.
+                    from bike_cassette import sprocket_dims
+                    profile = p.sketch(frame=Frame((0, 0, 26.5)), constrained=True)
+                    outside = profile.add_circle((0, 0), sprocket_dims(30)[3])
+                    bore = profile.add_circle((0, 0), 17.5)
+                    profile.radius(outside, sprocket_dims(30)[3]).fix(outside@"center")
+                    profile.radius(bore, 17.5).fix(bore@"center")
+                    envelope = p.extrude(profile, 1.65, name="largest_cog_sweep")
+                    assembly.fix(assembly.add_part(envelope))
                 self.assertEqual([], assembly.interferences(min_volume=1e-6))
                 if not front:
                     inner = p.raycast(hub, (0, 0, -37), (1, 0, 0)).point.x

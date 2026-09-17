@@ -480,42 +480,44 @@ namespace Geo
             out int axis2,
             out bool flipWinding)
         {
-            // A thin, tilted cap can have its smallest extent in a direction
-            // lying IN its plane. Dropping that axis collapses it to a line.
-            // Choose the largest projected area (Newell normal), computed exactly
-            // on the outer ring so distant origins do not cause cancellation.
-            var ring = polygonIndices[0];
-            BigRationalHybrid areaYZ = BigRationalHybrid.Zero;
-            BigRationalHybrid areaXZ = BigRationalHybrid.Zero;
-            BigRationalHybrid areaXY = BigRationalHybrid.Zero;
-            for (int i = 0; i < ring.Count; i++)
+            // Use exact projected areas, not extents or floating approximations:
+            // thin tilted caps and huge rational coordinates must retain a valid
+            // projection. Input ring order is arbitrary (a hole may come first).
+            // The largest absolute ring area belongs to an outer boundary, since
+            // every hole has smaller area than its enclosing ring in this plane.
+            axis1 = 0;
+            axis2 = 1;
+            flipWinding = false;
+            var largestArea = BigRationalHybrid.Zero;
+            foreach (var ring in polygonIndices)
             {
-                var p = precisePositions[ring[i]];
-                var q = precisePositions[ring[(i + 1) % ring.Count]];
-                areaYZ += p.Y * q.Z - q.Y * p.Z;
-                areaXZ += p.X * q.Z - q.X * p.Z;
-                areaXY += p.X * q.Y - q.X * p.Y;
+                var areaYZ = BigRationalHybrid.Zero;
+                var areaXZ = BigRationalHybrid.Zero;
+                var areaXY = BigRationalHybrid.Zero;
+                for (int i = 0; i < ring.Count; i++)
+                {
+                    var p = precisePositions[ring[i]];
+                    var q = precisePositions[ring[(i + 1) % ring.Count]];
+                    areaYZ += p.Y * q.Z - q.Y * p.Z;
+                    areaXZ += p.X * q.Z - q.X * p.Z;
+                    areaXY += p.X * q.Y - q.X * p.Y;
+                }
+                Consider(areaYZ, 1, 2, ref largestArea, ref axis1, ref axis2, ref flipWinding);
+                Consider(areaXZ, 0, 2, ref largestArea, ref axis1, ref axis2, ref flipWinding);
+                Consider(areaXY, 0, 1, ref largestArea, ref axis1, ref axis2, ref flipWinding);
             }
-            double yz = Math.Abs(areaYZ.ToDouble());
-            double xz = Math.Abs(areaXZ.ToDouble());
-            double xy = Math.Abs(areaXY.ToDouble());
-            if (yz >= xz && yz >= xy)
+
+            static void Consider(BigRationalHybrid area, int a, int b,
+                ref BigRationalHybrid largest, ref int axis1, ref int axis2, ref bool flip)
             {
-                axis1 = 1;
-                axis2 = 2;
-                flipWinding = areaYZ < BigRationalHybrid.Zero;
-            }
-            else if (xz >= xy)
-            {
-                axis1 = 0;
-                axis2 = 2;
-                flipWinding = areaXZ < BigRationalHybrid.Zero;
-            }
-            else
-            {
-                axis1 = 0;
-                axis2 = 1;
-                flipWinding = areaXY < BigRationalHybrid.Zero;
+                bool negative = area < BigRationalHybrid.Zero;
+                var magnitude = negative ? -area : area;
+                if (magnitude <= largest)
+                    return;
+                largest = magnitude;
+                axis1 = a;
+                axis2 = b;
+                flip = negative;
             }
         }
 

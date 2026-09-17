@@ -5,6 +5,7 @@ import unittest
 sys.path.insert(0,os.path.join(os.path.dirname(__file__),'..'))
 from camber import Part,set_progress_log
 from racing_computer import build_computer,MOUNT_DATUM,RECEIVER_CENTER
+from racing_stem import BAR_CENTER, BOLT_ROWS
 
 
 def new_part():
@@ -50,7 +51,7 @@ class CyclingComputerTests(unittest.TestCase):
         screws=[body for body in cockpit.parts if body.name=='stem_clamp_screw']
         self.assertEqual(2,len(screws))
         for screw in screws:
-            self.assertAlmostEqual(screw.pose[2],882,delta=1e-6)
+            self.assertAlmostEqual(screw.pose[2],BAR_CENTER.z+max(BOLT_ROWS),delta=1e-6)
         # Audit the integrated component against every actual cockpit body,
         # including hoses, controls, tape and the retained upper screw pair.
         computer_hits=[hit for hit in cockpit.interferences(min_volume=.001)
