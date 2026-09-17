@@ -56,9 +56,13 @@ public class BladeFaceFilletTests
         var cylinders = rounded.surfaceMetaData.Values.Where(m => m.CylinderParams != null).ToList();
         Assert.Equal(points.Length, cylinders.Count);
         Assert.All(cylinders, m => Assert.Equal(1, m.CylinderParams.Radius));
-        var endClosures = rounded.surfaceMetaData.Where(m => m.Key.StartsWith("BlendCorner_")).ToList();
-        Assert.Equal(6, endClosures.Count);
-        Assert.All(endClosures, m => Assert.NotNull(m.Value.PlaneParams));
+        // Exact coplanar fusion absorbs the end closures into the two
+        // existing caps; standalone BlendCorner names are not guaranteed.
+        var caps = rounded.surfaceMetaData.Where(m => m.Key.Contains("ExtrudeTop") ||
+            m.Key.Contains("ExtrudeBottom")).ToList();
+        Assert.Equal(2, caps.Count);
+        Assert.All(caps, m => Assert.NotNull(m.Value.PlaneParams));
+        MeshTestHelpers.AssertValidMesh(rounded.Mesh.Positions, rounded.Mesh.Triangles);
         var faces = api.Fillet(rounded, new List<string> { "[blade-Line4,blade-ExtrudeTop]", "[blade-Line4,blade-ExtrudeBottom]" }, .6, .02, "face_rounded");
         MeshTestHelpers.AssertValidMesh(faces.Mesh.Positions,faces.Mesh.Triangles);
         var rimBlends = faces.surfaceMetaData.Where(m => m.Key.StartsWith("BlendEdge_") && m.Key.Contains("Extrude")).ToList();

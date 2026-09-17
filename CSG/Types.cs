@@ -387,22 +387,13 @@ namespace CSG
 
         public Box3I GetBounds(NewPointCreator points)
         {
-            Rat3Hybrid min, max;
-            min = max = points.GetPoint(A);
-            Rat3Hybrid b = points.GetPoint(B);
-            Rat3Hybrid c = points.GetPoint(C);
-            if (b.X > max.X) max.X = b.X; if (b.Y > max.Y) max.Y = b.Y; if (b.Z > max.Z) max.Z = b.Z;
-            if (b.X < min.X) min.X = b.X; if (b.Y < min.Y) min.Y = b.Y; if (b.Z < min.Z) min.Z = b.Z;
-
-            if (c.X > max.X) max.X = c.X; if (c.Y > max.Y) max.Y = c.Y; if (c.Z > max.Z) max.Z = c.Z;
-            if (c.X < min.X) min.X = c.X; if (c.Y < min.Y) min.Y = c.Y; if (c.Z < min.Z) min.Z = c.Z;
-
-            var box = min.GetBox();
-            box.Extend(max.GetBox());
-
-#if DEBUG
-
-#endif
+            // Point enclosures are monotone in each coordinate: enclosing
+            // first and taking integer extrema gives the same box as finding
+            // rational extrema first. Avoid twelve rational comparisons (and
+            // their potentially very large cross-products) per triangle.
+            var box = points.GetPoint(A).GetBox();
+            box.Extend(points.GetPoint(B).GetBox());
+            box.Extend(points.GetPoint(C).GetBox());
 
             return box;
         }

@@ -2212,9 +2212,12 @@ class Sketch(object):
         stx, sty, etx, ety, has_s, has_e = _optional_tangents(start_tangent, end_tangent)
         index = self.curve_count
         _require(self._n, "add_cubic_hermite_spline")(joined, stx, sty, etx, ety, has_s, has_e)
-        curve_name = self._added_curve_name(name, "spline", index)
         if name:
             self._try_name_last_curve(name)
+        # Older native backends assign Hermite names and cannot rename them.
+        # Return the real identifier, so downstream faces and edge references
+        # never use a requested name that the kernel did not accept.
+        curve_name = self._added_curve_name(None, "spline", index)
         return SketchCurve(curve_name, "spline")
 
     def add_involute(self, center, base_radius, t_start, t_end, rotation=0, name=None, max_deviation=-1):

@@ -99,10 +99,11 @@ namespace Geo
             foreach (var edge in edgeGraph.Edges)
             {
                 if (!mesh.surfaceMetaData.TryGetValue(mesh.groupIdToExtendedName[edge.GroupIdA], out var metaA) ||
-                    !mesh.surfaceMetaData.TryGetValue(mesh.groupIdToExtendedName[edge.GroupIdB], out var metaB) ||
-                    !AreAnalyticallyTangent(metaA, metaB)) continue;
+                    !mesh.surfaceMetaData.TryGetValue(mesh.groupIdToExtendedName[edge.GroupIdB], out var metaB)) continue;
                 var a = Surface(edge.GroupIdA);
                 var b = Surface(edge.GroupIdB);
+                if (!AreAnalyticallyTangent(metaA, metaB) &&
+                    !AreLinearExtrusionSeamsTangent(metaA, a, metaB, b, edge)) continue;
                 // Analytic geometry establishes continuity. Display normals only
                 // check matching orientation, not near-bitwise vector equality.
                 bool smooth = edge.EdgeSegments.SelectMany(e => new[] { e.X, e.Y }).Distinct().All(i =>
@@ -166,6 +167,33 @@ namespace Geo
                     throw new ArgumentException($"Edge '{edge.Name}' is a smooth face seam and has no corner to blend.");
                 return merged.Name;
             }).Distinct(StringComparer.Ordinal).ToList();
+        }
+
+        private static bool AreLinearExtrusionSeamsTangent(
+            SurfaceMetaData a, UVSurface surfaceA, SurfaceMetaData b, UVSurface surfaceB, GraphEdge edge)
+        {
+            // An extrusion's profile-end generator has a constant analytic
+            // tangent plane along its whole length. This certificate is not
+            // applicable to arbitrary NURBS patches or smooth display normals.
+            static bool IsLinearExtrusion(INurbsSurface surface) => surface switch
+            {
+                NURBS.BSplineLinearExtrudeSurface => true,
+                NurbsConstruction.MeshUvMappedSurface mapped => IsLinearExtrusion(mapped.Inner),
+                TransformedNurbsSurface transformed => IsLinearExtrusion(transformed.Inner),
+                _ => false,
+            };
+            if (!a.HasNurbs || !b.HasNurbs ||
+                !IsLinearExtrusion(a.NurbsSurface) || !IsLinearExtrusion(b.NurbsSurface)) return false;
+            var vertices = edge.EdgeSegments.SelectMany(s => new[] { s.X, s.Y }).Distinct().ToArray();
+            double uA = surfaceA.Uv[vertices[0]].X, uB = surfaceB.Uv[vertices[0]].X;
+            if ((uA != 0 && uA != 1) || (uB != 0 && uB != 1) ||
+                vertices.Any(i => surfaceA.Uv[i].X != uA || surfaceB.Uv[i].X != uB)) return false;
+            var normalA = a.NurbsSurface.EvaluateNormal(uA, .5);
+            var normalB = b.NurbsSurface.EvaluateNormal(uB, .5);
+            if (normalA.LengthSquared() == 0 || normalB.LengthSquared() == 0) return false;
+            // Same analytic parameter tolerance as the primitive cases below;
+            // mesh incidence and Boolean classification remain exact.
+            return Vec3DOps.Cross(normalA.Normalized(), normalB.Normalized()).LengthSquared() <= 1e-24;
         }
 
         private static bool AreAnalyticallyTangent(SurfaceMetaData a, SurfaceMetaData b)

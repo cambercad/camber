@@ -24,6 +24,15 @@ class SplineSweepTests(unittest.TestCase):
         self.assertGreater(max(p.y for p in points), 9.9)
         self.assertGreater(max(p.x for p in points), 19.9)
 
+    def test_named_spline_returns_the_actual_extruded_face_identifier(self):
+        part=Part((-20,-20,-20),(50,50,50),tolerance=.05)
+        sketch=part.sketch('xy')
+        curve=sketch.add_spline([(0,0),(10,3),(20,0)],name='crown')
+        sketch.add_line((20,0),(0,0))
+        solid=part.extrude(sketch,2,name='named_spline')
+        self.assertTrue(solid.is_watertight())
+        self.assertIn(f'[named_spline-{curve.name},named_spline-ExtrudeTop]',solid.edge_names)
+
     def test_thin_tilted_sweep_cap_keeps_its_area(self):
         part = Part((-50, -50, -50), (100, 100, 100), tolerance=.05)
         direction = (1/math.sqrt(2), 0, 1/math.sqrt(2))

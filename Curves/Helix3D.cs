@@ -55,6 +55,7 @@ namespace Curves
             _radius = h._radius;
             _zAdvancementPerRevolution = h._zAdvancementPerRevolution;
             _numRevolutions = h._numRevolutions;
+            _angleSign = h._angleSign;
         }
 
         public override CurveVertex3D Evaluate(double uniform)
@@ -68,8 +69,8 @@ namespace Curves
             Vec3D position = _center + (cos * _x + sin * _y) * _radius + zOffset * ZAxis;
             
             // Derivative of position with respect to uniform parameter
-            // d(angle)/d(uniform) = 2π * numRevolutions
-            double angularVelocity = 2 * Math.PI * _numRevolutions;
+            // d(angle)/d(uniform) includes the handedness of the helix.
+            double angularVelocity = 2 * Math.PI * _numRevolutions * _angleSign;
             // Tangent: derivative of circular motion (scaled by radius) plus Z advancement rate
             Vec3D tangent = ((-sin * _x + cos * _y) * _radius * angularVelocity + _zAdvancementPerRevolution * _numRevolutions * ZAxis).Normalized();
             Vec3D up = Vec3DOps.Cross(tangent, ZAxis).Normalized();

@@ -18,8 +18,8 @@ import sys
 from pathlib import Path
 
 SUMMARY = (
-    "Scripting- and AI-first CAD: triangle-first kernel with sketch, CSG, "
-    "optional NURBS, mesh import/export, and a Python API."
+    "AI-ready CAD for people and agents: a triangle-mesh kernel with sketch, "
+    "CSG, optional NURBS, mesh import/export, and a Python API."
 )
 
 LOADER_TEMPLATE = '''\

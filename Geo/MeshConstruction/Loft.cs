@@ -501,7 +501,7 @@ namespace Geo
 
             ApplyAnalyticLoftNormals(profileWorld, analyticStrips, systems, uColumns, colKinds,
                 profileTu2D, seamU0, closedForCaps, options.Style, rowVUniform, vRows, baseVert, normals,
-                matchingVertices ? output.LoftSideSupportFactory() : null);
+                matchingVertices || matchedCurves ? output.LoftSideSupportFactory() : null);
 
             EmitSideQuads(grid, m, vRows, baseVert, closedForCaps, vertices, minSqCross, minSqEdge, triangles, triangleGroups, sideGroup, sideColumns);
 

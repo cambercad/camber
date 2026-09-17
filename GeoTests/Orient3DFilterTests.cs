@@ -4,13 +4,13 @@ using GeoCore;
 namespace GeoTests;
 
 /// <summary>
-/// The Orient3D double filter must never return a sign that disagrees with the exact path.
+/// The Orient3D integer filter must never return a sign that disagrees with the exact path.
 /// Abstaining (returning false) is always allowed.
 /// </summary>
 public sealed class Orient3DFilterTests
 {
     [Fact]
-    public void DoubleFilter_NeverDisagreesWithExact_RandomRationals()
+    public void IntegerFilter_NeverDisagreesWithExact_RandomRationals()
     {
         var rng = new Random(20260912);
         int filtered = 0;
@@ -31,7 +31,7 @@ public sealed class Orient3DFilterTests
     }
 
     [Fact]
-    public void DoubleFilter_NeverDisagreesWithExact_NearCoplanar()
+    public void IntegerFilter_NeverDisagreesWithExact_NearCoplanar()
     {
         var rng = new Random(7);
         int filtered = 0;
@@ -81,7 +81,7 @@ public sealed class Orient3DFilterTests
         int exact = BigRationalHybrid.SignOfOrient3DExact(
             in ax, in ay, in az, in bx, in by, in bz, in cx, in cy, in cz, in dx, in dy, in dz);
         int filteredSign;
-        if (BigRationalHybrid.TrySignOfOrient3DDoubleFilter(
+        if (BigRationalHybrid.TrySignOfOrient3DIntegerBounds(
                 in ax, in ay, in az, in bx, in by, in bz, in cx, in cy, in cz, in dx, in dy, in dz,
                 out filteredSign))
         {

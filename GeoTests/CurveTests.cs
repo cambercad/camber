@@ -141,6 +141,23 @@ public class CurveTests
         Assert.Equal(p0.Z, p1.Z, Eps);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void HelixCopyAndTangentFollowItsHandedness(bool rightHanded)
+    {
+        var helix = new Helix3D(new Vec3D(2,3,4), new Vec3D(0,1,0),
+            new Vec3D(0,0,1), 3, 2, 1.7, rightHanded);
+        var copy = helix.GetCopy();
+        foreach (double t in new[] { 0.0, .23, .71, 1.0 })
+        {
+            var expected = (helix.Evaluate(t+1e-6).Origin - helix.Evaluate(t-1e-6).Origin).Normalized();
+            Assert.InRange((expected-helix.Evaluate(t).Tangent).Length(), 0, 1e-8);
+            Assert.InRange((copy.Evaluate(t).Origin-helix.Evaluate(t).Origin).Length(), 0, 1e-12);
+            Assert.InRange((copy.Evaluate(t).Tangent-helix.Evaluate(t).Tangent).Length(), 0, 1e-12);
+        }
+    }
+
     [Fact]
     public void Helix3D_Evaluate_HasExpectedPitch()
     {

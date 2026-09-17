@@ -849,8 +849,13 @@ namespace Geo
                         int i2 = topLayerOffset + i + offset;
                         int i3 = topLayerOffset + j + offset;
 
-                        var tri1 = new Tri(i0, i1, i2);
-                        var tri2 = new Tri(i1, i3, i2);
+                        // A hole traverses the same profile edge in reverse.
+                        // Choose the diagonal geometrically, so mating sweeps
+                        // share facets even when a bent quad is not planar.
+                        bool forward = segment[i].X < segment[j].X ||
+                            (segment[i].X == segment[j].X && segment[i].Y < segment[j].Y);
+                        var tri1 = forward ? new Tri(i0, i1, i3) : new Tri(i0, i1, i2);
+                        var tri2 = forward ? new Tri(i0, i3, i2) : new Tri(i1, i3, i2);
 
                         // Skip degenerate triangles with duplicate indices
                         if (!MeshConstructionHelpers.IsDegenerateTriangle(tri1))

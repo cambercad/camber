@@ -53,6 +53,13 @@ namespace Geo.NurbsConstruction
             List<List<string>> contourNames)
         {
             var segmentPolylines = ExtractNamedSegments(contour, contourNames);
+            // The extruder normalizes winding on copies. Use that same ordering
+            // here, rather than the untouched authored contour passed by GeoAPI.
+            var reversals = MeshConstructionHelpers.GetContourReversalInfo(contour);
+            for (int loop = 0; loop < contourNames.Count; loop++)
+                if (reversals[loop])
+                    foreach (string segment in contourNames[loop])
+                        if (segmentPolylines.TryGetValue(segment, out var points)) points.Reverse();
             return BuildExtrudeMetadataCore(curveMeta, sketchFrame, heightPositive, heightNegative,
                 operationName, twistRatePerExtrudeDistance, allProfilePoints, segmentPolylines);
         }
@@ -689,6 +696,18 @@ namespace Geo.NurbsConstruction
                 polyline.Count >= 2)
             {
                 return Curve2DToBSpline.FromPolylineEndpoints(polyline, frame);
+            }
+            // Contour winding can reverse a segment while its metadata still
+            // refers to the authored curve. Mesh U follows that ordered segment;
+            // the analytic support must follow it too (including end tangents).
+            if (segmentPolylines != null && segmentPolylines.TryGetValue(segmentKey, out var samples) &&
+                samples.Count >= 2 && curve.StartPosition != curve.EndPosition)
+            {
+                double forward = Vec2DOps.DistanceSquared(samples[0], curve.StartPosition) +
+                                 Vec2DOps.DistanceSquared(samples[^1], curve.EndPosition);
+                double reverse = Vec2DOps.DistanceSquared(samples[0], curve.EndPosition) +
+                                 Vec2DOps.DistanceSquared(samples[^1], curve.StartPosition);
+                if (reverse < forward) curve = curve.Reverse();
             }
             return Curve2DToBSpline.ToBSplineCurve(curve, frame);
         }

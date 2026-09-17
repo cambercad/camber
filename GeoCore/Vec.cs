@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Runtime.CompilerServices;
 
 namespace GeoCore
@@ -645,22 +645,27 @@ namespace GeoCore
 
         public Box3F GetBoundsF()
         {
-            int sizeX = Max.X - Min.X;
-            int sizeY = Max.Y - Min.Y;
-            int sizeZ = Max.Z - Min.Z;
+            // An Int32 span can be wider than Int32.MaxValue.
+            long sizeX = (long)Max.X - Min.X;
+            long sizeY = (long)Max.Y - Min.Y;
+            long sizeZ = (long)Max.Z - Min.Z;
             float m = Math.Max(sizeX, Math.Max(sizeY, sizeZ));
-            var result = new Box3F(new Vec3F(this.Min.X, this.Min.Y, this.Min.Z),
-                new Vec3F(this.Max.X, this.Max.Y, this.Max.Z));
 
-            // Ensure minimum enlargement of 1.0f to handle:
-            // - Zero-size boxes (points) where m = 0
-            // - Float precision issues during int-to-float conversion
+            // Integer-to-float conversion can round inward. Moving one float
+            // outward encloses the integer even at Int32 endpoints. Correctness
+            // comes from this enclosure, not from the extra padding below.
+            var result = new Box3F(
+                new Vec3F(MathF.BitDecrement(Min.X), MathF.BitDecrement(Min.Y), MathF.BitDecrement(Min.Z)),
+                new Vec3F(MathF.BitIncrement(Max.X), MathF.BitIncrement(Max.Y), MathF.BitIncrement(Max.Z)));
             result.Enlarge(Math.Max(m * 0.001f, 1.0f));
 
-            if (result.Min.X > this.Min.X || result.Min.Y > this.Min.Y || result.Min.Z > this.Min.Z ||
-                result.Max.X < this.Max.X || result.Max.Y < this.Max.Y || result.Max.Z < this.Max.Z)
+            // Every Int32 and binary32 value is exactly representable in binary64.
+            // Comparing float directly with int would first round the integer
+            // to float and could hide an inward-rounded bound.
+            if ((double)result.Min.X > Min.X || (double)result.Min.Y > Min.Y || (double)result.Min.Z > Min.Z ||
+                (double)result.Max.X < Max.X || (double)result.Max.Y < Max.Y || (double)result.Max.Z < Max.Z)
             {
-                throw new Exception();
+                throw new Exception("Floating bounds do not enclose the integer box.");
             }
 
             return result;

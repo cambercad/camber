@@ -1,4 +1,6 @@
-﻿namespace GeoCore
+using System.Numerics;
+
+namespace GeoCore
 {
     public static class Rat3HybridExtensions
     {
@@ -9,38 +11,56 @@
 
         public static Box3I GetBox(this Rat3Hybrid p)
         {
-            // Store original signs before taking absolute values
-            int signX = p.X.Sign();
-            int signY = p.Y.Sign();
-            int signZ = p.Z.Sign();
+            GetAxisBounds(p.X, out int lx, out int ux);
+            GetAxisBounds(p.Y, out int ly, out int uy);
+            GetAxisBounds(p.Z, out int lz, out int uz);
+            return new Box3I(new Int3(lx, ly, lz), new Int3(ux, uy, uz));
+        }
 
-            p.X = Rat3Hybrid.Abs(p.X);
-            p.Y = Rat3Hybrid.Abs(p.Y);
-            p.Z = Rat3Hybrid.Abs(p.Z);
-
-            var lower = p.ToInt();
-            var upper = new Int3(lower.X + 1, lower.Y + 1, lower.Z + 1);
-
-            if (signX < 0)
+        private static void GetAxisBounds(in BigRationalHybrid coordinate, out int lower, out int upper)
+        {
+            int truncated;
+            bool negative;
+            bool fractional;
+            if (coordinate.IsInt32)
             {
-                lower.X = -lower.X;
-                upper.X = -upper.X;
-                Algorithms.Swap(ref lower.X, ref upper.X);
+                truncated = coordinate.ToIntRoundDown();
+                negative = truncated < 0;
+                fractional = false;
             }
-            if (signY < 0)
+            else
             {
-                lower.Y = -lower.Y;
-                upper.Y = -upper.Y;
-                Algorithms.Swap(ref lower.Y, ref upper.Y);
-            }
-            if (signZ < 0)
-            {
-                lower.Z = -lower.Z;
-                upper.Z = -upper.Z;
-                Algorithms.Swap(ref lower.Z, ref upper.Z);
+                // Exact division avoids constructing Abs(coordinate) and
+                // comparing a rounded integer with the full rational again.
+                var numerator = coordinate.Numerator();
+                var quotient = BigInteger.DivRem(numerator, coordinate.Denominator(), out var remainder);
+                truncated = (int)quotient; // Checked by BigInteger conversion.
+                negative = numerator.Sign < 0;
+                fractional = !remainder.IsZero;
             }
 
-            return new Box3I(lower, upper);
+            if (negative)
+            {
+                upper = truncated;
+                if (truncated == int.MinValue)
+                {
+                    if (fractional) throw new OverflowException("Coordinate is outside the Int32 bounding-box domain.");
+                    lower = int.MinValue;
+                }
+                else lower = truncated - 1;
+            }
+            else
+            {
+                lower = truncated;
+                if (truncated == int.MaxValue)
+                {
+                    if (fractional) throw new OverflowException("Coordinate is outside the Int32 bounding-box domain.");
+                    upper = int.MaxValue;
+                }
+                else upper = truncated + 1;
+            }
+            // Preserve the previous conservative padding at exact integers,
+            // except at the domain endpoints where padding must not wrap.
         }
     }
 }

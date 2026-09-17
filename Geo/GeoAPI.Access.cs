@@ -35,6 +35,7 @@ namespace Geo
 Returns the registered mesh with this exact name, or null if not found.")]
         public AnchorMesh GetMeshFromName(string meshName)
         {
+            var meshes = GetMeshes();
             AnchorMesh found = null;
             for (int i = 0; i < meshes.Count; i++)
             {
@@ -52,6 +53,7 @@ Returns the registered mesh with this exact name, or null if not found.")]
 Returns the most recently registered mesh on this API (or null if none). Default visualization uses this when VisualOutputKind is Mesh.")]
         public AnchorMesh GetTopMesh()
         {
+            var meshes = GetMeshes();
             if (meshes.Count == 0)
                 return null;
             var mesh = meshes[meshes.Count - 1];
@@ -61,54 +63,60 @@ Returns the most recently registered mesh on this API (or null if none). Default
 
         [APIDescription(@"GetTopAssembly() -> Assembly
 Returns the assembly most recently touched by AddPart / AddSubAssembly / mates / SolveConstraints (or null if none). Default visualization shows all of its parts when VisualOutputKind is Assembly.")]
-        public Assembly GetTopAssembly() => lastActiveAssembly;
+        public Assembly GetTopAssembly() { lock (_meshRegistryLock) return lastActiveAssembly; }
 
         [APIDescription(@"VisualOutputKind: GeoVisualOutputKind
 Mesh when the latest registered output was a mesh; Assembly when the latest activity was on an assembly. Drives default GeoScriptViewer mesh selection.")]
-        public GeoVisualOutputKind VisualOutputKind => visualOutputKind;
+        public GeoVisualOutputKind VisualOutputKind { get { lock (_meshRegistryLock) return visualOutputKind; } }
 
-        internal void NotifyMeshRegistered() => visualOutputKind = GeoVisualOutputKind.Mesh;
+        internal void NotifyMeshRegistered() { lock (_meshRegistryLock) visualOutputKind = GeoVisualOutputKind.Mesh; }
 
         internal void NotifyAssemblyActivity(Assembly assembly)
         {
-            lastActiveAssembly = assembly;
-            visualOutputKind = GeoVisualOutputKind.Assembly;
+            lock (_meshRegistryLock)
+            {
+                lastActiveAssembly = assembly;
+                visualOutputKind = GeoVisualOutputKind.Assembly;
+            }
         }
 
         /// <summary>
         /// All meshes added to this API (e.g. each <see cref="GeoAPI.Extrude"/>, <see cref="GeoAPI.Revolve"/>, <see cref="GeoAPI.Loft"/>).
-        /// Read-only wrapper; does not copy geometry.
+        /// Snapshot of references; does not copy geometry.
         /// </summary>
         [APIDescription(@"GetMeshes() -> IReadOnlyList[AnchorMesh]
-Read-only list of all meshes registered on this API (no copy).")]
-        public IReadOnlyList<AnchorMesh> GetMeshes() => new ReadOnlyCollection<AnchorMesh>(meshes);
+Read-only snapshot of registered mesh references (geometry is not copied).")]
+        public IReadOnlyList<AnchorMesh> GetMeshes()
+        {
+            lock (_meshRegistryLock) return new ReadOnlyCollection<AnchorMesh>(meshes.ToArray());
+        }
 
         [APIDescription(@"GetCurves() -> List[Curve3D]
-All 3D curves added via AddLine and similar (live list; do not mutate while iterating).")]
+All 3D curves added via AddLine and similar (snapshot of references).")]
         public List<Curve3D> GetCurves()
         {
-            return curves3D;
+            lock (_meshRegistryLock) return new List<Curve3D>(curves3D);
         }
 
         [APIDescription(@"GetPlanes() -> List[Plane3D]
-All Plane3D objects registered via AddPlane (live list).")]
+All Plane3D objects registered via AddPlane (snapshot of references).")]
         public List<Plane3D> GetPlanes()
         {
-            return planes3D;
+            lock (_meshRegistryLock) return new List<Plane3D>(planes3D);
         }
 
         [APIDescription(@"GetSketches() -> List[PlotterSketcherCoordSys]
-All sketches registered via GetPlotterSketcher / GetSketcherFromDxf / GetSketcherFromSvg (live list).")]
+All sketches registered via GetPlotterSketcher / GetSketcherFromDxf / GetSketcherFromSvg (snapshot of references).")]
         public List<PlotterSketcherCoordSys> GetSketches()
         {
-            return sketches;
+            lock (_meshRegistryLock) return new List<PlotterSketcherCoordSys>(sketches);
         }
 
         [APIDescription(@"GetAssemblies() -> List[Assembly]
-All assemblies registered via GetAssembly (live list).")]
+All assemblies registered via GetAssembly (snapshot of references).")]
         public List<Assembly> GetAssemblies()
         {
-            return assemblies;
+            lock (_meshRegistryLock) return new List<Assembly>(assemblies);
         }
 
         [APIDescription(@"Get(name: str) -> object
@@ -202,6 +210,7 @@ Non-throwing variant of GetSketchConstraintPoint.")]
 Searches all ConstrainedSketcher instances for a constrained point on a curve with this name. Use ""<sketchName>:<curveName>@<u>"" to disambiguate; otherwise throws if multiple sketches match.")]
         public bool TryGetCPointOnSketchFromName(string name, out CVec2D result)
         {
+            var sketches = GetSketches();
             result = default;
             if (!EntityNaming.TryParseQualifiedSketchCurveAddress(name, out var qualified))
                 return false;
@@ -240,6 +249,7 @@ Searches all ConstrainedSketcher instances for a constrained point on a curve wi
 Searches all sketches for a 2D point on a curve with this name. Use ""<sketchName>:<curveName>@<u>"" to disambiguate; otherwise throws if multiple sketches match.")]
         public bool TryGetPointOnSketchFromName(string name, out Vec2D result)
         {
+            var sketches = GetSketches();
             result = default;
             if (!EntityNaming.TryParseQualifiedSketchCurveAddress(name, out var qualified))
                 return false;
@@ -283,6 +293,7 @@ Searches all sketches for a 2D point on a curve with this name. Use ""<sketchNam
 Looks up a 2D curve by name across all ConstrainedSketcher instances. Use ""<sketchName>:<curveName>"" to disambiguate; otherwise returns the first match across all sketches.")]
         public bool TryGetCurveFromSketch(string name, out Curves.Curve2D result)
         {
+            var sketches = GetSketches();
             result = null;
 
             var qualified = EntityNaming.ParseQualifiedCurveName(name);
@@ -344,6 +355,7 @@ Looks up a 2D curve by name across all ConstrainedSketcher instances. Use ""<ske
 Resolves a plane. Recognized: DefaultPlanes.OriginXY / OriginYZ / OriginZX, planes added via AddPlane, or a planar surface patch on any mesh (""{meshName}:{patchName}"" or patch name alone, searched newest mesh first).")]
         public bool TryGetPlaneFromName(string name, out Plane3D result)
         {
+            var planes3D = GetPlanes();
             if (name == DefaultPlanes.OriginXY)
             {
                 result = new Plane3D(new Vec3D(0), new Vec3D(0,0,1), new Vec3D(1,0,0), new Vec3D(0,1,0));
@@ -523,6 +535,7 @@ Generic name lookup, same priority order as Get(name). On success `value` is one
 
         private IEnumerable<AnchorMesh> MeshesNewestFirst()
         {
+            var meshes = GetMeshes();
             for (int i = meshes.Count - 1; i >= 0; i--)
             {
                 meshes[i].EnsureCoplanarPostProcessed();
@@ -533,32 +546,41 @@ Generic name lookup, same priority order as Get(name). On success `value` is one
         /// <summary>Registers a mesh, replacing any previously registered mesh with the same name.</summary>
         private void RegisterMesh(AnchorMesh mesh)
         {
-            UnregisterMeshesNamed(mesh.Name, except: mesh);
-            mesh.MeshNameEvictor = name => UnregisterMeshesNamed(name, except: mesh);
-            meshes.Add(mesh);
-            NotifyMeshRegistered();
+            lock (_meshRegistryLock)
+            {
+                UnregisterMeshesNamed(mesh.Name, except: mesh);
+                mesh.MeshNameEvictor = name => UnregisterMeshesNamed(name, except: mesh);
+                meshes.Add(mesh);
+                NotifyMeshRegistered();
+            }
         }
 
         private void UnregisterMeshesNamed(string name, AnchorMesh except)
         {
-            for (int i = meshes.Count - 1; i >= 0; i--)
+            lock (_meshRegistryLock)
             {
-                if (meshes[i].Name == name && !ReferenceEquals(meshes[i], except))
-                    meshes.RemoveAt(i);
+                for (int i = meshes.Count - 1; i >= 0; i--)
+                {
+                    if (meshes[i].Name == name && !ReferenceEquals(meshes[i], except))
+                        meshes.RemoveAt(i);
+                }
             }
         }
 
         /// <summary>Registers a sketch; throws if another sketch with the same name exists.</summary>
         internal void RegisterSketch(PlotterSketcherCoordSys sketch)
         {
-            for (int i = 0; i < sketches.Count; i++)
+            lock (_meshRegistryLock)
             {
-                if (sketches[i].Name == sketch.Name)
-                    throw new NameCollisionException($"Sketch name already registered: '{sketch.Name}'.");
+                for (int i = 0; i < sketches.Count; i++)
+                {
+                    if (sketches[i].Name == sketch.Name)
+                        throw new NameCollisionException($"Sketch name already registered: '{sketch.Name}'.");
+                }
+                sketch.SetDefaultMaxDeviation(_maxDeviation);
+                sketch.SetWorldPointQuery(ResolveWorldPointOrNaN);
+                sketches.Add(sketch);
             }
-            sketch.SetDefaultMaxDeviation(_maxDeviation);
-            sketch.SetWorldPointQuery(ResolveWorldPointOrNaN);
-            sketches.Add(sketch);
         }
 
         Vec3D ResolveWorldPointOrNaN(string name)
@@ -573,20 +595,29 @@ Generic name lookup, same priority order as Get(name). On success `value` is one
         /// </summary>
         public bool UnregisterSketch(PlotterSketcherCoordSys sketch)
         {
-            if (sketch == null) return false;
-            return sketches.Remove(sketch);
+            lock (_meshRegistryLock)
+            {
+                if (sketch == null) return false;
+                return sketches.Remove(sketch);
+            }
         }
 
-        internal bool IsRegisteredMesh(AnchorMesh mesh) => mesh != null && meshes.Contains(mesh);
+        internal bool IsRegisteredMesh(AnchorMesh mesh)
+        {
+            lock (_meshRegistryLock) return mesh != null && meshes.Contains(mesh);
+        }
 
         private void RegisterAssembly(Assembly assembly)
         {
-            for (int i = 0; i < assemblies.Count; i++)
+            lock (_meshRegistryLock)
             {
-                if (assemblies[i].Name == assembly.Name)
-                    throw new NameCollisionException($"Assembly name already registered: '{assembly.Name}'.");
+                for (int i = 0; i < assemblies.Count; i++)
+                {
+                    if (assemblies[i].Name == assembly.Name)
+                        throw new NameCollisionException($"Assembly name already registered: '{assembly.Name}'.");
+                }
+                assemblies.Add(assembly);
             }
-            assemblies.Add(assembly);
         }
     }
 }

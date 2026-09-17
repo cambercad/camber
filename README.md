@@ -90,8 +90,8 @@ Both Windows and Linux publish scripts write **only** `cambercad-*.whl` into the
 ```text
 camber/
   dist/
-    cambercad-0.1.2-py3-none-win_amd64.whl
-    cambercad-0.1.2-py3-none-manylinux_2_17_x86_64.whl
+    cambercad-0.1.3-py3-none-win_amd64.whl
+    cambercad-0.1.3-py3-none-manylinux_2_17_x86_64.whl
 ```
 
 That layout matches PyPI (`twine upload dist/cambercad-*.whl`). Dependency wheels (`cffi`, …) are staged temporarily and not kept in `dist/`. Scripts retag DotWrap’s `py3-none-any` name to a platform tag so Win/Linux wheels can sit side by side. PyPI rejects a bare `linux_x86_64` tag; Linux wheels use `manylinux_2_17_x86_64`.

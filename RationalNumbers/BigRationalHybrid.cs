@@ -308,26 +308,20 @@ namespace GeoCore
                 !pcx.isLongValue || !pcy.isLongValue || !pdx.isLongValue || !pdy.isLongValue)
                 return false;
 
-            Int128 adx, ady, bdx, bdy, cdx, cdy;
-            if (pax.IsInt32 && pay.IsInt32 && pbx.IsInt32 && pby.IsInt32 &&
-                pcx.IsInt32 && pcy.IsInt32 && pdx.IsInt32 && pdy.IsInt32)
-            {
-                adx = (int)pax.value - (int)pdx.value;
-                ady = (int)pay.value - (int)pdy.value;
-                bdx = (int)pbx.value - (int)pdx.value;
-                bdy = (int)pby.value - (int)pdy.value;
-                cdx = (int)pcx.value - (int)pdx.value;
-                cdy = (int)pcy.value - (int)pdy.value;
-            }
-            else
-            {
-                adx = (Int128)pax.value - pdx.value;
-                ady = (Int128)pay.value - pdy.value;
-                bdx = (Int128)pbx.value - pdx.value;
-                bdy = (Int128)pby.value - pdy.value;
-                cdx = (Int128)pcx.value - pdx.value;
-                cdy = (Int128)pcy.value - pdy.value;
-            }
+            // Widen before subtracting, including opposite Int32 endpoints.
+            Int128 adx = (Int128)pax.value - pdx.value;
+            Int128 ady = (Int128)pay.value - pdy.value;
+            Int128 bdx = (Int128)pbx.value - pdx.value;
+            Int128 bdy = (Int128)pby.value - pdy.value;
+            Int128 cdx = (Int128)pcx.value - pdx.value;
+            Int128 cdy = (Int128)pcy.value - pdy.value;
+            // Six fourth-degree products are bounded by 12 * limit^4.
+            // Larger inputs must use the caller's arbitrary-precision path.
+            const long limit = 1L << 30;
+            if (Int128.Abs(adx) > limit || Int128.Abs(ady) > limit ||
+                Int128.Abs(bdx) > limit || Int128.Abs(bdy) > limit ||
+                Int128.Abs(cdx) > limit || Int128.Abs(cdy) > limit)
+                return false;
 
             Int128 abdet = adx * bdy - bdx * ady;
             Int128 bcdet = bdx * cdy - cdx * bdy;
@@ -343,32 +337,28 @@ namespace GeoCore
             return true;
         }
 
-        /// <summary>
-        /// Exact sign of the 3×3 determinant with columns (pa−pd, pb−pd, pc−pd) — same as CSG Orient3DSign.
-        /// Uses <see cref="Int128"/> when all twelve coordinates are on the long fast path.
-        /// </summary>
         public static long Orient3DFastCount;
         public static long Orient3DSlowCount;
         public static long Orient3DFilterHitCount;
         public static long Orient3DFilterMissCount;
 
         /// <summary>
-        /// Machine epsilon (2^-52). Shewchuk o3derrboundA is about 7ε; conversion of
-        /// rationals to double adds more, so the filter uses a larger multiple and
-        /// abstains whenever |det| is not safely above the bound.
+        /// Exact orientation sign. Uses Int128 for Int32 coordinates, certified
+        /// integer bounds for suitable rationals, and BigInteger otherwise.
+        /// See ExactOrientation.md for error and overflow bounds.
         /// </summary>
-        private const double Orient3DDoubleEps = 2.2204460492503131e-16;
-
         public static int SignOfOrient3D(
             in BigRationalHybrid pax, in BigRationalHybrid pay, in BigRationalHybrid paz,
             in BigRationalHybrid pbx, in BigRationalHybrid pby, in BigRationalHybrid pbz,
             in BigRationalHybrid pcx, in BigRationalHybrid pcy, in BigRationalHybrid pcz,
             in BigRationalHybrid pdx, in BigRationalHybrid pdy, in BigRationalHybrid pdz)
         {
-            if (pax.isLongValue && pay.isLongValue && paz.isLongValue &&
-                pbx.isLongValue && pby.isLongValue && pbz.isLongValue &&
-                pcx.isLongValue && pcy.isLongValue && pcz.isLongValue &&
-                pdx.isLongValue && pdy.isLongValue && pdz.isLongValue)
+            // Int32 coordinate differences need at most 33 bits. The cubic
+            // determinant then fits Int128; arbitrary Int64 coordinates do not.
+            if (pax.IsInt32 && pay.IsInt32 && paz.IsInt32 &&
+                pbx.IsInt32 && pby.IsInt32 && pbz.IsInt32 &&
+                pcx.IsInt32 && pcy.IsInt32 && pcz.IsInt32 &&
+                pdx.IsInt32 && pdy.IsInt32 && pdz.IsInt32)
             {
                 Int128 adx = (Int128)pax.value - pdx.value;
                 Int128 bdx = (Int128)pbx.value - pdx.value;
@@ -395,25 +385,26 @@ namespace GeoCore
                 return 0;
             }
 
-            int filtered;
-            if (TrySignOfOrient3DDoubleFilter(
-                    in pax, in pay, in paz, in pbx, in pby, in pbz,
-                    in pcx, in pcy, in pcz, in pdx, in pdy, in pdz, out filtered))
-            {
-                return filtered;
-            }
-
+            // Integer bounds may prove a nonzero sign without constructing the
+            // full rational determinant. Uncertain or out-of-range cases fall
+            // through to arbitrary precision; geometry is never quantized here.
+            if (TrySignOfOrient3DIntegerBounds(
+                pax, pay, paz, pbx, pby, pbz, pcx, pcy, pcz, pdx, pdy, pdz, out int boundedSign))
+                return boundedSign;
             return SignOfOrient3DExact(
                 in pax, in pay, in paz, in pbx, in pby, in pbz,
                 in pcx, in pcy, in pcz, in pdx, in pdy, in pdz);
         }
 
+        private const int OrientBoundsFractionBits = 20;
+        private const long OrientBoundsCoordinateLimit = 1L << 40;
+
         /// <summary>
-        /// Double filter for <see cref="SignOfOrient3D"/>. Returns false when the
-        /// sign is not certified (caller must use the exact path). Never returns a
-        /// sign that disagrees with the exact determinant.
+        /// Certifies a nonzero orientation using integer bounds only. False
+        /// means "unknown", including exact zero; use SignOfOrient3DExact then.
+        /// Coordinates and rational values are neither modified nor replaced.
         /// </summary>
-        public static bool TrySignOfOrient3DDoubleFilter(
+        public static bool TrySignOfOrient3DIntegerBounds(
             in BigRationalHybrid pax, in BigRationalHybrid pay, in BigRationalHybrid paz,
             in BigRationalHybrid pbx, in BigRationalHybrid pby, in BigRationalHybrid pbz,
             in BigRationalHybrid pcx, in BigRationalHybrid pcy, in BigRationalHybrid pcz,
@@ -421,68 +412,74 @@ namespace GeoCore
             out int sign)
         {
             sign = 0;
-            double ax = pax.ToDouble(), ay = pay.ToDouble(), az = paz.ToDouble();
-            double bx = pbx.ToDouble(), by = pby.ToDouble(), bz = pbz.ToDouble();
-            double cx = pcx.ToDouble(), cy = pcy.ToDouble(), cz = pcz.ToDouble();
-            double dx = pdx.ToDouble(), dy = pdy.ToDouble(), dz = pdz.ToDouble();
-            if (!double.IsFinite(ax) || !double.IsFinite(ay) || !double.IsFinite(az) ||
-                !double.IsFinite(bx) || !double.IsFinite(by) || !double.IsFinite(bz) ||
-                !double.IsFinite(cx) || !double.IsFinite(cy) || !double.IsFinite(cz) ||
-                !double.IsFinite(dx) || !double.IsFinite(dy) || !double.IsFinite(dz))
+            if (!TryOrientBoundCoordinate(pax, out long ax) || !TryOrientBoundCoordinate(pay, out long ay) ||
+                !TryOrientBoundCoordinate(paz, out long az) || !TryOrientBoundCoordinate(pbx, out long bx) ||
+                !TryOrientBoundCoordinate(pby, out long by) || !TryOrientBoundCoordinate(pbz, out long bz) ||
+                !TryOrientBoundCoordinate(pcx, out long cx) || !TryOrientBoundCoordinate(pcy, out long cy) ||
+                !TryOrientBoundCoordinate(pcz, out long cz) || !TryOrientBoundCoordinate(pdx, out long dx) ||
+                !TryOrientBoundCoordinate(pdy, out long dy) || !TryOrientBoundCoordinate(pdz, out long dz))
                 return false;
 
-            double adx = ax - dx, bdx = bx - dx, cdx = cx - dx;
-            double ady = ay - dy, bdy = by - dy, cdy = cy - dy;
-            double adz = az - dz, bdz = bz - dz, cdz = cz - dz;
+            long adx=ax-dx, ady=ay-dy, adz=az-dz;
+            long bdx=bx-dx, bdy=by-dy, bdz=bz-dz;
+            long cdx=cx-dx, cdy=cy-dy, cdz=cz-dz;
+            Int128 determinant = (Int128)adz*((Int128)bdx*cdy-(Int128)cdx*bdy)
+                + (Int128)bdz*((Int128)cdx*ady-(Int128)adx*cdy)
+                - (Int128)cdz*((Int128)bdx*ady-(Int128)adx*bdy);
 
-            double bdxcdy = bdx * cdy;
-            double cdxbdy = cdx * bdy;
-            double cdxady = cdx * ady;
-            double adxcdy = adx * cdy;
-            double bdxady = bdx * ady;
-            double adxbdy = adx * bdy;
+            long max = Math.Max(Math.Max(Math.Abs(adx),Math.Abs(ady)),Math.Abs(adz));
+            max = Math.Max(max,Math.Max(Math.Max(Math.Abs(bdx),Math.Abs(bdy)),Math.Abs(bdz)));
+            max = Math.Max(max,Math.Max(Math.Max(Math.Abs(cdx),Math.Abs(cdy)),Math.Abs(cdz)));
+            Int128 m=max;
+            // q=trunc(2^20*x) differs from the exact scaled coordinate by <1.
+            // Each coordinate difference therefore has absolute error <2.
+            // For each determinant monomial abc, |a|,|b|,|c|<=M:
+            // |(a+e)(b+f)(c+g)-abc| <= 6M^2+12M+8.
+            // There are six signed monomials, so E=36M^2+72M+48 bounds
+            // the total error. Strict comparison alone certifies a sign.
+            Int128 error = 36*m*m + 72*m + 48;
+            // |q|<=2^40 => M<=2^41. Both 6*M^3 and E fit Int128,
+            // including every intermediate operation above. No wrapping occurs.
+            if (determinant > error) { sign=1; return true; }
+            if (determinant < -error) { sign=-1; return true; }
+            return false;
+        }
 
-            double left = adz * (bdxcdy - cdxbdy) + bdz * (cdxady - adxcdy);
-            double right = cdz * (bdxady - adxbdy);
-            double det = left - right;
-            if (!double.IsFinite(det))
-                return false;
-
-            // Same grouping as the exact Int128 path; absolute values bound rounding.
-            double permanent =
-                Math.Abs(adz) * (Math.Abs(bdxcdy) + Math.Abs(cdxbdy)) +
-                Math.Abs(bdz) * (Math.Abs(cdxady) + Math.Abs(adxcdy)) +
-                Math.Abs(cdz) * (Math.Abs(bdxady) + Math.Abs(adxbdy));
-            if (!double.IsFinite(permanent))
-                return false;
-
-            double maxAbs = 0.0;
-            if (Math.Abs(ax) > maxAbs) maxAbs = Math.Abs(ax);
-            if (Math.Abs(ay) > maxAbs) maxAbs = Math.Abs(ay);
-            if (Math.Abs(az) > maxAbs) maxAbs = Math.Abs(az);
-            if (Math.Abs(bx) > maxAbs) maxAbs = Math.Abs(bx);
-            if (Math.Abs(by) > maxAbs) maxAbs = Math.Abs(by);
-            if (Math.Abs(bz) > maxAbs) maxAbs = Math.Abs(bz);
-            if (Math.Abs(cx) > maxAbs) maxAbs = Math.Abs(cx);
-            if (Math.Abs(cy) > maxAbs) maxAbs = Math.Abs(cy);
-            if (Math.Abs(cz) > maxAbs) maxAbs = Math.Abs(cz);
-            if (Math.Abs(dx) > maxAbs) maxAbs = Math.Abs(dx);
-            if (Math.Abs(dy) > maxAbs) maxAbs = Math.Abs(dy);
-            if (Math.Abs(dz) > maxAbs) maxAbs = Math.Abs(dz);
-            double scaleTerm = maxAbs * maxAbs * maxAbs;
-
-            // Shewchuk's ~7ε assumes exact double inputs. Converting rationals adds
-            // another O(ε M³) term; a 32ε bound mis-certified coincident cylinder
-            // meridians (ValidateCluster). Stay conservative: 256ε plus 1e-12.
-            double errbound =
-                (256.0 * Orient3DDoubleEps) * (permanent + scaleTerm) +
-                1e-12 * (permanent + 1.0) +
-                (256.0 * double.Epsilon);
-            if (Math.Abs(det) <= errbound)
-                return false;
-
-            sign = det > 0.0 ? 1 : -1;
+        private static bool TryOrientBoundCoordinate(in BigRationalHybrid coordinate, out long scaled)
+        {
+            if (coordinate.isLongValue)
+            {
+                const long limit = OrientBoundsCoordinateLimit >> OrientBoundsFractionBits;
+                if (coordinate.value < -limit || coordinate.value > limit)
+                { scaled=0; return false; }
+                scaled=coordinate.value << OrientBoundsFractionBits;
+                return true;
+            }
+            GetNumDenom(coordinate, out var numerator, out var denominator);
+            // BigInteger division truncates toward zero, for either sign.
+            // This gives an exact error bound even for thousand-bit rationals.
+            var quotient=(numerator << OrientBoundsFractionBits)/denominator;
+            if (quotient.CompareTo(-OrientBoundsCoordinateLimit)<0 ||
+                quotient.CompareTo(OrientBoundsCoordinateLimit)>0)
+            { scaled=0; return false; }
+            scaled=(long)quotient;
             return true;
+        }
+
+        /// <summary>
+        /// Compatibility entry point. Uses the integer-only certified bounds;
+        /// no floating-point conversion or heuristic error estimate is used.
+        /// </summary>
+        [Obsolete("Use TrySignOfOrient3DIntegerBounds; this compatibility method also uses integer bounds.")]
+        public static bool TrySignOfOrient3DDoubleFilter(
+            in BigRationalHybrid pax, in BigRationalHybrid pay, in BigRationalHybrid paz,
+            in BigRationalHybrid pbx, in BigRationalHybrid pby, in BigRationalHybrid pbz,
+            in BigRationalHybrid pcx, in BigRationalHybrid pcy, in BigRationalHybrid pcz,
+            in BigRationalHybrid pdx, in BigRationalHybrid pdy, in BigRationalHybrid pdz,
+            out int sign)
+        {
+            return TrySignOfOrient3DIntegerBounds(
+                pax, pay, paz, pbx, pby, pbz, pcx, pcy, pcz, pdx, pdy, pdz, out sign);
         }
 
         /// <summary>Exact BigInteger determinant sign (no float filter, no Int128 fast path).</summary>
@@ -492,68 +489,33 @@ namespace GeoCore
             in BigRationalHybrid pcx, in BigRationalHybrid pcy, in BigRationalHybrid pcz,
             in BigRationalHybrid pdx, in BigRationalHybrid pdy, in BigRationalHybrid pdz)
         {
-            RationalDiff(in pax, in pdx, out BigInteger adxN, out BigInteger adxD);
-            RationalDiff(in pbx, in pdx, out BigInteger bdxN, out BigInteger bdxD);
-            RationalDiff(in pcx, in pdx, out BigInteger cdxN, out BigInteger cdxD);
-            RationalDiff(in pay, in pdy, out BigInteger adyN, out BigInteger adyD);
-            RationalDiff(in pby, in pdy, out BigInteger bdyN, out BigInteger bdyD);
-            RationalDiff(in pcy, in pdy, out BigInteger cdyN, out BigInteger cdyD);
-            RationalDiff(in paz, in pdz, out BigInteger adzN, out BigInteger adzD);
-            RationalDiff(in pbz, in pdz, out BigInteger bdzN, out BigInteger bdzD);
-            RationalDiff(in pcz, in pdz, out BigInteger cdzN, out BigInteger cdzD);
-
-            RationalMinorDiff(bdxN, bdxD, cdyN, cdyD, cdxN, cdxD, bdyN, bdyD, out BigInteger minor1N, out BigInteger minor1D);
-            RationalMinorDiff(cdxN, cdxD, adyN, adyD, adxN, adxD, cdyN, cdyD, out BigInteger minor2N, out BigInteger minor2D);
-            RationalMinorDiff(bdxN, bdxD, adyN, adyD, adxN, adxD, bdyN, bdyD, out BigInteger minor3N, out BigInteger minor3D);
-
-            RationalProduct(adzN, adzD, minor1N, minor1D, out BigInteger term1N, out BigInteger term1D);
-            RationalProduct(bdzN, bdzD, minor2N, minor2D, out BigInteger term2N, out BigInteger term2D);
-            RationalProduct(cdzN, cdzD, minor3N, minor3D, out BigInteger rightN, out BigInteger rightD);
-
-            RationalAdd(term1N, term1D, term2N, term2D, out BigInteger leftN, out BigInteger leftD);
-            return CompareRational(leftN, leftD, rightN, rightD);
+            // Clear each coordinate column by its positive least common
+            // denominator. This scales the determinant by a positive factor,
+            // preserving its exact sign without multiplying denominators anew
+            // at every subtraction, minor and sum.
+            ScaleCoordinateDifferences(pax, pbx, pcx, pdx, out var ax, out var bx, out var cx);
+            ScaleCoordinateDifferences(pay, pby, pcy, pdy, out var ay, out var by, out var cy);
+            ScaleCoordinateDifferences(paz, pbz, pcz, pdz, out var az, out var bz, out var cz);
+            return (az * (bx * cy - cx * by) + bz * (cx * ay - ax * cy)
+                - cz * (bx * ay - ax * by)).Sign;
         }
 
-        private static void RationalDiff(in BigRationalHybrid a, in BigRationalHybrid b, out BigInteger n, out BigInteger d)
+        private static void ScaleCoordinateDifferences(
+            in BigRationalHybrid a, in BigRationalHybrid b,
+            in BigRationalHybrid c, in BigRationalHybrid d,
+            out BigInteger ax, out BigInteger bx, out BigInteger cx)
         {
-            GetNumDenom(in a, out BigInteger na, out BigInteger da);
-            GetNumDenom(in b, out BigInteger nb, out BigInteger db);
-            n = na * db - nb * da;
-            d = da * db;
-        }
-
-        private static void RationalProduct(
-            BigInteger n1, BigInteger d1, BigInteger n2, BigInteger d2,
-            out BigInteger n, out BigInteger d)
-        {
-            n = n1 * n2;
-            d = d1 * d2;
-        }
-
-        private static void RationalMinorDiff(
-            BigInteger nBdx, BigInteger dBdx, BigInteger nCdy, BigInteger dCdy,
-            BigInteger nCdx, BigInteger dCdx, BigInteger nBdy, BigInteger dBdy,
-            out BigInteger n, out BigInteger d)
-        {
-            BigInteger p1N = nBdx * nCdy;
-            BigInteger p1D = dBdx * dCdy;
-            BigInteger p2N = nCdx * nBdy;
-            BigInteger p2D = dCdx * dBdy;
-            n = p1N * p2D - p2N * p1D;
-            d = p1D * p2D;
-        }
-
-        private static void RationalAdd(
-            BigInteger n1, BigInteger d1, BigInteger n2, BigInteger d2,
-            out BigInteger n, out BigInteger d)
-        {
-            n = n1 * d2 + n2 * d1;
-            d = d1 * d2;
-        }
-
-        private static int CompareRational(BigInteger n1, BigInteger d1, BigInteger n2, BigInteger d2)
-        {
-            return BigInteger.Compare(n1 * d2, n2 * d1);
+            GetNumDenom(a, out var an, out var ad);
+            GetNumDenom(b, out var bn, out var bd);
+            GetNumDenom(c, out var cn, out var cd);
+            GetNumDenom(d, out var dn, out var dd);
+            static BigInteger Lcm(BigInteger x, BigInteger y) =>
+                x == y ? x : x / BigInteger.GreatestCommonDivisor(x, y) * y;
+            var common = Lcm(Lcm(ad, bd), Lcm(cd, dd));
+            var origin = dn * (common / dd);
+            ax = an * (common / ad) - origin;
+            bx = bn * (common / bd) - origin;
+            cx = cn * (common / cd) - origin;
         }
 
         /// <summary>
@@ -609,7 +571,9 @@ namespace GeoCore
             in BigRationalHybrid ay, in BigRationalHybrid by,
             in BigRationalHybrid az, in BigRationalHybrid bz)
         {
-            if (ax.isLongValue && bx.isLongValue && ay.isLongValue && by.isLongValue && az.isLongValue && bz.isLongValue)
+            // Three arbitrary Int64 products can overflow Int128 when summed.
+            // Int32 products are bounded; wider values use BigInteger below.
+            if (ax.IsInt32 && bx.IsInt32 && ay.IsInt32 && by.IsInt32 && az.IsInt32 && bz.IsInt32)
             {
                 Int128 s = (Int128)ax.value * bx.value;
                 s += (Int128)ay.value * by.value;

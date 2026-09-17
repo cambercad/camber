@@ -107,6 +107,23 @@ public static partial class LoftBuilder
                 (double[])matchedKnots.Clone(), p.Closed)).ToList();
             return () => NurbsSurfaceFactory.LoftFromProfileCurves(matchedProfiles, style);
         }
+        // A full conic has an exact rational parameterization shared by every
+        // section. Use it for both sampling and support metadata. Mixing the
+        // sketch's angle parameter with rational surface UVs makes refinement
+        // and normals refer to different positions on the same ellipse.
+        if (prepared.All(p => p.SeamU0 == 0 && p.AnalyticStrip != null &&
+            p.SourceCurves?.Count == 1 && p.SourceCurves[0] is Circle2D or Ellipse2D))
+        {
+            var conics = SurfaceLoft.CompatibleSections(prepared.Select(p =>
+                Curve2DToBSpline.ToBSplineCurve(p.SourceCurves[0], p.System)).ToArray());
+            for (int p = 0; p < prepared.Count; p++)
+            {
+                prepared[p].MatchedCurve = conics[p];
+                prepared[p].MatchedCurveNames = new[] { prepared[p].SourceCurves[0].Name };
+            }
+            constructionBreaks = conics[0].Knots.Distinct().ToArray();
+            return () => NurbsSurfaceFactory.LoftFromProfileCurves(conics, style);
+        }
         constructionBreaks = null;
         var strips = prepared.Select(profile => profile.AnalyticStrip ??
             CurveStrip2D.FromTessellatedPolyline(profile.Poly, profile.Norms, profile.Closed)).ToArray();

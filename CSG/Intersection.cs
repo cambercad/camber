@@ -40,6 +40,14 @@ namespace CSG
 
             int ab = Orient3DSign(segmentStart, segmentEnd, a, b);
             int bc = Orient3DSign(segmentStart, segmentEnd, b, c);
+            // Opposite nonzero wedge signs cannot satisfy either consistent
+            // orientation below. Avoid a third exact predicate for this miss;
+            // zero signs still follow the full boundary/coplanar path.
+            if ((ab < 0 && bc > 0) || (ab > 0 && bc < 0))
+            {
+                intersection = default;
+                return SegmentTriangleIntersectionType.NoIntersection;
+            }
             int ac = -Orient3DSign(segmentStart, segmentEnd, a, c);
 
             if ((ab >= 0 && bc >= 0 && ac >= 0) || (ab <= 0 && bc <= 0 && ac <= 0))

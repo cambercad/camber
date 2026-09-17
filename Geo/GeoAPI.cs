@@ -186,7 +186,7 @@ Adds a 3D line segment to the API's curve list. lineName auto-generated if null.
         public Line3D AddLine(Vec3D start, Vec3D end, string lineName = null)
         {
             var line = new Line3D(start, end, lineName);
-            curves3D.Add(line);
+            lock (_meshRegistryLock) curves3D.Add(line);
             return line;
         }
         [APIDescription(@"AddLine(pointNameStart: str, pointNameEnd: str, lineName: str = None) -> Line3D
@@ -197,7 +197,7 @@ Adds a 3D line between two named points (mesh anchors / DefaultPoints.Origin). T
             var endPoint = GetPointFromName(pointNameEnd);
 
             var line = new Line3D(startPoint, endPoint, lineName);
-            curves3D.Add(line);
+            lock (_meshRegistryLock) curves3D.Add(line);
             return line;
         }
         [APIDescription(@"AddPlane(planeName: str, originAnchorName: str)
@@ -217,7 +217,7 @@ Creates a Plane3D anchored on the top mesh's surface at the named anchor point. 
             tangentX = Vec3DOps.Cross(tangentY, normal);
             tangentX.Normalize();
 
-            planes3D.Add(new Plane3D(point, normal, tangentX, tangentY, planeName));
+            lock (_meshRegistryLock) planes3D.Add(new Plane3D(point, normal, tangentX, tangentY, planeName));
         }
 
 
@@ -269,16 +269,19 @@ Creates a constraint-capable sketcher in an explicit world CoordinateSystem (ori
 Creates or returns a named 3D assembly mate solver for meshes on this GeoAPI instance.")]
         public Assembly GetAssembly(string name = null)
         {
-            name = name ?? GenerateName("Assembly");
-            for (int i = 0; i < assemblies.Count; i++)
+            lock (_meshRegistryLock)
             {
-                if (assemblies[i].Name == name)
-                    return assemblies[i];
-            }
+                name = name ?? GenerateName("Assembly");
+                for (int i = 0; i < assemblies.Count; i++)
+                {
+                    if (assemblies[i].Name == name)
+                        return assemblies[i];
+                }
 
-            var assembly = new Assembly(this, name);
-            RegisterAssembly(assembly);
-            return assembly;
+                var assembly = new Assembly(this, name);
+                RegisterAssembly(assembly);
+                return assembly;
+            }
         }
 
         [APIDescription(@"GetPlotterSketcher(sketchPlaneName: str, originPointName: str, name: str = None) -> PlotterSketcherCoordSys
@@ -1285,7 +1288,7 @@ Throws if any sketch vertex misses the mesh (message includes the curve name).")
 
                     PolylineCurve3D poly = BuildProjectedPolyline(hitSeg, EntityNaming.ExtrudeSide(name, curveName));
                     curves.Add(poly);
-                    curves3D.Add(poly);
+                    lock (_meshRegistryLock) curves3D.Add(poly);
                 }
 
                 // Closed strip: snap last endpoint of last segment to first of first.
@@ -1701,6 +1704,8 @@ Side patches are named ""<meshName>-<contourSegmentName>"". Helper geometry is e
         //    return result;
         //}
 
+        // Protect registry bookkeeping only. Independent builders own their sketches,
+        // meshes and assemblies; expensive geometry runs outside this lock.
         private readonly object _meshRegistryLock = new object();
 
         [APIDescription(@"BatchUnion(meshesToUnite: List[AnchorMesh]) -> AnchorMesh
@@ -1859,7 +1864,6 @@ Group/patch names from both inputs are merged (throws on group-id conflict for t
         public AnchorMesh Boolean(AnchorMesh meshA, AnchorMesh meshB, BooleanOp operation, string name = null)
         {
             name = name ?? GenerateName("Boolean");
-            var (nameToGroupCombined, metaDataCombined) = MergeBooleanPatchData(meshA, meshB);
             if (Resolver.LogBooleanOps && name != null)
                 Console.WriteLine("BoolOp: " + name);
             var inheritedLineages = new Dictionary<int, FaceLineage>(meshA.FaceLineages);
@@ -1868,6 +1872,8 @@ Group/patch names from both inputs are merged (throws on group-id conflict for t
                     ? FaceLineage.Merge(new[] { existing, lineage }) : lineage;
             var obsolete = new HashSet<string>(meshA.AmbiguousFaceReferences, StringComparer.Ordinal);
             obsolete.UnionWith(meshB.AmbiguousFaceReferences);
+            var (nameToGroupCombined, metaDataCombined) = MergeBooleanPatchData(
+                meshA, meshB, inheritedLineages, obsolete);
             var provenance = operation == BooleanOp.Difference ? new BooleanFaceLineage(meshA, meshB) : null;
             MeshNormalUV combinedMesh = MeshNormalUV.BooleanOperation(meshA.Mesh, meshB.Mesh, operation, converter,
                 classifiedFragments: provenance == null ? null : provenance.Classify);
@@ -1890,7 +1896,8 @@ Group/patch names from both inputs are merged (throws on group-id conflict for t
         }
 
         private static (Dictionary<string, int>, Dictionary<string, SurfaceMetaData>) MergeBooleanPatchData(
-            AnchorMesh first, AnchorMesh second)
+            AnchorMesh first, AnchorMesh second, Dictionary<int, FaceLineage> inherited,
+            HashSet<string> obsolete)
         {
             // Split descendants can carry the same local label but different
             // group identities. Scope both labels to their operands; never
@@ -1906,6 +1913,25 @@ Group/patch names from both inputs are merged (throws on group-id conflict for t
             var metadata = new Dictionary<string, SurfaceMetaData>();
             Add(first);
             Add(second);
+            // An ancestor and a cut descendant can retain the same group ID
+            // under different current names. They are one source identity,
+            // unlike equal labels on distinct groups handled above. Publish
+            // its merged ancestry once, without mutating either operand.
+            foreach (var aliases in names.GroupBy(pair => pair.Value).Where(group => group.Count()>1).ToArray())
+            {
+                string canonical = inherited[aliases.Key].Reference;
+                if (names.TryGetValue(canonical, out int existing) && existing != aliases.Key)
+                    throw new NameCollisionException("Conflicting face ancestry: " + canonical);
+                SurfaceMetaData data = metadata.GetValueOrDefault(canonical);
+                foreach (var alias in aliases.OrderBy(pair => pair.Key,StringComparer.Ordinal))
+                {
+                    data ??= metadata.GetValueOrDefault(alias.Key);
+                    names.Remove(alias.Key);
+                    if (alias.Key != canonical) obsolete.Add(alias.Key);
+                }
+                names.Add(canonical, aliases.Key);
+                if (data != null) metadata[canonical] = data.Clone();
+            }
             return (names, metadata);
 
             void Add(AnchorMesh operand)

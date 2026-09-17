@@ -718,16 +718,25 @@ namespace GeoCore
         {
             if (r1.Denominator == r2.Denominator)
                 return new BigRational(r1.Numerator + r2.Numerator, r1.Denominator);
-            // a/b + c/d  == (ad + bc)/bd
-            return new BigRational((r1.Numerator * r2.Denominator) + (r1.Denominator * r2.Numerator), (r1.Denominator * r2.Denominator));
+            // Use the least common denominator. Geometry frequently combines
+            // related, unreduced fractions; multiplying their denominators
+            // repeatedly creates huge intermediates without adding precision.
+            var common = BigInteger.GreatestCommonDivisor(r1.Denominator, r2.Denominator);
+            var leftScale = r2.Denominator / common;
+            var rightScale = r1.Denominator / common;
+            return new BigRational(r1.Numerator * leftScale + r2.Numerator * rightScale,
+                r1.Denominator * leftScale);
         }
 
         public static BigRational operator -(BigRational r1, BigRational r2)
         {
             if (r1.Denominator == r2.Denominator)
                 return new BigRational(r1.Numerator - r2.Numerator, r1.Denominator);
-            // a/b - c/d  == (ad - bc)/bd
-            return new BigRational((r1.Numerator * r2.Denominator) - (r1.Denominator * r2.Numerator), (r1.Denominator * r2.Denominator));
+            var common = BigInteger.GreatestCommonDivisor(r1.Denominator, r2.Denominator);
+            var leftScale = r2.Denominator / common;
+            var rightScale = r1.Denominator / common;
+            return new BigRational(r1.Numerator * leftScale - r2.Numerator * rightScale,
+                r1.Denominator * leftScale);
         }
 
         public static BigRational operator *(BigRational r1, BigRational r2)
