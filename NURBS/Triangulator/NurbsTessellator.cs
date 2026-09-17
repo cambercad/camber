@@ -66,39 +66,17 @@ namespace NURBS
         }
         public static bool IsCurveStraight(BSplineCurve n, double tol, double eps)
         {
-            //Special case: lines are automatically straight
-            if (n.Degree == 1)
-                return true;
-
-            int last = n.Degree;
-            Vec3D e0 = GetControlPoint(0, n);
-
-            //Form an initial line to test the other points against (skipping degenerate lines)
-            Vec3D vec = default(Vec3D);
-            double linelen = 0;
-            for (int i = last; i > 0; --i)
+            // Positive-weight NURBS lie in the convex hull of all projected
+            // control points, including those beyond the first knot span.
+            // Bound that hull against the finite endpoint chord: distance to
+            // its infinite supporting line would miss collinear overshoot.
+            Vec3D start = n.EvaluateUniform(0);
+            Vec3D end = n.EvaluateUniform(1);
+            double tolerance2 = tol * tol;
+            for (int i = 0; i < n.ControlPoints.Length; ++i)
             {
-                Vec3D cp = GetControlPoint(i, n);
-                vec = cp - e0;
-
-                linelen = vec.Length();
-                if (linelen > eps)
-                    break;
-            }
-
-            if (linelen > eps)
-            {
-                vec.Normalize();
-                double tol2 = tol * tol;
-                for (int i = 1; i <= last; i++)
-                {
-                    Vec3D cp = GetControlPoint(i, n);
-                    double s;
-                    double dist = GeometricAlgorithms.SquaredDistancePointLine(cp, e0, vec, out s);
-
-                    if (dist > tol2)
-                        return false;
-                }
+                if (GeometricAlgorithms.DistancePointSegmentSquared(GetControlPoint(i, n), start, end) > tolerance2)
+                    return false;
             }
             return true;
         }
@@ -759,15 +737,6 @@ namespace NURBS
 
         private static int Compare(PosNorUV a, PosNorUV b) { return a.UV.X == b.UV.X ? a.UV.Y.CompareTo(b.UV.Y) : a.UV.X.CompareTo(b.UV.X); }
 
-        private unsafe static ulong ToLongMask(double d)
-        {
-            float f = (float)d;
-            float* fPtr = &f;
-            uint* iPtr = (uint*)fPtr;
-            return (ulong)*iPtr;
-        }
-
-
         private static List<PosNorUV> BSurfaceInsertionPoints(NurbsSurfaceData surface, out List<BSurfaceInfo> surfaceInfos,
             double approxTolerance = 5e-2, double eps = 1e-12, double maxSpanU = 1.0, double maxSpanV = 1.0)
         {
@@ -825,83 +794,16 @@ namespace NURBS
 
 
 
-            //if(uvPoints.Count > 4)
-            //{
-            //    //Debug
-            //}
-            //Now sort and remove duplicates
-            //List<Vec2D> duplicateFreeUVPoints = uvPoints.Distinct().ToList();//ParallelEnumerable.Distinct()
-            List<PosNorUV> duplicateFreeUVPoints = new List<PosNorUV>(uvPoints.Count);
-            //uvPoints.Sort(Compare/*delegate (PosNorUV a, PosNorUV b) { return a.UV.X == b.UV.X ? a.UV.Y.CompareTo(b.UV.Y) : a.UV.X.CompareTo(b.UV.X); }*/);
-
-
-
-            //long[] buffer = new long[uvPoints.Count];
-            //for (int i = 0; i < buffer.Length; ++i)
-            //{
-            //    PosNorUV p = uvPoints[i];
-            //    buffer[i] = ((long)(1.0 / p.UV.X + 0.5) << 32) | (long)(1.0 / p.UV.Y + 0.5);
-            //}
-            //int[] indexer = new int[uvPoints.Count];
-            //for (int i = 0; i < buffer.Length; ++i)
-            //    indexer[i] = i;
-
-            //Array.Sort(buffer, indexer);
-
-            ulong[] buffer = new ulong[uvPoints.Count];
-            for (int i = 0; i < buffer.Length; ++i)
+            // Sort by the full parameters, not a truncated bit key: key collisions
+            // can interleave equal UVs and leave duplicates in patch boundaries.
+            uvPoints.Sort(Compare);
+            var duplicateFreeUVPoints = new List<PosNorUV>(uvPoints.Count);
+            foreach (var point in uvPoints)
             {
-                PosNorUV p = uvPoints[i];
-                buffer[i] = (ToLongMask(p.UV.X) << 32) | ToLongMask(p.UV.Y);
+                if (duplicateFreeUVPoints.Count == 0 ||
+                    Compare(duplicateFreeUVPoints[^1], point) != 0)
+                    duplicateFreeUVPoints.Add(point);
             }
-            int[] indexer = new int[uvPoints.Count];
-            for (int i = 0; i < buffer.Length; ++i)
-                indexer[i] = i;
-
-            Array.Sort(buffer, indexer);
-
-
-
-            //DualPivotQuickSort.Sort(uvPoints, Compare); //Does not seem to work properly...
-            PosNorUV prev = default(PosNorUV);
-            if (uvPoints.Count > 0)
-            {
-                prev = uvPoints[/*0*/indexer[0]];
-                duplicateFreeUVPoints.Add(prev);
-            }
-            int l = uvPoints.Count;
-            for (int i = 1; i < l; ++i)
-            {
-                PosNorUV p = uvPoints[/*i*/indexer[i]];
-                if (p.UV.X != prev.UV.X || p.UV.Y != prev.UV.Y)
-                {
-                    duplicateFreeUVPoints.Add(p);
-                    prev = p;
-                }
-            }
-
-
-            //List<Vec2D> debug = uvPoints.AsParallel().Distinct().ToList();
-
-
-
-
-
-
-            //for (int i = 0; i < duplicateFreeUVPoints.Count; ++i)
-            //{
-            //    Vec2D a = duplicateFreeUVPoints[i];
-            //    for (int j = i+1; j < duplicateFreeUVPoints.Count; ++j)
-            //    {
-            //        Vec2D b = duplicateFreeUVPoints[j];
-            //        double dx = b.X - a.X;
-            //        double dy = b.Y - a.Y;
-            //        if(dx*dx+dy*dy<1e-16)
-            //        {
-
-            //        }
-            //    }
-            //}
 
             return duplicateFreeUVPoints;
         }
@@ -1145,90 +1047,171 @@ namespace NURBS
 
         private static bool TestFlat(NurbsSurfaceData surface, ref BSurfaceInfo n, double approxTolerance, double eps, double maxSpanU, double maxSpanV)
         {
+            // These flags steer subdivision only. Neither straight control rows
+            // nor independently small twist proves the error of a triangle.
+            // Straight isoparametric curves can still form a twisted patch.
+            // When twist exceeds the budget, either direction can reduce it;
+            // suppressing the affine direction produces arbitrarily thin strips.
+            bool smallTwist = .25 * BilinearTwist(surface).Length() <= approxTolerance;
+            n.FlatU = smallTwist && n.MaxU - n.MinU <= maxSpanU && HasSmallDirectionalDeviation(surface, true, approxTolerance / 4);
+            n.FlatV = smallTwist && n.MaxV - n.MinV <= maxSpanV && HasSmallDirectionalDeviation(surface, false, approxTolerance / 4);
             if (n.MaxU - n.MinU > maxSpanU || n.MaxV - n.MinV > maxSpanV)
                 return false;
+            bool flat = TriangleDeviationBound(surface) <= approxTolerance;
+            if (flat) n.FlatU = n.FlatV = true;
+            else if (n.FlatU && n.FlatV) n.FlatU = n.FlatV = false;
+            return flat;
+        }
 
-            int maxU = surface.Nu - 1;
-            int maxV = surface.Nv - 1;
-
-            //Check edge straightness
-            if (!n.StrU0)
-                n.StrU0 = IsUIsoCurveStraight(surface, approxTolerance, 0, eps);
-            if (!n.StrUn)
-                n.StrUn = IsUIsoCurveStraight(surface, approxTolerance, maxU, eps);
-            if (!n.StrV0)
-                n.StrV0 = IsVIsoCurveStraight(surface, approxTolerance, 0, eps);
-            if (!n.StrVn)
-                n.StrVn = IsVIsoCurveStraight(surface, approxTolerance, maxV, eps);
-
-            //Test to make sure control points are straight in U and V
-            bool straight = true;
-            if (!n.FlatU && n.StrV0 && n.StrVn)
-                for (int i = 1; i < maxV; i++)
+        // Equal-weight control rows bound their deviation from an affine
+        // parameter direction at Greville sites. A small fraction of the error
+        // budget avoids refining degree-elevated lines because of roundoff.
+        // This only steers subdivision; the full triangle bound accepts patches.
+        private static bool HasSmallDirectionalDeviation(NurbsSurfaceData surface, bool alongU, double deviation)
+        {
+            int count = alongU ? surface.Nu : surface.Nv;
+            int rows = alongU ? surface.Nv : surface.Nu;
+            int degree = alongU ? surface.DegreeU : surface.DegreeV;
+            var knots = alongU ? surface.Knotu : surface.Knotv;
+            for (int row = 0; row < rows; row++)
+            {
+                Vec4D Pole(int i) => alongU ? surface.Poles[i][row] : surface.Poles[row][i];
+                var first = Pole(0);
+                var delta = Pole(count - 1) - first;
+                for (int i = 1; i < count; i++)
                 {
-                    straight = IsVIsoCurveStraight(surface, approxTolerance, i, eps);
-                    if (!straight)
-                        break;
+                    var pole = Pole(i);
+                    if (pole.W != first.W || (i < count - 1 &&
+                        (GetControlPoint(pole) - GetControlPoint(first + delta * Greville(knots, degree, i))).Length() > deviation))
+                        return false;
                 }
-
-            if (straight && n.StrV0 && n.StrVn)
-                n.FlatU = true;
-
-            //Page 315
-            straight = true;
-            if (!n.FlatV && n.StrU0 && n.StrUn)
-                for (int i = 1; i < maxU; i++)
-                {
-                    straight = IsUIsoCurveStraight(surface, approxTolerance, i, eps);
-                    if (!straight)
-                        break;
-                }
-
-            if (straight && n.StrU0 && n.StrUn)
-                n.FlatV = true;
-
-            if (!n.FlatV || !n.FlatU)
-                return false;
-
-            //The surface can pass the above tests but still be twisted
-            Vec3D a = GetControlPoint(surface.Poles[0][0]);
-            Vec3D b = GetControlPoint(surface.Poles[maxU][0]);
-            Vec3D c = GetControlPoint(surface.Poles[0][maxV]);
-            Vec3D d = GetControlPoint(surface.Poles[maxU][maxV]);
-
-            if (DistanceToPlane(d, a, b, c) > approxTolerance) // Surface is twisted)
-                return false;
-            if (DistanceToPlane(c, a, b, d) > approxTolerance) // Surface is twisted)
-                return false;
-            if (DistanceToPlane(a, b, c, d) > approxTolerance) // Surface is twisted)
-                return false;
-            if (DistanceToPlane(b, a, c, d) > approxTolerance) // Surface is twisted)
-                return false;
-
+            }
             return true;
         }
 
-        private static double DistanceToPlane(Vec3D p, Vec3D pointOnPlaneA, Vec3D pointOnPlaneB, Vec3D pointOnPlaneC)
+        /// <summary>
+        /// Partition of unity bounds the polynomial surface's deviation from
+        /// its bilinear corner patch by control-point errors at Greville sites.
+        /// Positive rational weights add a bounded change of the convex weights.
+        /// For arbitrary triangles inside this patch, surface errors occur at
+        /// both the witness and its interpolated vertices, hence the factor two.
+        /// The remaining bilinear interpolation error is a covariance bounded
+        /// by one quarter of the mixed corner vector (including twisted cells).
+        /// </summary>
+        // Bound any triangle inside this UV rectangle whose vertices lie on the
+        // support. Callers retaining displaced contact vertices must additionally
+        // account for their maximum displacement from the evaluated support.
+        internal static double TriangleDeviationBound(BSplineSurface surface,
+            double minU, double minV, double maxU, double maxV)
         {
-            //Vec3D ab = pointOnPlaneB - pointOnPlaneA;
-            //Vec3D ac = pointOnPlaneC - pointOnPlaneA;
-            double abX = pointOnPlaneB.X - pointOnPlaneA.X; double abY = pointOnPlaneB.Y - pointOnPlaneA.Y; double abZ = pointOnPlaneB.Z - pointOnPlaneA.Z;
-            double acX = pointOnPlaneC.X - pointOnPlaneA.X; double acY = pointOnPlaneC.Y - pointOnPlaneA.Y; double acZ = pointOnPlaneC.Z - pointOnPlaneA.Z;
-            //Vec3D normal = Vec3DOps.Cross(ab, ac);
-            double normalX = abY * acZ - abZ * acY;
-            double normalY = abZ * acX - abX * acZ;
-            double normalZ = abX * acY - abY * acX;
-            //normal.Normalize();
-            double s = 1.0 / Math.Sqrt(normalX * normalX + normalY * normalY + normalZ * normalZ);
-            normalX *= s;
-            normalY *= s;
-            normalZ *= s;
-            double d = pointOnPlaneA.X * normalX + pointOnPlaneA.Y * normalY + pointOnPlaneA.Z * normalZ;// Vec3DOps.Dot(pointOnPlaneA, normal);
-            double dist = Math.Abs(/*Vec3DOps.Dot(normal, p)*/normalX * p.X + normalY * p.Y + normalZ * p.Z - d);
-            return dist;
+            ArgumentNullException.ThrowIfNull(surface);
+            if (!double.IsFinite(minU) || !double.IsFinite(minV) ||
+                !double.IsFinite(maxU) || !double.IsFinite(maxV) ||
+                minU < 0 || minV < 0 || maxU > 1 || maxV > 1 ||
+                minU >= maxU || minV >= maxV)
+                throw new ArgumentException("Surface error bounds require a nonempty rectangle inside [0,1]².");
+
+            var patch = new NurbsSurfaceData(surface.DegreeU, surface.DegreeV,
+                surface.ControlPoints, surface.KnotsU, surface.KnotsV);
+            if (maxU < 1) patch.SplitU(maxU, out patch, out _);
+            if (minU > 0) patch.SplitU(minU / maxU, out _, out patch);
+            if (maxV < 1) patch.SplitV(maxV, out patch, out _);
+            if (minV > 0) patch.SplitV(minV / maxV, out _, out patch);
+            return TriangleDeviationBound(patch);
         }
 
+        private static Vec3D BilinearTwist(NurbsSurfaceData surface) =>
+            GetControlPoint(surface.Poles[0][0]) - GetControlPoint(surface.Poles[^1][0]) -
+            GetControlPoint(surface.Poles[0][^1]) + GetControlPoint(surface.Poles[^1][^1]);
 
+        private static double TriangleDeviationBound(NurbsSurfaceData surface)
+        {
+            double sign = Math.Sign(surface.Poles[0][0].W);
+            double minimumWeight = double.PositiveInfinity;
+            double maximumWeight = 0;
+            foreach (var row in surface.Poles)
+            foreach (var pole in row)
+            {
+                double weight = sign * pole.W;
+                // Mixed/zero weights have no convex-hull bound at this scale.
+                // Existing knot subdivision can still isolate a regular patch.
+                if (!(weight > 0) || !double.IsFinite(weight))
+                    return double.PositiveInfinity;
+                minimumWeight = Math.Min(minimumWeight, weight);
+                maximumWeight = Math.Max(maximumWeight, weight);
+            }
+            int lastU = surface.Nu - 1, lastV = surface.Nv - 1;
+            Vec3D a = GetControlPoint(surface.Poles[0][0]);
+            Vec3D b = GetControlPoint(surface.Poles[lastU][0]);
+            Vec3D c = GetControlPoint(surface.Poles[0][lastV]);
+            Vec3D d = GetControlPoint(surface.Poles[lastU][lastV]);
+            var mixed = a - b - c + d;
+            // On a Bezier span, bound H - W*L directly, where H/W is
+            // the rational surface and L is its bilinear corner patch.
+            // Degree elevation and multiplication by L use the same Bernstein
+            // factors. Their residual retains cancellation along long straight
+            // directions, unlike a weight-range times patch-diameter estimate.
+            if (minimumWeight != maximumWeight &&
+                surface.Nu == surface.DegreeU + 1 && surface.Nv == surface.DegreeV + 1 &&
+                surface.Knotu.Take(surface.Nu).All(k => k == 0) && surface.Knotu.Skip(surface.Nu).All(k => k == 1) &&
+                surface.Knotv.Take(surface.Nv).All(k => k == 0) && surface.Knotv.Skip(surface.Nv).All(k => k == 1))
+            {
+                Vec3D[][] corners = [[a, c], [b, d]];
+                double residualBound = 0;
+                for (int i = 0; i <= surface.Nu; i++)
+                for (int j = 0; j <= surface.Nv; j++)
+                {
+                    var residual = new Vec3D(0);
+                    for (int x = 0; x <= 1; x++)
+                    for (int y = 0; y <= 1; y++)
+                    {
+                        int u = i - x, v = j - y;
+                        if (u < 0 || u >= surface.Nu || v < 0 || v >= surface.Nv) continue;
+                        double factor = (x == 0 ? 1 - (double)i / surface.Nu : (double)i / surface.Nu) *
+                            (y == 0 ? 1 - (double)j / surface.Nv : (double)j / surface.Nv);
+                        var pole = surface.Poles[u][v];
+                        residual += (new Vec3D(pole.X, pole.Y, pole.Z) - corners[x][y] * pole.W) * factor;
+                    }
+                    residualBound = Math.Max(residualBound, residual.Length());
+                }
+                return 2 * residualBound / minimumWeight + .25 * mixed.Length();
+            }
+            double error = 0;
+            for (int u = 0; u <= lastU; u++)
+            for (int v = 0; v <= lastV; v++)
+            {
+                double x = Greville(surface.Knotu, surface.DegreeU, u);
+                double y = Greville(surface.Knotv, surface.DegreeV, v);
+                var bilinear = a * ((1 - x) * (1 - y)) + b * (x * (1 - y)) +
+                    c * ((1 - x) * y) + d * (x * y);
+                error = Math.Max(error, (GetControlPoint(surface.Poles[u][v]) - bilinear).Length());
+            }
+            double diameter = Math.Max(Math.Max((a - b).Length(), (a - c).Length()),
+                Math.Max(Math.Max((a - d).Length(), (b - c).Length()),
+                Math.Max((b - d).Length(), (c - d).Length())));
+            double rationalError = (maximumWeight / minimumWeight - 1) * diameter;
+            return 2 * (error + rationalError) + .25 * mixed.Length();
+        }
+
+        private static double? InteriorKnotSplit(double[] knots)
+        {
+            double? nearest = null;
+            foreach (double knot in knots)
+            {
+                if (knot <= 0 || knot >= 1) continue;
+                if (!nearest.HasValue || Math.Abs(knot - .5) < Math.Abs(nearest.Value - .5))
+                    nearest = knot;
+            }
+            return nearest;
+        }
+
+        private static double Greville(double[] knots, int degree, int index)
+        {
+            if (degree == 0) return .5;
+            double sum = 0;
+            for (int i = 1; i <= degree; i++) sum += knots[index + i];
+            return sum / degree;
+        }
 
         //private static void BSurfaceInsertionPointsTask(NurbsSurfaceData surface, BSurfaceInfo info, int depth, int splitDepth, double approxTolerance, double eps,
         //    List<PosNorUV> uvPoints, List<BSurfaceInfo> surfaceInfos, List<Task> tasks, double maxSpanU, double maxSpanV)
@@ -1282,9 +1265,7 @@ namespace NURBS
 
 
                 bool flat = TestFlat(surface, ref info, approxTolerance, eps, maxSpanU, maxSpanV);
-                bool rangleTooSmall = info.MaxU - info.MinU < 1e-3 || info.MaxV - info.MinV < 1e-3;//This line is for safety if the surface ist "strange"
-                                                                                                   //bool rangleTooSmall = info.MaxU - info.MinU < 1e-4 || info.MaxV - info.MinV < 1e-4;//This line is for safety if the surface ist "strange"
-                if (flat || rangleTooSmall)
+                if (flat)
                 {
                     lock (uvPoints)
                     {
@@ -1311,31 +1292,23 @@ namespace NURBS
                         surfaceInfos.Add(info);
                     }
 
-                    //Split and start recursion call  
-                    bool splitU = true;
-                    if (info.FlatU)
-                    {
-                        splitU = false;
-                    }
-                    else if (info.FlatV)
-                    {
-                        splitU = true;
-                    }
-                    else if (info.MaxV - info.MinV > info.MaxU - info.MinU)
-                    {
-                        splitU = false;
-                    }
-                    else
-                    {
-                        splitU = true;
-                    }
+                    // Isolate authored knot spans before midpoint refinement.
+                    // Otherwise a non-dyadic corner is bracketed by many tiny
+                    // cells, despite being an exact available split location.
+                    double? knotU = InteriorKnotSplit(surface.Knotu);
+                    double? knotV = InteriorKnotSplit(surface.Knotv);
+                    bool splitU = knotU.HasValue || (!knotV.HasValue &&
+                        (!info.FlatU && (info.FlatV || info.MaxU - info.MinU >= info.MaxV - info.MinV)));
+                    double splitParameter = (splitU ? knotU : knotV) ?? .5;
 
                     BSurfaceInfo l, r;
                     NurbsSurfaceData lower, upper;
                     if (splitU)
                     {
                         //SplitU(surface, info, depth, splitDepth, approxTolerance, eps, uvPoints, surfaceInfos, tasks, maxSpanU, maxSpanV);
-                        double centerU = 0.5 * (info.MinU + info.MaxU);
+                        double centerU = info.MinU + splitParameter * (info.MaxU - info.MinU);
+                        if (centerU == info.MinU || centerU == info.MaxU)
+                            throw new InvalidOperationException("NURBS surface deviation requires subdivision beyond parameter resolution.");
 
                         l = info;
                         l.MinU = info.MinU; l.MaxU = centerU; l.MinV = info.MinV; l.MaxV = info.MaxV;
@@ -1343,7 +1316,7 @@ namespace NURBS
                         r = info;
                         r.MinU = centerU; r.MaxU = info.MaxU; r.MinV = info.MinV; r.MaxV = info.MaxV;
 
-                        surface.SplitU(0.5, out lower, out upper);
+                        surface.SplitU(splitParameter, out lower, out upper);
 
                         //BSurfaceInsertionPointsTask(lower, l, depth + 1, splitDepth, approxTolerance, eps, uvPoints, surfaceInfos, tasks, maxSpanU, maxSpanV/*, node.A*/);
                         //BSurfaceInsertionPointsTask(upper, r, depth + 1, splitDepth, approxTolerance, eps, uvPoints, surfaceInfos, tasks, maxSpanU, maxSpanV/*, node.B*/);
@@ -1351,7 +1324,9 @@ namespace NURBS
                     else
                     {
                         //SplitV(surface, info, depth, splitDepth, approxTolerance, eps, uvPoints, surfaceInfos, tasks, maxSpanU, maxSpanV);
-                        double centerV = 0.5 * (info.MinV + info.MaxV);
+                        double centerV = info.MinV + splitParameter * (info.MaxV - info.MinV);
+                        if (centerV == info.MinV || centerV == info.MaxV)
+                            throw new InvalidOperationException("NURBS surface deviation requires subdivision beyond parameter resolution.");
 
                         l = info;
                         l.MinU = info.MinU; l.MaxU = info.MaxU; l.MinV = info.MinV; l.MaxV = centerV;
@@ -1359,7 +1334,7 @@ namespace NURBS
                         r = info;
                         r.MinU = info.MinU; r.MaxU = info.MaxU; r.MinV = centerV; r.MaxV = info.MaxV;
 
-                        surface.SplitV(0.5, out lower, out upper);
+                        surface.SplitV(splitParameter, out lower, out upper);
 
                         //BSurfaceInsertionPointsTask(lower, l, depth + 1, splitDepth, approxTolerance, eps, uvPoints, surfaceInfos, tasks, maxSpanU, maxSpanV/*, node.A*/);
                         //BSurfaceInsertionPointsTask(upper, r, depth + 1, splitDepth, approxTolerance, eps, uvPoints, surfaceInfos, tasks, maxSpanU, maxSpanV/*, node.B*/);
@@ -1393,7 +1368,7 @@ namespace NURBS
         //private static void SplitU(NurbsSurfaceData surface, BSurfaceInfo info, int depth, int splitDepth, double tol, double eps,
         //    List<PosNorUV> uvPoints, List<BSurfaceInfo> surfaceInfos, List<Task> tasks, double maxSpanU, double maxSpanV/*, BinaryNode node*/)
         //{
-        //    double centerU = 0.5 * (info.MinU + info.MaxU);
+        //    double centerU = info.MinU + splitParameter * (info.MaxU - info.MinU);
 
         //    BSurfaceInfo l = info;
         //    l.MinU = info.MinU; l.MaxU = centerU; l.MinV = info.MinV; l.MaxV = info.MaxV;
@@ -1405,7 +1380,7 @@ namespace NURBS
         //    //node.B = new BinaryNode(new Vec2D(r.MinU, r.MinV), new Vec2D(r.MaxU, r.MaxV));            
 
         //    NurbsSurfaceData lower, upper;
-        //    surface.SplitU(0.5, out lower, out upper);
+        //    surface.SplitU(splitParameter, out lower, out upper);
 
         //    //#if DEBUG
         //    //            Vec3D debug = upper.GetPointMinUMinV();
@@ -1423,7 +1398,7 @@ namespace NURBS
         //private static void SplitV(NurbsSurfaceData surface, BSurfaceInfo info, int depth, int splitDepth, double tol, double eps,
         //    List<PosNorUV> uvPoints, List<BSurfaceInfo> surfaceInfos, List<Task> tasks, double maxSpanU, double maxSpanV/*, BinaryNode node*/)
         //{
-        //    double centerV = 0.5 * (info.MinV + info.MaxV);
+        //    double centerV = info.MinV + splitParameter * (info.MaxV - info.MinV);
 
         //    BSurfaceInfo l = info;
         //    l.MinU = info.MinU; l.MaxU = info.MaxU; l.MinV = info.MinV; l.MaxV = centerV;
@@ -1435,7 +1410,7 @@ namespace NURBS
         //    //node.B = new BinaryNode(new Vec2D(r.MinU, r.MinV), new Vec2D(r.MaxU, r.MaxV));
 
         //    NurbsSurfaceData lower, upper;
-        //    surface.SplitV(0.5, out lower, out upper);
+        //    surface.SplitV(splitParameter, out lower, out upper);
 
         //    //#if DEBUG
         //    //            Vec3D debug = upper.GetPointMinUMinV();
@@ -1583,16 +1558,16 @@ namespace NURBS
             //    return DeBoor.EvaluateRational(Degree, u, ControlPoints, Knots);
             //}
 
-            public void Split(double param, out NurbsCurveData lower, out NurbsCurveData upper, double eps = 1e-14)
+            public void Split(double param, out NurbsCurveData lower, out NurbsCurveData upper)
             {
-                Split(param, Degree, Knots, ControlPoints, out lower, out upper, eps);
+                Split(param, Degree, Knots, ControlPoints, out lower, out upper);
             }
 
             public static void Split(double param, int degree, double[] knots, Vec4D[] controlPoints,
-                out NurbsCurveData lower, out NurbsCurveData upper, double eps = 1e-14)
+                out NurbsCurveData lower, out NurbsCurveData upper)
             {
                 int existingKnotMultiplicity;
-                int k = GetKnotInsertionIndex(param, knots, out existingKnotMultiplicity, eps); //existingKnotMultiplicity = 0;
+                int k = GetKnotInsertionIndex(param, knots, out existingKnotMultiplicity); //existingKnotMultiplicity = 0;
                 NurbsCurveData buffer = InsertKnot(degree, knots, controlPoints, param, k, degree - existingKnotMultiplicity /*+ 1*/);
 
 
@@ -1690,23 +1665,26 @@ namespace NURBS
                 return GetKnotInsertionIndex(knotLocation, knots, out existingKnotMultiplicity);
             }
 
-            private static int GetKnotInsertionIndex(double knotLocation, double[] knots, out int existingKnotMultiplicity, double eps = 1e-14)
+            private static int GetKnotInsertionIndex(double knotLocation, double[] knots, out int existingKnotMultiplicity)
             {
+                // Knot multiplicity is an identity, not a proximity test. A
+                // distinct parameter beside a clamped endpoint must remain an
+                // interior knot or insertion counts and support domains change.
                 existingKnotMultiplicity = 0;
                 int k = -1;
                 int numKnots = knots.Length;
                 for (int i = 1; i < numKnots; ++i)
                 //for (int i = numKnots - 1; i > 0; --i)
                 {
-                    double lower = knots[i - 1] - eps;
-                    double upper = knots[i] + eps;
+                    double lower = knots[i - 1];
+                    double upper = knots[i];
                     if (knotLocation >= lower && knotLocation <= upper)
                     {
                         k = i - 1;
 
                         for (int j = 0; j < numKnots; ++j)
                         {
-                            if (Math.Abs(knots[j] - knotLocation) <= eps)
+                            if (knots[j] == knotLocation)
                                 ++existingKnotMultiplicity;
                         }
 
@@ -2013,6 +1991,8 @@ namespace NURBS
             double minimalBoundaryPointDistance = 1e-2, double tol = 1e-8, double eps = 1e-12,
             double largeTolerance = 1e-6, double maxBorderPointUVDistanceForVisualizationOnly = 0.01, bool noNormals = false, double maxSpanU = 1.0, double maxSpanV = 1.0)
         {
+            if (!(maxDeviation > 0) || !double.IsFinite(maxDeviation))
+                throw new ArgumentOutOfRangeException(nameof(maxDeviation), "Surface deviation must be positive and finite.");
             //#if DEBUG
             //            surfaceDebug = surface;
             //#endif
@@ -2067,6 +2047,7 @@ namespace NURBS
                         list.Add(pts.Count);
                         pts.Add(loop[j]);
                     }
+                    borderLoops.Add(list);
                 }
 
 
@@ -2686,7 +2667,7 @@ namespace NURBS
 
     //    private static void SplitU(BSplineSurface surface, BSurfaceInfo info, double tol, double eps, List<Vec2D> uvPoints, BinaryNode node)
     //    {
-    //        double centerU = 0.5 * (info.MinU + info.MaxU);
+    //        double centerU = info.MinU + splitParameter * (info.MaxU - info.MinU);
 
     //        BSurfaceInfo l = info;
     //        l.MinU = info.MinU; l.MaxU = centerU; l.MinV = info.MinV; l.MaxV = info.MaxV;
@@ -2705,7 +2686,7 @@ namespace NURBS
 
     //    private static void SplitV(BSplineSurface surface, BSurfaceInfo info, double tol, double eps, List<Vec2D> uvPoints, BinaryNode node)
     //    {
-    //        double centerV = 0.5 * (info.MinV + info.MaxV);
+    //        double centerV = info.MinV + splitParameter * (info.MaxV - info.MinV);
 
     //        BSurfaceInfo l = info;
     //        l.MinU = info.MinU; l.MaxU = info.MaxU; l.MinV = info.MinV; l.MaxV = centerV;

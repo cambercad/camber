@@ -134,13 +134,29 @@ namespace Geo
         }
 
         /// <summary>
-        /// Reversal flags for revolution side strips: compares ∂s×∂θ (canonical revolver space) to radial outward on outers
-        /// and inward on holes; falls back to <see cref="GetContourReversalInfo"/> with CW outer when geometry is ambiguous.
+        /// Reversal flags for revolution side strips. Closed meridians use contour nesting
+        /// and signed radius; open meridians use radial orientation at their axis closure.
         /// </summary>
         public static List<bool> GetRevolveContourReversalInfo(List<List<List<Vec2D>>> contours, bool openContour = false)
         {
             if (contours == null || contours.Count == 0)
                 return new List<bool>();
+
+            if (!openContour)
+            {
+                // A closed meridian's material side follows its nesting depth.
+                // A local radial normal cannot classify an off-axis closed loop:
+                // opposite sides of a torus point toward and away from the axis.
+                var closedReversals = GetContourReversalInfo(contours, outerBoundaryTargetIsCCW: true);
+                var closedPolygons = ExtractContourPolygons(contours);
+                for (int i = 0; i < closedPolygons.Count; ++i)
+                {
+                    // Negative signed radii reverse the revolution Jacobian.
+                    var radialPoint = closedPolygons[i].FirstOrDefault(p => p.Y != 0);
+                    if (radialPoint.Y < 0) closedReversals[i] = !closedReversals[i];
+                }
+                return closedReversals;
+            }
 
             var result = new List<bool>(contours.Count);
             for (int i = 0; i < contours.Count; i++)
@@ -454,7 +470,7 @@ namespace Geo
 
         /// <summary>
         /// Determines the principal projection plane for a set of 3D polygon vertices.
-        /// Drops the axis with smallest bounding-box extent, keeping the two widest axes
+        /// Selects the largest projected signed area of the outer polygon
         /// for 2D triangulation. Also computes whether the projection flips winding.
         /// </summary>
         public static void DeterminePrincipalPlane(
@@ -464,70 +480,45 @@ namespace Geo
             out int axis2,
             out bool flipWinding)
         {
-            BigRationalHybrid minX = precisePositions[polygonIndices[0][0]].X;
-            BigRationalHybrid maxX = minX;
-            BigRationalHybrid minY = precisePositions[polygonIndices[0][0]].Y;
-            BigRationalHybrid maxY = minY;
-            BigRationalHybrid minZ = precisePositions[polygonIndices[0][0]].Z;
-            BigRationalHybrid maxZ = minZ;
-
-            foreach (var polygon in polygonIndices)
+            // A thin, tilted cap can have its smallest extent in a direction
+            // lying IN its plane. Dropping that axis collapses it to a line.
+            // Choose the largest projected area (Newell normal), computed exactly
+            // on the outer ring so distant origins do not cause cancellation.
+            var ring = polygonIndices[0];
+            BigRationalHybrid areaYZ = BigRationalHybrid.Zero;
+            BigRationalHybrid areaXZ = BigRationalHybrid.Zero;
+            BigRationalHybrid areaXY = BigRationalHybrid.Zero;
+            for (int i = 0; i < ring.Count; i++)
             {
-                foreach (var idx in polygon)
-                {
-                    var pt = precisePositions[idx];
-                    if (pt.X < minX) minX = pt.X;
-                    if (pt.X > maxX) maxX = pt.X;
-                    if (pt.Y < minY) minY = pt.Y;
-                    if (pt.Y > maxY) maxY = pt.Y;
-                    if (pt.Z < minZ) minZ = pt.Z;
-                    if (pt.Z > maxZ) maxZ = pt.Z;
-                }
+                var p = precisePositions[ring[i]];
+                var q = precisePositions[ring[(i + 1) % ring.Count]];
+                areaYZ += p.Y * q.Z - q.Y * p.Z;
+                areaXZ += p.X * q.Z - q.X * p.Z;
+                areaXY += p.X * q.Y - q.X * p.Y;
             }
-
-            double extentX = (maxX - minX).ToDouble();
-            double extentY = (maxY - minY).ToDouble();
-            double extentZ = (maxZ - minZ).ToDouble();
-
-            if (extentX <= extentY && extentX <= extentZ)
+            double yz = Math.Abs(areaYZ.ToDouble());
+            double xz = Math.Abs(areaXZ.ToDouble());
+            double xy = Math.Abs(areaXY.ToDouble());
+            if (yz >= xz && yz >= xy)
             {
                 axis1 = 1;
                 axis2 = 2;
+                flipWinding = areaYZ < BigRationalHybrid.Zero;
             }
-            else if (extentY <= extentX && extentY <= extentZ)
+            else if (xz >= xy)
             {
                 axis1 = 0;
                 axis2 = 2;
+                flipWinding = areaXZ < BigRationalHybrid.Zero;
             }
             else
             {
                 axis1 = 0;
                 axis2 = 1;
-            }
-
-            flipWinding = false;
-            if (polygonIndices.Count > 0 && polygonIndices[0].Count >= 3)
-            {
-                var outerPolygon = polygonIndices[0];
-                BigRationalHybrid signedArea2 = BigRationalHybrid.Zero;
-
-                for (int i = 0; i < outerPolygon.Count; i++)
-                {
-                    int j = (i + 1) % outerPolygon.Count;
-                    var pi = precisePositions[outerPolygon[i]];
-                    var pj = precisePositions[outerPolygon[j]];
-
-                    BigRationalHybrid xi = (axis1 == 0) ? pi.X : (axis1 == 1) ? pi.Y : pi.Z;
-                    BigRationalHybrid yi = (axis2 == 0) ? pi.X : (axis2 == 1) ? pi.Y : pi.Z;
-                    BigRationalHybrid xj = (axis1 == 0) ? pj.X : (axis1 == 1) ? pj.Y : pj.Z;
-                    BigRationalHybrid yj = (axis2 == 0) ? pj.X : (axis2 == 1) ? pj.Y : pj.Z;
-
-                    signedArea2 = signedArea2 + (xi * yj - xj * yi);
-                }
-
-                flipWinding = signedArea2 < BigRationalHybrid.Zero;
+                flipWinding = areaXY < BigRationalHybrid.Zero;
             }
         }
+
 
         /// <summary>
         /// Projects precise 3D positions onto two chosen axes, producing Rat2Hybrid polygons.

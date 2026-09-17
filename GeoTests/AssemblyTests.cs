@@ -5,13 +5,13 @@ using GeoCore;
 
 namespace GeoTests;
 
-[Collection("GeoAPISequential")]
 public class AssemblyTests : IDisposable
 {
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
     private const double PosTol = 0.5;
     private const double VolRelTol = 0.02;
 
-    public void Dispose() => GeoAPI.Clear();
 
     private static GeoAPI MakeApi() =>
         new GeoAPI(new Box3D(new Vec3D(-300), new Vec3D(300)), 0.01);

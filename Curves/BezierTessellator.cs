@@ -90,8 +90,7 @@ namespace Curves
                 double max = 0;
                 for (int i = 1; i < l; ++i)
                 {
-                    double t;
-                    double d = GeometricAlgorithms.DistancePointLineSquared(cp[i], start, end, out t);
+                    double d = GeometricAlgorithms.DistancePointSegmentSquared(cp[i], start, end);
 
                     if (d > max)
                         max = d;
@@ -175,8 +174,7 @@ namespace Curves
                 double max = 0;
                 for (int i = 1; i < l; ++i)
                 {
-                    double t;
-                    double d = GeometricAlgorithms.DistancePointLineSquared(cp[i], start, end - start, out t);
+                    double d = GeometricAlgorithms.DistancePointSegmentSquared(cp[i], start, end);
 
                     if (d > max)
                         max = d;

@@ -279,7 +279,12 @@ Resolves a 2D point on a sketch curve. Name format: ""<curveName>@<uniform>"" (u
                     result = arc.Center;
                     return true;
                 }
-                return false; // @center only valid for circles/arcs
+                if (foundCurve is Ellipse2D ellipse)
+                {
+                    result = ellipse.Center;
+                    return true;
+                }
+                return false; // @center only valid for curves with a center
             }
 
             if (address.IsControlVertex)
@@ -450,6 +455,13 @@ Adds a 2D line segment. If startPoint is not the current strip end, a new discon
             AddCurveToStrip(line);
             return line;
         }
+        public virtual Ellipse2D AddEllipse(Vec2D center, Vec2D majorAxis, double minorRadius, CurveFlags flags = CurveFlags.None)
+        {
+            var ellipse = _curveFactory.CreateEllipse2D(center,majorAxis,minorRadius,0,2*Math.PI,flags);
+            AddCurveToStrip(ellipse);
+            return ellipse;
+        }
+
         [APIDescription(@"AddCircle(center: Vec2D, radius: float, flags: CurveFlags = None) -> Circle2D
 Adds a full 2D circle. Each circle is its own closed contour (derived from start==end connectivity), so a second circle is a separate hole/profile without starting a stored strip.")]
         public virtual Circle2D AddCircle(Vec2D center, double radius, CurveFlags flags = CurveFlags.None)

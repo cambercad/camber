@@ -237,20 +237,62 @@ namespace Curves
 
         public CurveVertex2D EvaluateAtNormalizedArcLength(double u)
         {
-            u = Math.Clamp(u, 0, 1);
-            double d = u * TotalLength;
-            int si = 0;
-            for (int i = 0; i < _segments.Length; i++)
+            ResolveParameter(u, out int segment, out double local);
+            return _segments[segment].EvaluateVertex(local);
+        }
+
+        private void ResolveParameter(double u, out int segment, out double local)
+        {
+            double distance = Math.Clamp(u, 0, 1) * TotalLength;
+            segment = 0;
+            for (int i = 1; i < _segments.Length; i++)
             {
-                if (_cumStart[i + 1] <= d + 1e-12)
-                    si = i;
-                else
-                    break;
+                if (_cumStart[i] > distance) break;
+                segment = i;
             }
-            double local = d - _cumStart[si];
-            double len = _segments[si].Length();
-            double t = len < 1e-30 ? 0 : Math.Clamp(local / len, 0, 1);
-            return _segments[si].EvaluateVertex(t);
+            double length = _segments[segment].Length();
+            local = length == 0 ? 0 : Math.Clamp((distance - _cumStart[segment]) / length, 0, 1);
+        }
+
+        /// <summary>Derivative of the strip's actual length-proportional parameterization.
+        /// Unlike a unit tangent, this retains the scale needed when interpolating profiles.</summary>
+        public Vec2D DerivativeAtNormalizedArcLength(double u)
+        {
+            ResolveParameter(u, out int segment, out double t);
+            var curve = _segments[segment];
+            Vec2D derivative;
+            if (curve is Line2D line)
+                derivative = line.EndPosition - line.StartPosition;
+            else if (curve is Circle2D circle)
+            {
+                double a = 2 * Math.PI * t;
+                derivative = new Vec2D(-Math.Sin(a), Math.Cos(a)) * (2 * Math.PI * circle.Radius);
+            }
+            else if (curve is Arc2D arc)
+            {
+                double span = arc.AngleEnd - arc.AngleStart;
+                double a = arc.AngleStart + t * span;
+                derivative = new Vec2D(-Math.Sin(a), Math.Cos(a)) * (span * arc.Radius);
+            }
+            else if (curve is Ellipse2D ellipse)
+            {
+                double span = ellipse.EndAngle - ellipse.StartAngle;
+                double a = ellipse.StartAngle + t * span;
+                var major = ellipse.MajorAxis;
+                var minor = new Vec2D(-major.Y, major.X) * (ellipse.MinorAxisLength / ellipse.MajorAxisLength);
+                derivative = (-Math.Sin(a) * major + Math.Cos(a) * minor) * span;
+            }
+            else if (curve is Bezier2D bezier)
+                derivative = BezierTessellator.EvaluateBezierDerivativeDeCasteljau(bezier.ControlPoints, t);
+            else
+            {
+                // Existing general curves expose positions. A centered numerical
+                // derivative balances roundoff and truncation in normalized u.
+                const double step = 6.055454452393343e-6; // cube root of double machine epsilon
+                double lower = Math.Max(0, t - step), upper = Math.Min(1, t + step);
+                derivative = (curve.EvaluateVertex(upper).Position - curve.EvaluateVertex(lower).Position) / (upper - lower);
+            }
+            return derivative * (TotalLength / curve.Length());
         }
 
         /// <summary>Position and interpolated vertex normal (tessellated polyline strips only).</summary>

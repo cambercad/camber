@@ -7,6 +7,7 @@ namespace GeoSolver.Kinematics
         protected List<IBaseEquation> constraints = new List<IBaseEquation>();
         public List<IUpdate> degreesOfFreedom = new List<IUpdate>();
         private double characteristicLength = 1.0;
+        public double CharacteristicLength => characteristicLength;
 
         public void AddConstraint(IBaseEquation constraint)
         {
@@ -40,10 +41,10 @@ namespace GeoSolver.Kinematics
                 }
             }
 
-            // Gibbs/Cayley cannot take a 180° step from identity: n1−s n2 is then
-            // parallel to the vectors and the rotation Jacobian is zero. Between
-            // charts, Bake recenters ω=0; a 90° Rest bump about an axis ⊥ n2
-            // turns that ridge into a regular 90° Gibbs problem (not a pose seed).
+            // Bake recenters the Gibbs/Cayley chart between Newton solves.
+            // At a collinear stationary point, a deterministic quarter-turn
+            // restart supplies a nonzero angular Jacobian. Fixed bodies remain
+            // fixed, and the complete constraint system is solved again.
             SolveResult result = new SolveResult(false, 0, 0, 0, "No kinematic solve attempted.");
             const int chartCount = 8;
             const int newtonPerChart = 400;
@@ -73,7 +74,7 @@ namespace GeoSolver.Kinematics
                     continue;
                 }
 
-                if (!NudgeFreeBodiesOffDirectedParallelRidge())
+                if (!RestartCollinearDirections())
                     break;
                 bestSse = double.PositiveInfinity;
             }
@@ -82,34 +83,50 @@ namespace GeoSolver.Kinematics
             return result;
         }
 
-        private bool NudgeFreeBodiesOffDirectedParallelRidge()
+        private bool RestartCollinearDirections()
         {
             bool nudged = false;
             for (int i = 0; i < constraints.Count; i++)
             {
-                DirectedParallelDirections3d directed = constraints[i] as DirectedParallelDirections3d;
-                if (directed == null)
-                    continue;
+                CVec3D direction1, direction2;
+                double desiredDot;
+                if (constraints[i] is DirectedParallelDirections3d directed)
+                {
+                    direction1 = directed.Direction1;
+                    direction2 = directed.Direction2;
+                    desiredDot = directed.Opposite ? -1 : 1;
+                }
+                else if (constraints[i] is AngleBetweenVectors3d angular)
+                {
+                    direction1 = angular.Vector1;
+                    direction2 = angular.Vector2;
+                    desiredDot = Math.Cos(angular.Angle.Evaluate());
+                }
+                else continue;
 
-                Vec3D n1 = directed.Direction1.Evaluate();
-                Vec3D n2 = directed.Direction2.Evaluate();
+                Vec3D n1 = direction1.Evaluate();
+                Vec3D n2 = direction2.Evaluate();
                 if (n1.LengthSquared() < 1e-18 || n2.LengthSquared() < 1e-18)
                     continue;
                 n1.Normalize();
                 n2.Normalize();
-                double alignment = n1.X * n2.X + n1.Y * n2.Y + n1.Z * n2.Z;
-                bool wrongHemisphere = directed.Opposite ? alignment > 0.25 : alignment < -0.25;
-                if (!wrongHemisphere)
+                double alignment = Vec3DOps.Dot(n1,n2);
+                if (constraints[i] is DirectedParallelDirections3d)
+                {
+                    if (alignment * desiredDot >= -0.25) continue;
+                }
+                else if (Math.Abs(alignment-desiredDot) <= NewtonSolver.LENGTH_EPS ||
+                         Vec3DOps.Cross(n1,n2).LengthSquared() > 1e-12)
                     continue;
 
-                CTransform body = FindFreeBodyOwning(directed.Direction2);
-                if (body == null)
-                    body = FindFreeBodyOwning(directed.Direction1);
+                CTransform body = FindFreeBodyOwning(direction2) ?? FindFreeBodyOwning(direction1);
                 if (body == null)
                     continue;
 
                 Vec3D axis = Vec3DOps.Cross(n1, n2);
-                if (axis.LengthSquared() < 1e-12)
+                if (constraints[i] is AngleBetweenVectors3d && TryGetBearingAxis(body,n2,out Vec3D bearingAxis))
+                    axis = bearingAxis;
+                else if (axis.LengthSquared() < 1e-12)
                     axis = Vec3DOps.GetOrthoNormal(n2);
                 axis.Normalize();
                 Quaternion bump = AxisAngleQuaternion(axis, 0.5 * Math.PI);
@@ -118,6 +135,25 @@ namespace GeoSolver.Kinematics
                 nudged = true;
             }
             return nudged;
+        }
+
+        // A coaxial mate identifies the admissible angular restart direction.
+        // Reuse that geometry instead of tilting a revolute body off its bearing.
+        private bool TryGetBearingAxis(CTransform body, Vec3D direction, out Vec3D axis)
+        {
+            foreach (var constraint in constraints)
+            {
+                if (constraint is not CoincidentAxes3d bearing) continue;
+                if (ReferenceEquals(FindFreeBodyOwning(bearing.Direction1),body))
+                    axis = bearing.Direction1.Evaluate();
+                else if (ReferenceEquals(FindFreeBodyOwning(bearing.Perpendicular2A),body))
+                    axis = Vec3DOps.Cross(bearing.Perpendicular2A.Evaluate(),bearing.Perpendicular2B.Evaluate());
+                else continue;
+                if (Vec3DOps.Cross(axis,direction).LengthSquared() > 1e-12)
+                    return true;
+            }
+            axis = default;
+            return false;
         }
 
         private CTransform FindFreeBodyOwning(CVec3D direction)

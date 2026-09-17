@@ -126,6 +126,7 @@ namespace CSG
             }
             
             // Step 4: Prepare for triangulation
+            ResolverTriangle.ArrangeTrimSegments(resolverTris, newPoints);
             Dictionary<long, int> insertedSegments = new Dictionary<long, int>();
             for (int i = 0; i < resolverTris.Count; i++)
             {

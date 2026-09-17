@@ -308,8 +308,13 @@ namespace CSG
 
             distA = BigRationalHybrid.Abs(distA);
             distB = BigRationalHybrid.Abs(distB);
+            distA.Simplify();
+            distB.Simplify();
 
             var intersectionPoint = (distA * B + distB * A) / (distA + distB);
+            // A clipped endpoint is reused by subsequent planes. Reduce its
+            // exact representation here to prevent multiplicative growth.
+            intersectionPoint.Simplify();
 
             if (signA > 0 && signB < 0)
             {
@@ -405,6 +410,116 @@ namespace CSG
         public bool AddSegment(in Rat3LineSegment s)
         {
             return AddSegment(new PointPair(s.A, s.B));
+        }
+
+        // Constrained triangulation needs a planar graph: every crossing and
+        // overlapping endpoint must be an explicit vertex. Arrange before
+        // registering boundaries, so clustering uses the resulting subedges.
+        private void CollectTrimSegmentCuts(NewPointCreator points, Dictionary<long, List<Rat3Hybrid>> sharedCuts)
+        {
+            var segments = insertedSegments;
+            if (segments == null || segments.Count < 2) return;
+            var a = points.GetPoint(A);
+            var b = points.GetPoint(B);
+            var c = points.GetPoint(C);
+            if (!CoplanarTriangleProjectionAxes.TryProjectNonDegenerate(
+                    in a, in b, in c, out _, out _, out _, out _, out int x, out int y))
+                return;
+
+            var bounds = segments.Select(segment => (
+                minX:segment.A[x]<segment.B[x]?segment.A[x]:segment.B[x],
+                maxX:segment.A[x]>segment.B[x]?segment.A[x]:segment.B[x],
+                minY:segment.A[y]<segment.B[y]?segment.A[y]:segment.B[y],
+                maxY:segment.A[y]>segment.B[y]?segment.A[y]:segment.B[y])).ToArray();
+            var cuts = new List<BigRationalHybrid>[segments.Count];
+            for (int i = 0; i < segments.Count; i++)
+                cuts[i] = new List<BigRationalHybrid> { new(0), new(1) };
+
+            BigRationalHybrid Cross(Rat3Hybrid u, Rat3Hybrid v) => u[x] * v[y] - u[y] * v[x];
+            void AddEndpoint(int index, Rat3Hybrid point)
+            {
+                var segment = segments[index];
+                var direction = segment.B - segment.A;
+                if (direction == new Rat3Hybrid(0, 0, 0) || Cross(point - segment.A, direction).Sign() != 0) return;
+                int axis = direction[x].Sign() != 0 ? x : y;
+                var parameter = (point[axis] - segment.A[axis]) / direction[axis];
+                if (parameter >= new BigRationalHybrid(0) && parameter <= new BigRationalHybrid(1))
+                    cuts[index].Add(parameter);
+            }
+
+            for (int i = 0; i < segments.Count; i++)
+            {
+                var first = segments[i];
+                var direction = first.B - first.A;
+                for (int j = i + 1; j < segments.Count; j++)
+                {
+                    if (bounds[i].maxX<bounds[j].minX || bounds[j].maxX<bounds[i].minX ||
+                        bounds[i].maxY<bounds[j].minY || bounds[j].maxY<bounds[i].minY) continue;
+                    var second = segments[j];
+                    var otherDirection = second.B - second.A;
+                    var denominator = Cross(direction, otherDirection);
+                    if (denominator.Sign() == 0)
+                    {
+                        AddEndpoint(i, second.A);
+                        AddEndpoint(i, second.B);
+                        AddEndpoint(j, first.A);
+                        AddEndpoint(j, first.B);
+                        continue;
+                    }
+                    var delta = second.A - first.A;
+                    var u = Cross(delta, otherDirection) / denominator;
+                    var v = Cross(delta, direction) / denominator;
+                    if (u < new BigRationalHybrid(0) || u > new BigRationalHybrid(1) ||
+                        v < new BigRationalHybrid(0) || v > new BigRationalHybrid(1)) continue;
+                    cuts[i].Add(u);
+                    cuts[j].Add(v);
+                }
+            }
+
+            for (int i = 0; i < segments.Count; i++)
+            {
+                var segment = segments[i];
+                int start = points.GetIndex(segment.A, out _);
+                int end = points.GetIndex(segment.B, out _);
+                long key = Algorithms.Key(start,end);
+                if (!sharedCuts.TryGetValue(key,out var list))
+                    sharedCuts.Add(key,list=new List<Rat3Hybrid>());
+                foreach (var parameter in cuts[i])
+                    list.Add(segment.A+(segment.B-segment.A)*parameter);
+            }
+        }
+
+        internal static void ArrangeTrimSegments(IEnumerable<ResolverTriangle> triangles, NewPointCreator points)
+        {
+            var sharedCuts = new Dictionary<long,List<Rat3Hybrid>>();
+            foreach (var triangle in triangles)
+                triangle.CollectTrimSegmentCuts(points,sharedCuts);
+            // Both intersecting meshes must use identical subedges. A cut found
+            // on either triangle is propagated to every copy of that segment.
+            foreach (var triangle in triangles)
+            {
+                var segments=triangle.insertedSegments;
+                if (segments==null) continue;
+                triangle.insertedSegments=null;
+                foreach(var segment in segments)
+                {
+                    var direction=segment.B-segment.A;
+                    long key=Algorithms.Key(points.GetIndex(segment.A,out _),points.GetIndex(segment.B,out _));
+                    if (direction==new Rat3Hybrid(0,0,0)||!sharedCuts.TryGetValue(key,out var locations))
+                    {
+                        triangle.AddSegment(segment);
+                        continue;
+                    }
+                    int axis=direction.X.Sign()!=0?0:direction.Y.Sign()!=0?1:2;
+                    var parameters=locations.Select(point=>(point[axis]-segment.A[axis])/direction[axis]).ToList();
+                    parameters.Sort((left,right)=>left.CompareTo(right));
+                    for(int i=1;i<parameters.Count;++i)
+                    {
+                        if(parameters[i]==parameters[i-1])continue;
+                        triangle.AddSegment(new PointPair(segment.A+direction*parameters[i-1],segment.A+direction*parameters[i]));
+                    }
+                }
+            }
         }
 
         public void PrepareTriangulate(NewPointCreator newPointCreator, Dictionary<long, int> splitSegments = null)
@@ -636,8 +751,12 @@ namespace CSG
 
         public Rat3HybridPlane(in Rat3Hybrid normal, in Rat3Hybrid pointOnPlane)
         {
-            Normal = normal;
-            PlaneD = -Rat3Hybrid.Dot(normal, pointOnPlane);
+            // Own the coefficients before reducing: caller vectors can be
+            // shared by concurrent triangle intersection workers.
+            Normal = new Rat3Hybrid(normal);
+            Normal.Simplify();
+            PlaneD = -Rat3Hybrid.Dot(Normal, pointOnPlane);
+            PlaneD.Simplify();
         }
 
         public BigRationalHybrid SignedDistancePointPlane(in Rat3Hybrid p)

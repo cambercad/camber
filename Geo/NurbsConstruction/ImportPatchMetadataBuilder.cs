@@ -21,7 +21,7 @@ namespace Geo.NurbsConstruction
             {
                 if (mesh.surfaceMetaData.TryGetValue(kv.Key, out var existing) && existing.HasNurbs)
                     continue;
-                if (!mesh.TryGetSurface(kv.Key, out var uvSurf) || uvSurf.Triangles.Count == 0)
+                if (!mesh.TryGetTopologySurface(kv.Key, out var uvSurf) || uvSurf.Triangles.Count == 0)
                     continue;
 
                 if (uvSurf.IsPlanar(1e-6))

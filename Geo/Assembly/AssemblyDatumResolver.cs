@@ -106,20 +106,53 @@ namespace Geo
             throw new ArgumentException($"Cannot resolve point datum '{reference}' on mesh '{mesh.Name}'.");
         }
 
-        public static PlaneDatumLocal ResolvePlane(AnchorMesh mesh, string reference)
+        public static PlaneDatumLocal ResolvePlane(AnchorMesh mesh, string reference, CoordinateConverter converter)
         {
             string patchName = mesh.ResolveLocalPatchNamePublic(reference);
             if (patchName == null)
                 throw new ArgumentException($"Cannot resolve plane datum '{reference}' on mesh '{mesh.Name}'.");
 
-            if (mesh.TryGetPlaneFromPatch(patchName, out PlaneSurfaceParams plane))
+            // A face mate must use the modeled surface, including its
+            // outward winding and precise construction plane. Analytic metadata
+            // can use an unoriented parameter axis and nominal sketch origin.
+            if (mesh.TryGetLocalSurface(patchName, out UVSurface surface) && surface.IsSurfacePlanar())
             {
-                Vec3D normal = plane.Normal;
-                normal.Normalize();
-                return new PlaneDatumLocal(plane.Origin, normal);
+                foreach (var triangle in surface.Triangles)
+                {
+                    var origin = surface.PointsPrecise[triangle.A];
+                    var cross = Rat3Hybrid.Cross(surface.PointsPrecise[triangle.B] - origin,
+                        surface.PointsPrecise[triangle.C] - origin);
+                    cross.Simplify();
+                    if (cross.IsZero()) continue;
+                    var scale = BigRationalHybrid.Abs(cross.X);
+                    if (BigRationalHybrid.Abs(cross.Y) > scale) scale = BigRationalHybrid.Abs(cross.Y);
+                    if (BigRationalHybrid.Abs(cross.Z) > scale) scale = BigRationalHybrid.Abs(cross.Z);
+                    cross /= scale; // Bounded conversion even for very large exact coordinates.
+                    var normal = new Vec3D(cross.X.ToDouble(), cross.Y.ToDouble(), cross.Z.ToDouble());
+                    normal.Normalize();
+                    return new PlaneDatumLocal(converter.Convert(origin), normal);
+                }
             }
 
             throw new ArgumentException($"Reference '{reference}' on mesh '{mesh.Name}' does not define a plane.");
+        }
+
+        public static CoordinateSystem ResolvePlaneFrame(AnchorMesh mesh, string reference,
+            CoordinateConverter converter)
+        {
+            PlaneDatumLocal plane = ResolvePlane(mesh, reference, converter);
+            Vec3D z = plane.Normal;
+            mesh.TryGetLocalPlaneReferenceDirection(reference, out Vec3D x);
+            x -= Vec3DOps.Dot(x, z) * z;
+            if (!double.IsFinite(x.X) || !double.IsFinite(x.Y) || !double.IsFinite(x.Z) ||
+                x.LengthSquared() < 1e-12)
+                x = Vec3DOps.GetOrthoNormal(z);
+            x.Normalize();
+            Vec3D y = Vec3DOps.Cross(z, x);
+            y.Normalize();
+            x = Vec3DOps.Cross(y, z);
+            x.Normalize();
+            return new CoordinateSystem(plane.Origin, x, y, z);
         }
 
         private static bool TryGetEdgeTangent(AnchorMesh mesh, string reference, out Vec3D tangent)

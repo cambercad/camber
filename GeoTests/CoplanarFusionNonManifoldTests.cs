@@ -6,7 +6,8 @@ namespace GeoTests;
 
 public class CoplanarFusionNonManifoldTests : IDisposable
 {
-    public void Dispose() => GeoAPI.Clear();
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
 
     [Fact]
     public void AnchorMesh_UnionEdgeTouch_ConstructsWithoutThrow()

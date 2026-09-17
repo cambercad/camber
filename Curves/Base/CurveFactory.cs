@@ -8,6 +8,7 @@ namespace Curves.Base
 
         // 2D Curve factory methods
         public abstract Line2D CreateLine2D(Vec2D start, Vec2D end, CurveFlags flags);
+        public abstract Ellipse2D CreateEllipse2D(Vec2D center, Vec2D majorAxis, double minorRadius, double startAngle, double endAngle, CurveFlags flags);
         public abstract Circle2D CreateCircle2D(Vec2D center, double radius, CurveFlags flags);
         public abstract Arc2D CreateArc2D(Vec2D start, Vec2D end, Vec2D center, bool shorter, CurveFlags flags);
         public abstract Arc2D CreateArc2D(Vec2D start, Vec2D pointOnArc, Vec2D end, CurveFlags flags);
@@ -20,6 +21,10 @@ namespace Curves.Base
         {
             return new Line2D(start, end, flags);
         }
+
+        public override Ellipse2D CreateEllipse2D(Vec2D center, Vec2D majorAxis, double minorRadius,
+            double startAngle, double endAngle, CurveFlags flags)
+            => new Ellipse2D(center,majorAxis,minorRadius,startAngle,endAngle,flags);
 
         public override Circle2D CreateCircle2D(Vec2D center, double radius, CurveFlags flags)
         {

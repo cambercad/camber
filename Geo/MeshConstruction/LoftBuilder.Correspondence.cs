@@ -295,8 +295,22 @@ namespace Geo
             out List<UColumnKind> colKinds,
             out int m)
         {
-            int mReq = Math.Max(2, options.ProfileSamplesU);
-            List<double> uniformU = BuildUniformNormalizedUSamples(mReq, closedForCaps);
+            int mReq = options.ProfileSamplesU;
+            // Uniform-only correspondence explicitly requests a uniform grid;
+            // otherwise authored/adaptive anchors determine the default mesh.
+            if (mReq <= 0 && options.CorrespondenceMode == LoftCorrespondenceMode.UniformUOnly)
+                mReq = 32;
+            List<double> uniformU = mReq > 0
+                ? BuildUniformNormalizedUSamples(Math.Max(2, mReq), closedForCaps)
+                : new List<double>();
+
+            if (options.CorrespondenceMode == LoftCorrespondenceMode.MatchingVertices)
+            {
+                uColumns = uniformU;
+                colKinds = Enumerable.Repeat(UColumnKind.Uniform, uColumns.Count).ToList();
+                m = uColumns.Count;
+                return;
+            }
 
             if (options.Style == LoftStyle.Hermite)
             {
@@ -354,7 +368,8 @@ namespace Geo
             Vec2D[][] profileTu2D,
             int pCount,
             double loftTessellationTolerance,
-            ref int m)
+            ref int m,
+            IReadOnlyList<double> protectedColumns = null)
         {
             if (m < 2 || uColumns.Count != m || colKinds.Count != m)
                 return;
@@ -391,7 +406,11 @@ namespace Geo
             int lastOrig = 0;
             for (int k = 1; k < m; k++)
             {
-                if (colKinds[k - 1] != UColumnKind.Uniform || colKinds[k] != UColumnKind.Uniform)
+                bool currentProtected = protectedColumns != null && protectedColumns.Contains(uColumns[k]);
+                bool previousProtected = lastOrig == 0 ||
+                    (protectedColumns != null && protectedColumns.Contains(uColumns[lastOrig]));
+                if (colKinds[lastOrig] != UColumnKind.Uniform || colKinds[k] != UColumnKind.Uniform ||
+                    (currentProtected && previousProtected))
                 {
                     pick.Add(k);
                     lastOrig = k;
@@ -409,7 +428,15 @@ namespace Geo
                 }
 
                 if (allClose)
+                {
+                    if (currentProtected)
+                    {
+                        // Keep the authored parameter instead of its redundant sample.
+                        pick[pick.Count - 1] = k;
+                        lastOrig = k;
+                    }
                     continue;
+                }
 
                 pick.Add(k);
                 lastOrig = k;

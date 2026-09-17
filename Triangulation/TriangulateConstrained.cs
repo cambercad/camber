@@ -17,10 +17,66 @@ namespace GeoCore
 #endif
         }
 
-        public static void Triangulate(TriangulationContext<Arithmetic, Vec, Scalar> ctx, IList<int> borderPolygon, IList<Int2> constraints, List<int> pointsToInsert = null)
+        public static void Triangulate(TriangulationContext<Arithmetic, Vec, Scalar> ctx,
+            IList<int> borderPolygon, IList<Int2> constraints, List<int> pointsToInsert = null)
+        {
+            TriangulateWithConstraints(ctx, borderPolygon, constraints, pointsToInsert);
+        }
+
+        internal static List<Int2> TriangulateWithConstraints(TriangulationContext<Arithmetic, Vec, Scalar> ctx,
+            IList<int> borderPolygon, IList<Int2> constraints, List<int> pointsToInsert)
         {
             TriangulateConstrained<Arithmetic, Vec, Scalar> triangulator = new TriangulateConstrained<Arithmetic, Vec, Scalar>(ctx);
-            triangulator.Triangulate(borderPolygon, constraints, pointsToInsert);
+            var segments = triangulator.SplitConstraintsAtVertices(borderPolygon, constraints, pointsToInsert);
+            triangulator.Triangulate(borderPolygon, segments, pointsToInsert);
+            return segments;
+        }
+
+        // A constrained edge cannot skip an existing vertex. Enforce its
+        // collinear subsegments, and return those same edges for Delaunay locking.
+        private List<Int2> SplitConstraintsAtVertices(IList<int> border,
+            IList<Int2> constraints, List<int> inserted)
+        {
+            var vertices = new HashSet<int>(border);
+            if (inserted != null) vertices.UnionWith(inserted);
+            foreach (var edge in constraints)
+            {
+                vertices.Add(edge.X);
+                vertices.Add(edge.Y);
+            }
+            var arithmetic = ctx.GetArithmetic();
+            var points = ctx.Points;
+            var result = new List<Int2>();
+            var seen = new HashSet<long>();
+            foreach (var edge in constraints)
+            {
+                var chain = new List<int> { edge.X };
+                if (edge.X != edge.Y)
+                {
+                    int axis = arithmetic.Compare(arithmetic.Get(points[edge.X], 0),
+                        arithmetic.Get(points[edge.Y], 0)) != 0 ? 0 : 1;
+                    var start = arithmetic.Get(points[edge.X], axis);
+                    var end = arithmetic.Get(points[edge.Y], axis);
+                    int direction = arithmetic.Compare(end, start);
+                    foreach (int vertex in vertices)
+                    {
+                        if (vertex == edge.X || vertex == edge.Y) continue;
+                        var value = arithmetic.Get(points[vertex], axis);
+                        if (arithmetic.Compare(value, start) * direction <= 0 ||
+                            arithmetic.Compare(value, end) * direction >= 0) continue;
+                        if (ctx.Orient2D(edge.X, edge.Y, vertex) == 0)
+                            chain.Add(vertex);
+                    }
+                    chain.Sort((a, b) => direction * arithmetic.Compare(
+                        arithmetic.Get(points[a], axis), arithmetic.Get(points[b], axis)));
+                    chain.Add(edge.Y);
+                }
+                else chain.Add(edge.Y); // A point constraint still inserts its vertex.
+                for (int i = 1; i < chain.Count; i++)
+                    if (seen.Add(Algorithms.Key(chain[i-1], chain[i])))
+                        result.Add(new Int2(chain[i-1], chain[i]));
+            }
+            return result;
         }
 
         //Extract a method to insert constraints one by one - useful for debugging

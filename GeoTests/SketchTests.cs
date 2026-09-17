@@ -13,13 +13,13 @@ namespace GeoTests;
 ///   1. asserts error &lt; tolerance (solver quality),
 ///   2. directly inspects the geometric objects to verify the constraint is satisfied.
 /// </summary>
-[Collection("GeoAPISequential")]
 public class SketchTests : IDisposable
 {
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
     private const double SolverTol = 1e-6;
     private const double GeomTol   = 1e-4;
 
-    public void Dispose() => GeoAPI.Clear();
 
     // ── helpers ─────────────────────────────────────────────────────────────
 

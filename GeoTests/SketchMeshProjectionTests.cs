@@ -6,10 +6,10 @@ using GeoMeta;
 
 namespace GeoTests;
 
-[Collection("GeoAPISequential")]
 public class SketchMeshProjectionTests : IDisposable
 {
-    public void Dispose() => GeoAPI.Clear();
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
 
     [Fact]
     public void ProjectRectangleOntoCubeFace_HitsLieOnPlane_NamesPreserved()

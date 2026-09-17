@@ -6,7 +6,8 @@ namespace GeoTests;
 
 public class NurbsExtrudeTests : IDisposable
 {
-    public void Dispose() => GeoAPI.Clear();
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
 
     [Fact]
     public void Extrude_Cube_AllPatchesHaveNurbs()

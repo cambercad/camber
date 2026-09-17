@@ -30,17 +30,13 @@ namespace Geo
                         "Loft requires exactly one connected curve strip per sketch (no extra islands or disconnected loops). " +
                         "Merge sketches or remove extra geometry.");
 
-                SketchStripTessellator.FlattenStripWithCreases(tess[0], norms[0], out var poly, out var pn, out var creases);
+                SketchStripTessellator.FlattenStripWithCreases(tess[0], norms[0], out var poly, out var pn, out var creases, preserveTangentJoints: false);
 
-                CurveStrip2D analytic = null;
-                if (options.ProfileSampling == LoftProfileSamplingSource.AnalyticCurveStrip)
-                {
-                    var stripCurves = sketch.GetCurves()
-                        .Select(s => s.Where(c => !c.IsHelperGeometry).ToList())
-                        .FirstOrDefault(s => s.Count > 0) ?? new List<Curve2D>();
-                    if (stripCurves.Count > 0)
-                        analytic = CurveStrip2D.FromSegments(stripCurves);
-                }
+                var stripCurves = sketch.GetCurves()
+                    .Select(s => s.Where(c => !c.IsHelperGeometry).ToList())
+                    .FirstOrDefault(s => s.Count > 0) ?? new List<Curve2D>();
+                CurveStrip2D analytic = options.ProfileSampling == LoftProfileSamplingSource.AnalyticCurveStrip && stripCurves.Count > 0
+                    ? CurveStrip2D.FromSegments(stripCurves) : null;
 
                 prepared.Add(new LoftPreparedProfile
                 {
@@ -49,6 +45,7 @@ namespace Geo
                     CreaseIdx = creases,
                     System = sketch.CoordinateSystem,
                     AnalyticStrip = analytic,
+                    SourceCurves = stripCurves,
                     SeamU0 = 0
                 });
             }
@@ -187,7 +184,7 @@ namespace Geo
         /// <summary>Maps authored-strip u into seam-parameter space (u=0 at seam).</summary>
         internal static double ToSeamU(double authoredU, double seamU0, bool closed)
         {
-            if (!closed || Math.Abs(seamU0) < 1e-15)
+            if (!closed)
                 return authoredU;
             return Frac01(authoredU - seamU0);
         }
@@ -195,7 +192,7 @@ namespace Geo
         /// <summary>Maps seam-parameter u to authored-strip evaluation parameter.</summary>
         internal static double ToAuthoredU(double seamU, double seamU0, bool closed)
         {
-            if (!closed || Math.Abs(seamU0) < 1e-15)
+            if (!closed)
                 return seamU;
             return Frac01(seamU + seamU0);
         }

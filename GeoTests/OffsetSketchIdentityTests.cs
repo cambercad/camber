@@ -7,10 +7,11 @@ namespace GeoTests;
 
 public class OffsetSketchIdentityTests : IDisposable
 {
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
     const double Offset = 0.5;
     const double GeomTol = 0.08;
 
-    public void Dispose() => GeoAPI.Clear();
 
     static SketchStripOffsetOptions MiterOpts() => new SketchStripOffsetOptions
     {

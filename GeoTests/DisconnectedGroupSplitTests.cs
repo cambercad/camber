@@ -6,10 +6,83 @@ using GeoMeta;
 
 namespace GeoTests;
 
-[Collection("GeoAPISequential")]
 public class DisconnectedGroupSplitTests : IDisposable
 {
-    public void Dispose() => GeoAPI.Clear();
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
+
+    [Fact]
+    public void SplittingFaceWithNullOptionalMetadataPreservesGeometry()
+    {
+        var positions = new List<Vec3D> { new(0,0,0), new(1,0,0), new(0,1,0),
+            new(3,0,0), new(4,0,0), new(3,1,0) };
+        var triangles = new List<Tri> { new(0,1,2), new(3,4,5) };
+        var original = triangles.ToArray();
+        var groups = new List<int> { 7,7 };
+        var names = new Dictionary<int,string> { [7] = "face" };
+        var metadata = new Dictionary<string,SurfaceMetaData> { ["face"] = null };
+        Assert.True(DisconnectedGroupSplit.SplitDisconnectedGroups(
+            triangles, positions, groups, names, metadata, count => 20));
+        Assert.Equal(original, triangles);
+        Assert.Equal(new[] { 7,20 }, groups);
+        Assert.Equal("face_1", names[20]);
+        Assert.False(metadata.ContainsKey("face_1"));
+    }
+
+    [Fact]
+    public void RepeatedSplitPreservesExistingComponentNamesAndMetadata()
+    {
+        var positions = new List<Vec3D>();
+        var triangles = new List<Tri>();
+        for (int i = 0; i < 3; i++)
+        {
+            positions.AddRange(new[] { new Vec3D(i*3,0,0), new Vec3D(i*3+1,0,0), new Vec3D(i*3,1,0) });
+            triangles.Add(new Tri(i*3,i*3+1,i*3+2));
+        }
+        var original = triangles.ToArray();
+        var groups = new List<int> { 7, 7, 8 };
+        const string origin = "control_-1_bar_band-ExtrudeBottom";
+        var names = new Dictionary<int,string> { [7]=origin, [8]=origin+"_1" };
+        var metadata = new Dictionary<string,SurfaceMetaData> {
+            [origin]=new SurfaceMetaData(SurfaceType.Planar), [origin+"_1"]=new SurfaceMetaData(SurfaceType.Planar),
+            // Metadata can outlive a triangle group; it must not be overwritten.
+            [origin+"_2"]=new SurfaceMetaData(SurfaceType.Planar) };
+        var retained = metadata[origin+"_1"];
+        var dormant = metadata[origin+"_2"];
+        Assert.True(DisconnectedGroupSplit.SplitDisconnectedGroups(
+            triangles,positions,groups,names,metadata,count=>20));
+        Assert.Equal(origin,names[7]);
+        Assert.Equal(origin+"_1",names[8]);
+        Assert.Equal(origin+"_3",names[20]);
+        Assert.Same(retained,metadata[origin+"_1"]);
+        Assert.Same(dormant,metadata[origin+"_2"]);
+        Assert.NotSame(metadata[origin],metadata[origin+"_3"]);
+        Assert.Equal(original,triangles);
+        Assert.False(DisconnectedGroupSplit.SplitDisconnectedGroups(
+            triangles,positions,groups,names,metadata,count=>throw new Exception("Already split")));
+    }
+
+    [Fact]
+    public void EdgeTouchingClosedShellsSplitWithoutChangingFacetsOrVolume()
+    {
+        var positions=new List<Vec3D> { new(0,0,0),new(0,0,1),new(1,0,0),
+            new(0,1,0),new(-1,0,0),new(0,-1,0) };
+        var triangles=new List<Tri> { new(0,2,1),new(0,1,3),new(0,3,2),new(1,2,3),
+            new(0,4,1),new(0,1,5),new(0,5,4),new(1,4,5) };
+        var originalTriangles=triangles.ToArray();
+        double volume=MeshAnalysis.ComputeSignedMeshVolume(positions,triangles);
+        Assert.Equal(1.0/3,volume,12);
+        var groups=Enumerable.Repeat(7,triangles.Count).ToList();
+        var names=new Dictionary<int,string>{{7,"shell"}};
+        bool changed=DisconnectedGroupSplit.SplitDisconnectedGroups(triangles,positions,groups,names,null,count=>20);
+        Assert.True(changed);
+        Assert.Equal(originalTriangles,triangles);
+        Assert.Equal(volume,MeshAnalysis.ComputeSignedMeshVolume(positions,triangles));
+        Assert.Equal(2,groups.Distinct().Count());
+        Assert.All(groups.Take(4),group=>Assert.Equal(groups[0],group));
+        Assert.All(groups.Skip(4),group=>Assert.Equal(groups[4],group));
+        Assert.NotEqual(groups[0],groups[4]);
+    }
 
     [Fact]
     public void TwoDisjointSquares_SameGroup_BecomeTwoNamedFaces()

@@ -32,9 +32,10 @@ namespace Geo.NurbsConstruction
 
         public Vec2D MapMeshUv(double u, double v)
         {
-            double mappedU = UMapper != null ? UMapper.KnotFromNormalizedArcLength(u) : u;
-            double mappedV = VMapper != null ? VMapper.KnotFromNormalizedArcLength(v) : v;
-            var nurbsUv = Range.MapMeshUvToNurbs(new Vec2D(mappedU, mappedV));
+            var ranged = Range.MapMeshUvToNurbs(new Vec2D(u, v));
+            double mappedU = UMapper != null ? UMapper.KnotFromNormalizedArcLength(ranged.X) : ranged.X;
+            double mappedV = VMapper != null ? VMapper.KnotFromNormalizedArcLength(ranged.Y) : ranged.Y;
+            var nurbsUv = new Vec2D(mappedU, mappedV);
             if (SwapMeshUv)
                 return new Vec2D(nurbsUv.Y, nurbsUv.X);
             return nurbsUv;

@@ -265,19 +265,7 @@ namespace Geo
                 new List<List<List<Vec2D>>>() { contourNormals }, 0, height, triangles, vertices, normals, uv, triangleGroups, precisePositions,
                 twistRatePerExtrudeDistance, maxDeviation, baseGroupIndex);
 
-            // Transform vertices and normals from local coordinate system to world space
-            for (int i = 0; i < vertices.Count; ++i)
-                vertices[i] = location.PointFromCoordSysToWorld(vertices[i]);
-            for (int i = 0; i < normals.Count; ++i)
-                normals[i] = location.DirectionFromCoordSysToWorld(normals[i]);
-            
-            // Regenerate precise positions from transformed vertices
-            precisePositions.Clear();
-            for (int i = 0; i < vertices.Count; ++i)
-            {
-                Int3 intPos = converter.Convert(vertices[i]);
-                precisePositions.Add(new Rat3Hybrid(intPos.X, intPos.Y, intPos.Z));
-            }
+            PreciseFrameTransform.Apply(converter, location, vertices, normals, precisePositions);
 
             return numGroups;
         }
@@ -380,7 +368,7 @@ namespace Geo
                 output.Triangles, output.Vertices, output.Normals, output.UVs, output.TriangleGroups,
                 output.PrecisePositions, twistRatePerExtrudeDistance, maxDeviation, baseGroupIndex);
 
-            PopulateExtrudeNaming(naming, orientedContours, baseGroupIndex);
+            PopulateExtrudeNaming(naming, orientedContours, reversalInfo, baseGroupIndex);
             output.TransformToWorldSpace(converter, location);
             return res;
         }
@@ -799,17 +787,7 @@ namespace Geo
         private static void TransformToWorldAndRegeneratePrecise(CoordinateConverter converter, CoordinateSystem contourCS,
             List<Vec3D> vertices, List<Vec3D> normals, List<Rat3Hybrid> precisePositions)
         {
-            for (int i = 0; i < vertices.Count; ++i)
-                vertices[i] = contourCS.PointFromCoordSysToWorld(vertices[i]);
-            for (int i = 0; i < normals.Count; ++i)
-                normals[i] = contourCS.DirectionFromCoordSysToWorld(normals[i]);
-
-            precisePositions.Clear();
-            for (int i = 0; i < vertices.Count; ++i)
-            {
-                Int3 intPos = converter.Convert(vertices[i]);
-                precisePositions.Add(new Rat3Hybrid(intPos.X, intPos.Y, intPos.Z));
-            }
+            PreciseFrameTransform.Apply(converter, contourCS, vertices, normals, precisePositions);
         }
 
         /// <summary>
@@ -1431,7 +1409,7 @@ namespace Geo
             }
         }
 
-        private static void PopulateExtrudeNaming(MeshNaming naming, List<List<List<Vec2D>>> orientedContours, int baseGroupIndex)
+        private static void PopulateExtrudeNaming(MeshNaming naming, List<List<List<Vec2D>>> orientedContours, List<bool> reversed, int baseGroupIndex)
         {
             if (naming == null) return;
             naming.TriangleGroupToName = new Dictionary<int, string>();
@@ -1443,7 +1421,7 @@ namespace Geo
                 var names = naming.ContourNames[loopIndex];
                 for (int curveIndex = 0; curveIndex < orientedContours[loopIndex].Count; curveIndex++)
                 {
-                    var n = names[curveIndex];
+                    var n = names[reversed[loopIndex] ? names.Count-1-curveIndex : curveIndex];
                     EntityNaming.ValidateContourSegmentName(n);
                     naming.TriangleGroupToName.Add(groupIndex + baseGroupIndex, EntityNaming.ExtrudeSide(naming.OperationName, n));
                     groupIndex++;

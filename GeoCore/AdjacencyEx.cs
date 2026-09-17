@@ -134,6 +134,20 @@
             var B = vertices[edgeEnd];
             var e = B - A;
 
+            // A determinant gives only a circular relation, not a transitive
+            // order over a full turn. Partition around one exact reference ray
+            // before comparing orientations, including opposite collinear rays.
+            var reference = vertices[allTris[tris[0]].GetRemaining(edgeStart, edgeEnd)] - A;
+            var edgeLengthSquared = Rat3Hybrid.Dot(e, e);
+            int HalfPlane(Rat3Hybrid ray)
+            {
+                int side = Rat3Hybrid.Dot(e, Rat3Hybrid.Cross(reference, ray)).Sign();
+                if (side != 0) return side > 0 ? 0 : 1;
+                var along = edgeLengthSquared * Rat3Hybrid.Dot(reference, ray)
+                    - Rat3Hybrid.Dot(reference, e) * Rat3Hybrid.Dot(ray, e);
+                return along.Sign() >= 0 ? 0 : 1;
+            }
+
             tris.Sort((it1, it2) =>
             {
                 var t1 = allTris[it1];
@@ -142,6 +156,9 @@
                 var remaining2 = t2.GetRemaining(edgeStart, edgeEnd);
                 var v1 = vertices[remaining1] - A;
                 var v2 = vertices[remaining2] - A;
+
+                int half = HalfPlane(v1).CompareTo(HalfPlane(v2));
+                if (half != 0) return half;
 
                 // orientation test around axis AB
                 var cross = Rat3Hybrid.Cross(v1, v2);

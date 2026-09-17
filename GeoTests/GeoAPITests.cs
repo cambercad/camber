@@ -7,10 +7,8 @@ namespace GeoTests;
 
 public class GeoAPITests : IDisposable
 {
-    public void Dispose()
-    {
-        GeoAPI.Clear();
-    }
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
 
     [Fact]
     public void CreateSphere_GeneratesMeshAndSceneNode()

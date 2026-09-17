@@ -26,6 +26,7 @@ namespace Geo
     {
         public LoftStyle Style { get; set; }
         /// <summary>
+        /// Zero (default) uses tolerance-driven profile anchors without extra uniform samples.
         /// For <see cref="LoftStyle.Ruled"/> / <see cref="LoftStyle.SmoothCatmullRom"/>: minimum number of uniform u samples; the actual grid merges these with profile anchors per <see cref="LoftCorrespondenceMode"/>.
         /// For <see cref="LoftStyle.Hermite"/>: uniform u samples are always merged with max-deviation tessellation anchors (and optional feature anchors); this is the minimum uniform count.
         /// </summary>
@@ -53,7 +54,8 @@ namespace Geo
         /// <summary>Which profiles supply crease columns at segment joints.</summary>
         public LoftCreasePolicy CreasePolicy { get; set; }
         /// <summary>
-        /// How closed profiles choose u=0 (seam). Default <see cref="LoftAlignmentMode.OriginFootRoll"/>.
+        /// How closed profiles choose u=0 (seam). Default <see cref="LoftAlignmentMode.AsAuthored"/>
+        /// preserves the section start points as authored connectors.
         /// Open profiles always keep authored start/end (u0=0). Per-profile <see cref="ProfileSeamPoints"/> override this when set.
         /// </summary>
         public LoftAlignmentMode AlignmentMode { get; set; }
@@ -62,6 +64,8 @@ namespace Geo
         /// set u=0 to the closest point on that closed profile; unset entries use <see cref="AlignmentMode"/>. Ignored for open profiles.
         /// </summary>
         public IList<LoftProfileSeamHint> ProfileSeamPoints { get; set; }
+        /// <summary>Optional first edge name per section for matched-vertex correspondence.</summary>
+        public IReadOnlyList<string> FirstCurves { get; set; }
         /// <summary>
         /// Planar end-cap preflight strictness; caps triangulate the sanitized rim via integer-scaled sketch coordinates (ear clip + Delaunay post-process).
         /// Default <see cref="LoftCapTriangulationMode.Robust"/> tolerates borderline winding on NACA / near-degenerate trailing-edge rims.
@@ -69,7 +73,9 @@ namespace Geo
         /// </summary>
         public LoftCapTriangulationMode CapTriangulation { get; set; }
         /// <summary>
-        /// <see cref="LoftProfileSamplingSource.AnalyticCurveStrip"/> uses true composite-curve arc length for sampling (see <see cref="CurveStrip2D.FromSegments"/>); tessellation remains for creases and optional anchors.
+        /// The default <see cref="LoftProfileSamplingSource.AnalyticCurveStrip"/> evaluates the authored curves.
+        /// Each segment occupies a length-proportional interval, using its native parameter within that interval
+        /// (see <see cref="CurveStrip2D.FromSegments"/>); tessellation supplies creases and optional anchors.
         /// Seam u0 is applied consistently to analytic evaluation.
         /// </summary>
         public LoftProfileSamplingSource ProfileSampling { get; set; }
@@ -77,8 +83,8 @@ namespace Geo
         public LoftOptions()
         {
             Style = LoftStyle.Hermite;
-            ProfileSamplesU = 32;
-            VSubdivisionsPerSpan = 2;
+            ProfileSamplesU = 0;
+            VSubdivisionsPerSpan = 0;
             CapEnds = true;
             AllowOpenContour = false;
             LoftUmergeToleranceAbs = 1e-6;
@@ -86,10 +92,10 @@ namespace Geo
             MaxMergedUAnchors = 0;
             CorrespondenceMode = LoftCorrespondenceMode.MergedArcLengthAnchors;
             CreasePolicy = LoftCreasePolicy.FromAllProfiles;
-            AlignmentMode = LoftAlignmentMode.OriginFootRoll;
+            AlignmentMode = LoftAlignmentMode.AsAuthored;
             ProfileSeamPoints = null;
             CapTriangulation = LoftCapTriangulationMode.Robust;
-            ProfileSampling = LoftProfileSamplingSource.TessellatedPolyline;
+            ProfileSampling = LoftProfileSamplingSource.AnalyticCurveStrip;
         }
 
         public static LoftOptions Default
@@ -124,12 +130,12 @@ namespace Geo
     /// <see cref="GenerateLoftFromPolylines"/> (pre-built polylines). The static type is <c>LoftBuilder</c> to avoid clashing with
     /// <see cref="GeoAPI.Loft"/>.
     /// Each profile is defined in its own sketch plane.
-    /// Correspondence rule: each profile is parameterized by <b>normalized arc length</b> u ? [0,1] along its oriented strip
+    /// Correspondence rule: each profile uses a normalized length-proportional parameter u in [0,1] along its oriented strip
     /// after choosing a seam (u=0) via <see cref="LoftAlignmentMode"/> / <see cref="LoftOptions.ProfileSeamPoints"/>.
     /// All profiles are resampled on one shared u-grid in seam space (see <see cref="LoftCorrespondenceMode"/>).
     /// With <see cref="LoftProfileSamplingSource.AnalyticCurveStrip"/>, evaluation uses the analytic strip with the same seam u0.
-    /// Closed profiles duplicate the first rim column (same 3D position, u = 1) for a clean UV seam; end caps reuse the
-    /// rim vertex indices (shared with the side strips) with winding matched for a manifold solid.
+    /// Closed profiles duplicate the first rim column (same 3D position, u = 1) for a clean UV seam. End caps
+    /// share rim positions while retaining separate vertices for the sharp side-to-cap normal discontinuity.
     /// Sketch segment joints insert duplicate u-columns (crease left/right) when included via <see cref="LoftCreasePolicy"/>.
     /// </summary>
     public static partial class LoftBuilder
@@ -157,7 +163,7 @@ namespace Geo
             return GenerateLoftCore(converter, prepared, options, maxDeviation,
                 output.Triangles, output.Vertices, output.Normals, output.UVs,
                 output.TriangleGroups, output.PrecisePositions,
-                loftName, out triangleGroupToName, baseGroupIndex);
+                loftName, out triangleGroupToName, baseGroupIndex, output);
         }
 
         /// <summary>Sketches overload that builds a <see cref="CoordinateConverter"/> from profile bounds.</summary>
@@ -183,7 +189,7 @@ namespace Geo
             return GenerateLoftCore(converter, prepared, options, maxDeviation,
                 output.Triangles, output.Vertices, output.Normals, output.UVs,
                 output.TriangleGroups, output.PrecisePositions,
-                loftName, out triangleGroupToName, baseGroupIndex);
+                loftName, out triangleGroupToName, baseGroupIndex, output);
         }
 
         /// <summary>
@@ -224,7 +230,7 @@ namespace Geo
             return GenerateLoftCore(converter, prepared, options, loftTessellationTolerance: 0,
                 output.Triangles, output.Vertices, output.Normals, output.UVs,
                 output.TriangleGroups, output.PrecisePositions,
-                loftName, out triangleGroupToName, baseGroupIndex);
+                loftName, out triangleGroupToName, baseGroupIndex, output);
         }
 
         private static int GenerateLoftCore(
@@ -240,8 +246,18 @@ namespace Geo
             List<Rat3Hybrid> precisePositions,
             string loftName,
             out Dictionary<int, string> triangleGroupToName,
-            int baseGroupIndex)
+            int baseGroupIndex,
+            MeshOutput output)
         {
+            if (options.FirstCurves != null)
+            {
+                if (options.FirstCurves.Count != prepared.Count)
+                    throw new ArgumentException("first_curves must contain one curve name per section.");
+                if (options.CorrespondenceMode != LoftCorrespondenceMode.MatchingVertices)
+                    throw new ArgumentException("first_curves requires matching-vertex correspondence.");
+                if (options.ProfileSeamPoints != null || options.AlignmentMode != LoftAlignmentMode.AsAuthored)
+                    throw new ArgumentException("first_curves cannot be combined with another section alignment control.");
+            }
             triangleGroupToName = new Dictionary<int, string>();
             int s = Math.Max(0, options.VSubdivisionsPerSpan);
             int pCount = prepared.Count;
@@ -298,13 +314,33 @@ namespace Geo
                     RollPolylineInPlace(polys[pi], polyNormals[pi], closed, rollBy);
                 }
 
-                bool reversed = OrientClosedCounterClockwise(polys[pi], polyNormals[pi], closed);
+                bool reversed = options.FirstCurves == null && OrientClosedCounterClockwise(polys[pi], polyNormals[pi], closed);
                 if (reversed)
                 {
                     crease = RemapCreaseReverse(crease, polys[pi].Count);
                     // Reversing maps authored u ? (1-u); keep analytic seam consistent when used.
                     if (Math.Abs(u0Auth) > 1e-15)
                         u0Auth = Frac01(1.0 - u0Auth);
+                }
+
+                if (options.FirstCurves != null)
+                {
+                    prepared[pi].FirstCurveName = options.FirstCurves[pi];
+                    if (prepared[pi].SourceCurves?.Any(curve => curve is not Line2D) == true)
+                    {
+                        // Curved correspondence is established on the authored
+                        // curves, independent of tessellated sample locations.
+                        if (!closed && prepared[pi].SourceCurves[0].Name != options.FirstCurves[pi])
+                            throw new ArgumentException($"Section {pi + 1}: an open profile must start at its first boundary curve.");
+                    }
+                    else
+                    {
+                        int first = FindFirstCurveEdge(prepared[pi], options.FirstCurves[pi], pi, closed);
+                        if (!closed && first != 0)
+                            throw new ArgumentException($"Section {pi + 1}: an open profile must start at its first boundary edge.");
+                        crease = RemapCreaseForRoll(crease, polys[pi].Count, first, closed);
+                        RollPolylineInPlace(polys[pi], polyNormals[pi], closed, first);
+                    }
                 }
 
                 double seamU0Eval = (analyticStrips[pi] != null && Math.Abs(u0Auth) > 1e-15) ? u0Auth : 0;
@@ -329,11 +365,50 @@ namespace Geo
             }
 
             bool closedForCaps = profileClosed[0];
+            bool matchingVertices = options.CorrespondenceMode == LoftCorrespondenceMode.MatchingVertices;
+            output.LoftSideSupportFactory = BuildExactPolygonLoftSupport(prepared, options.Style, out var polygonBreaks, matchingVertices);
 
-            BuildUColumns(options, polys, profileClosed, analyticStrips, seamU0, tolU, closedForCaps, loftTessellationTolerance,
-                out List<double> uColumns, out List<UColumnKind> colKinds, out int m);
+            bool matchedCurves = prepared[0].MatchedCurve != null;
+            int matchedCount = matchedCurves ? prepared[0].MatchedCurveNames.Count :
+                closedForCaps ? polys[0].Count : polys[0].Count - 1;
+            List<double> uColumns;
+            List<UColumnKind> colKinds;
+            int m;
+            if (matchedCurves)
+            {
+                uColumns = polygonBreaks.Where(u => !closedForCaps || u < 1).ToList();
+                colKinds = Enumerable.Repeat(UColumnKind.Uniform, uColumns.Count).ToList();
+                m = uColumns.Count;
+            }
+            else
+                BuildUColumns(options, polys, profileClosed, analyticStrips, seamU0, tolU, closedForCaps, loftTessellationTolerance,
+                    out uColumns, out colKinds, out m);
+
+            double[] surfaceRows = null;
+            if (polygonBreaks != null && loftTessellationTolerance > 1e-30)
+            {
+                var samples = SurfaceLoftParameters(output.LoftSideSupportFactory, loftTessellationTolerance);
+                polygonBreaks = polygonBreaks.Concat(samples.U).Distinct().OrderBy(u => u).ToArray();
+                surfaceRows = samples.V;
+            }
+
+            // Every polygon corner is a construction knot, independent of the
+            // optional sample-count/crease display policy. Do not bridge one
+            // with a triangle intended to approximate a smooth U span.
+            if (polygonBreaks != null)
+            {
+                uColumns = MergeSortedUniqueNormalizedU(uColumns,
+                    polygonBreaks.Where(u => !closedForCaps || u < 1).ToArray(), 0);
+                colKinds = Enumerable.Repeat(UColumnKind.Uniform, uColumns.Count).ToList();
+            }
 
             List<double> unionCreaseU = UnionCreaseNormalizedU(polys, profileClosed, creaseIdxPerProfile, seamU0, options.CreasePolicy, tolU);
+            if (matchingVertices)
+            {
+                int spans = matchedCount;
+                unionCreaseU = Enumerable.Range(closedForCaps ? 0 : 1, closedForCaps ? spans : spans - 1)
+                    .Select(i => (double)i / spans).ToList();
+            }
             InsertCreaseColumnPairs(ref uColumns, ref colKinds, unionCreaseU, tolU);
             m = uColumns.Count;
 
@@ -351,19 +426,20 @@ namespace Geo
                     tolU,
                     analyticStrips[pi],
                     seamU0[pi],
-                    profileWorld[pi], profileSketch2D[pi], profileTu2D[pi]);
+                    profileWorld[pi], profileSketch2D[pi], profileTu2D[pi], matchingVertices, prepared[pi].MatchedCurve);
             }
 
             ConsolidateCoincidentUniformUColumnsInWorldSpace(
-                ref uColumns, ref colKinds, profileWorld, profileSketch2D, profileTu2D, pCount, loftTessellationTolerance, ref m);
+                ref uColumns, ref colKinds, profileWorld, profileSketch2D, profileTu2D, pCount, loftTessellationTolerance, ref m, polygonBreaks);
 
             double[] rowVUniform = null;
             Vec3D[][] grid;
             int vRows;
-            bool hermiteAdaptiveV = options.Style == LoftStyle.Hermite && loftTessellationTolerance > 1e-30;
+            bool hermiteAdaptiveV = (polygonBreaks != null || options.Style == LoftStyle.Hermite || options.Style == LoftStyle.SmoothCatmullRom) && loftTessellationTolerance > 1e-30;
             if (hermiteAdaptiveV)
             {
-                BuildHermiteLoftGridAdaptive(profileWorld, loftTessellationTolerance, s, out grid, out rowVUniform);
+                BuildHermiteLoftGridAdaptive(profileWorld, loftTessellationTolerance, s, options.Style,
+                    surfaceRows, out grid, out rowVUniform);
                 vRows = grid.Length;
             }
             else
@@ -380,53 +456,78 @@ namespace Geo
             ComputeLoftMeshTolerancesFromGrid(grid, vRows, m, out double minSqCross, out double minSqEdge);
 
             int sideGroup = baseGroupIndex;
-            int startCapGroup = baseGroupIndex + 1;
-            int endCapGroup = baseGroupIndex + 2;
+            int sideCount = matchingVertices ? matchedCount : 1;
+            int startCapGroup = baseGroupIndex + sideCount;
+            int endCapGroup = startCapGroup + 1;
+            int[] sideColumns = null;
+            if (matchingVertices)
+            {
+                output.LoftSideDomains = new Dictionary<string, ParametricRange>();
+                var names = MatchedSideNames(prepared[0], loftName);
+                for (int face = 0; face < sideCount; face++)
+                {
+                    triangleGroupToName[baseGroupIndex + face] = names[face];
+                    output.LoftSideDomains.Add(names[face],
+                        new ParametricRange((double)face / sideCount, (double)(face + 1) / sideCount, 0, 1));
+                }
+                sideColumns = Enumerable.Range(0, closedForCaps ? m : m - 1).Select(q =>
+                {
+                    double nextU = q + 1 == m ? 1 : uColumns[q + 1];
+                    int face = Math.Min(sideCount - 1, (int)Math.Floor((uColumns[q] + nextU) * .5 * sideCount));
+                    return baseGroupIndex + face;
+                }).ToArray();
+            }
+            else
+                triangleGroupToName[sideGroup] = EntityNaming.LoftSide(loftName);
 
+            // End sections are construction planes. Quantize in their local
+            // frames, then reuse the exact rim on both side and cap meshes.
+            Rat3Hybrid[] PreciseRim(int profile)
+            {
+                var transform = new PreciseFrameTransform(converter, systems[profile]);
+                return profileSketch2D[profile].Select(point =>
+                    transform.Transform(new Vec3D(point.X, point.Y, 0))).ToArray();
+            }
+            var startRim = PreciseRim(0);
+            var endRim = PreciseRim(pCount - 1);
+            var planarGrid = matchingVertices && !matchedCurves
+                ? PreservePlanarMatchedSides(prepared, uColumns, rowVUniform, vRows, options.Style,
+                    converter, startRim, endRim) : null;
             int baseVert = vertices.Count;
             EmitGridVertices(
                 grid, m, vRows, closedForCaps, colKinds.ToArray(),
-                profileTu2D, systems, pCount, s, rowVUniform,
+                output.LoftSideSupportFactory != null ? uColumns : null, profileTu2D, systems, pCount, s, rowVUniform, startRim, endRim, planarGrid,
                 vertices, normals, uv, precisePositions, converter);
 
-            EmitSideQuads(grid, m, vRows, baseVert, closedForCaps, vertices, minSqCross, minSqEdge, triangles, triangleGroups, sideGroup);
+            ApplyAnalyticLoftNormals(profileWorld, analyticStrips, systems, uColumns, colKinds,
+                profileTu2D, seamU0, closedForCaps, options.Style, rowVUniform, vRows, baseVert, normals,
+                matchingVertices ? output.LoftSideSupportFactory() : null);
+
+            EmitSideQuads(grid, m, vRows, baseVert, closedForCaps, vertices, minSqCross, minSqEdge, triangles, triangleGroups, sideGroup, sideColumns);
 
             if (options.CapEnds && closedForCaps)
             {
                 if (m < 3)
                     throw new InvalidOperationException("Loft with caps requires at least three samples along the profile (ProfileSamplesU >= 3).");
 
-                int uVertCount = m + 1;
-                var startRim = new int[m];
-                var endRim = new int[m];
-                for (int u = 0; u < m; u++)
-                {
-                    startRim[u] = baseVert + u;
-                    endRim[u] = baseVert + (vRows - 1) * uVertCount + u;
-                }
-
-                Vec3D nStart = systems[0].Z.Normalized();
-                Vec3D nEnd = systems[pCount - 1].Z.Normalized();
+                Vec3D nStart = -systems[0].Z.Normalized() * (Polygon.IsPolygonCCW(polys[0]) ? 1 : -1);
+                Vec3D nEnd = systems[pCount - 1].Z.Normalized() * (Polygon.IsPolygonCCW(polys[^1]) ? 1 : -1);
                 EmitPlanarCapFromSketch2D(
-                    profileSketch2D[0], grid[0], nStart, flipWinding: false, startCapGroup,
+                    profileSketch2D[0], grid[0], startRim, nStart, flipWinding: false, startCapGroup,
                     options.CapTriangulation, minSqCross,
-                    converter, vertices, normals, uv, precisePositions, triangles, triangleGroups,
-                    startRim);
+                    converter, vertices, normals, uv, precisePositions, triangles, triangleGroups);
                 EmitPlanarCapFromSketch2D(
-                    profileSketch2D[pCount - 1], grid[vRows - 1], nEnd, flipWinding: true, endCapGroup,
+                    profileSketch2D[pCount - 1], grid[vRows - 1], endRim, nEnd, flipWinding: true, endCapGroup,
                     options.CapTriangulation, minSqCross,
-                    converter, vertices, normals, uv, precisePositions, triangles, triangleGroups,
-                    endRim);
+                    converter, vertices, normals, uv, precisePositions, triangles, triangleGroups);
 
-                triangleGroupToName[sideGroup] = EntityNaming.LoftSide(loftName);
                 triangleGroupToName[startCapGroup] = EntityNaming.LoftStartCap(loftName);
                 triangleGroupToName[endCapGroup] = EntityNaming.LoftEndCap(loftName);
-                EnsurePositiveVolume(vertices, triangles);
-                return 3;
+                EnsurePositiveVolume(vertices, triangles, normals);
+                return sideCount + 2;
             }
 
-            triangleGroupToName[sideGroup] = EntityNaming.LoftSide(loftName);
-            return 1;
+            return sideCount;
         }
     }
 }

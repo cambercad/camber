@@ -10,6 +10,32 @@ namespace Geo
         public Vec3D Normal;
         public Vec2D UV;
 
+        internal TriangleVertexNormalUV InterpolateExact(in TriangleVertexNormalUV second,
+            in TriangleVertexNormalUV third, in Rat3Hybrid weights)
+        {
+            var result = Interpolate(second, third,
+                new Vec3D(weights.X.ToDouble(), weights.Y.ToDouble(), weights.Z.ToDouble()));
+            var w = weights;
+            double Component(double a, double b, double c)
+            {
+                static BigRationalHybrid Exact(double value)
+                {
+                    if (!double.IsFinite(value))
+                        throw new InvalidOperationException("Surface UV coordinates must be finite.");
+                    BigRational rational = value;
+                    return new BigRationalHybrid(rational.Numerator, rational.Denominator);
+                }
+                // Keep the complete affine combination exact until its one
+                // conversion to display UV, including constant seam values.
+                var value = Exact(a) * w.X + Exact(b) * w.Y + Exact(c) * w.Z;
+                value.Simplify();
+                return value.ToDouble();
+            }
+            result.UV = new Vec2D(Component(UV.X, second.UV.X, third.UV.X),
+                Component(UV.Y, second.UV.Y, third.UV.Y));
+            return result;
+        }
+
         public TriangleVertexNormalUV Interpolate(in TriangleVertexNormalUV second, in TriangleVertexNormalUV third, in Vec3D barycentricWeights)
         {
             TriangleVertexNormalUV result;
@@ -24,6 +50,29 @@ namespace Geo
     public class MeshNormalUV : Mesh<TriangleVertexNormalUV>
     {
         public MeshNormalUV() { }
+
+        internal MeshNormalUV SnapshotRigidPose(IEnumerable<Rat3Hybrid> restPoints,
+            CoordinateConverter converter, Transform transform, int? groupId = null)
+        {
+            var exact = new PreciseRigidTransform(converter, in transform);
+            var matrix = TransformMath.ToMat4D(in transform);
+            var points = restPoints.Select(exact.Apply).ToList();
+            var corners = new List<MeshTriangle<TriangleVertexNormalUV>>(TrianglesEx);
+            for (int i = 0; i < corners.Count; i++)
+            {
+                var triangle = corners[i];
+                if (groupId.HasValue) triangle.GroupId = groupId.Value;
+                triangle.V0.Normal = matrix.TransformDirection(triangle.V0.Normal);
+                triangle.V1.Normal = matrix.TransformDirection(triangle.V1.Normal);
+                triangle.V2.Normal = matrix.TransformDirection(triangle.V2.Normal);
+                corners[i] = triangle;
+            }
+            return new MeshNormalUV {
+                PrecisionPositions = points, Positions = converter.Convert(points),
+                Triangles = new List<Tri>(Triangles), TrianglesEx = corners,
+            };
+        }
+
 
        
         public MeshNormalUV(CoordinateConverter converter, List<Vec3D> position, List<Tri> triangles, 
@@ -164,8 +213,9 @@ namespace Geo
         {
             //if (!MeshAnalysis.IsWatertightMesh(this.Triangles))
             //    throw new Exception();
-            if (!MeshAnalysis.IsWatertightMesh(this.Positions, this.Triangles, out var problem))
+            if (!MeshAnalysis.IsWatertightMesh(this.PrecisionPositions, this.Triangles))
             {
+                MeshAnalysis.IsWatertightMesh(this.Positions, this.Triangles, out var problem);
                 Trace.Write(TraceCommand.Clear);
                 Trace.Write(new Tuple<string, Vec3D, List<Vec3D>>("edges", new Vec3D(1, 0, 0), problem));               
                 Trace.Write(new Tuple<string, Vec3D, MeshNormalUV>("volume", new Vec3D(0, 0, 0.7), this));
@@ -188,41 +238,40 @@ namespace Geo
         public MeshNormalUV(CoordinateConverter converter, List<Vec3D> position, List<Vec3D> normals, List<Vec2D> uv, 
             List<Tri> triangles, List<int> perTriangleGroup, List<Rat3Hybrid> precisePositions, bool skipWatertightCheck = false)
         {
-            if (!skipWatertightCheck && !MeshAnalysis.IsWatertightMesh(position, triangles))
-                throw new Exception();
+            bool completeExactPositions = precisePositions != null && precisePositions.Count == position.Count;
+            if (!skipWatertightCheck && !(completeExactPositions
+                ? MeshAnalysis.IsWatertightMesh(precisePositions, triangles)
+                : MeshAnalysis.IsWatertightMesh(position, triangles)))
+                throw new InvalidOperationException("Input mesh is not watertight in its authoritative coordinates.");
 
-            // Create a dictionary to map unique positions to new vertex indices
-            Dictionary<Vec3D, int> positionToIndex = new Dictionary<Vec3D, int>();
-            List<Vec3D> uniquePositions = new List<Vec3D>();
-            this.PrecisionPositions = new List<Rat3Hybrid>();
-
-            // Deduplicate positions
-            for (int i = 0; i < position.Count; i++)
-            {
-                Vec3D pos = position[i];
-                if (!positionToIndex.ContainsKey(pos))
-                {
-                    positionToIndex[pos] = uniquePositions.Count;
-                    uniquePositions.Add(pos);
-
-                    // Use pre-computed precise position if available, otherwise convert
-                    if (precisePositions != null && i < precisePositions.Count)
-                    {
-                        PrecisionPositions.Add(precisePositions[i]);
-                    }
-                    else
-                    {
-                        var intPos = converter.Convert(pos);
-                        PrecisionPositions.Add(new Rat3Hybrid(intPos.X, intPos.Y, intPos.Z));
-                    }
-                }
-            }
-
-            // Create mapping from original vertex indices to deduplicated indices
+            // Exact positions define topology. Display coordinates can differ
+            // for one lattice point, or coincide for distinct rational points.
+            var positionToIndex = new Dictionary<Rat3Hybrid, int>();
+            var uniquePositions = new List<Vec3D>();
+            PrecisionPositions = new List<Rat3Hybrid>();
             int[] vertexMapping = new int[position.Count];
             for (int i = 0; i < position.Count; i++)
             {
-                vertexMapping[i] = positionToIndex[position[i]];
+                Rat3Hybrid exact;
+                if (precisePositions != null && i < precisePositions.Count)
+                {
+                    var source = precisePositions[i];
+                    exact = new Rat3Hybrid(in source);
+                }
+                else
+                {
+                    var point = converter.Convert(position[i]);
+                    exact = new Rat3Hybrid(point.X, point.Y, point.Z);
+                }
+                exact.Simplify();
+                if (!positionToIndex.TryGetValue(exact, out int index))
+                {
+                    index = uniquePositions.Count;
+                    positionToIndex.Add(exact, index);
+                    uniquePositions.Add(position[i]);
+                    PrecisionPositions.Add(exact);
+                }
+                vertexMapping[i] = index;
             }
 
             // Build the result mesh
@@ -280,7 +329,7 @@ namespace Geo
             }
 
 #if DEBUG
-            if (!skipWatertightCheck && !MeshAnalysis.IsWatertightMesh(this.Positions, this.Triangles))
+            if (!skipWatertightCheck && !MeshAnalysis.IsWatertightMesh(this.PrecisionPositions, this.Triangles))
                 throw new Exception();
             if (!skipWatertightCheck && !MeshAnalysis.AreTrianglesConsistentlyOriented(this.PrecisionPositions, this.Triangles))
                 throw new Exception();
@@ -337,9 +386,10 @@ namespace Geo
         }
 
         public static MeshNormalUV BooleanOperation(MeshNormalUV a, MeshNormalUV b, BooleanOp op, 
-            CoordinateConverter converter, List<List<IntersectionSegmentEx>> intersectionStrips = null) 
+            CoordinateConverter converter, List<List<IntersectionSegmentEx>> intersectionStrips = null,
+            Action<BooleanFragments> classifiedFragments = null)
         {
-            MeshNormalUV result = BooleanOperation<MeshNormalUV>(a, b, op, converter, intersectionStrips);
+            MeshNormalUV result = BooleanOperation<MeshNormalUV>(a, b, op, converter, intersectionStrips, classifiedFragments);
             for (int i = 0; i < result.Triangles.Count; i++)
             {
                 Tri tri = result.Triangles[i];
@@ -360,114 +410,56 @@ namespace Geo
         }
 
 
-        private struct UVNormalVertex : IEquatable<UVNormalVertex>
-        {
-            public Vec3D Position;
-            public TriangleVertexNormalUV Payload;
-
-            public bool Equals(UVNormalVertex other)
-            {
-                return Position.X == other.Position.X && Position.Y == other.Position.Y && Position.Z == other.Position.Z &&
-                       Payload.Normal.X == other.Payload.Normal.X && Payload.Normal.Y == other.Payload.Normal.Y && Payload.Normal.Z == other.Payload.Normal.Z &&
-                       Payload.UV.X == other.Payload.UV.X && Payload.UV.Y == other.Payload.UV.Y;
-            }
-
-            public override bool Equals(object obj)
-            {
-                return obj is UVNormalVertex other && Equals(other);
-            }
-
-            public override int GetHashCode()
-            {
-                unchecked
-                {
-                    int hash = 17;
-                    hash = hash * 23 + Position.X.GetHashCode();
-                    hash = hash * 23 + Position.Y.GetHashCode();
-                    hash = hash * 23 + Position.Z.GetHashCode();
-                    hash = hash * 23 + Payload.Normal.X.GetHashCode();
-                    hash = hash * 23 + Payload.Normal.Y.GetHashCode();
-                    hash = hash * 23 + Payload.Normal.Z.GetHashCode();
-                    hash = hash * 23 + Payload.UV.X.GetHashCode();
-                    hash = hash * 23 + Payload.UV.Y.GetHashCode();
-                    return hash;
-                }
-            }
-        }
-
-
-
         public void Decompose(
-           out List<Vec3D> positions, out List<Vec3D> normals, out List<Vec2D> uvs, out List<Tri> triangles, out List<int> perTriangleGroup)
+            out List<Vec3D> positions, out List<Vec3D> normals, out List<Vec2D> uvs,
+            out List<Tri> triangles, out List<int> perTriangleGroup)
+            => DecomposeCore(out positions, out normals, out uvs, out triangles, out perTriangleGroup, out _, false);
+
+        internal void Decompose(
+            out List<Vec3D> positions, out List<Vec3D> normals, out List<Vec2D> uvs,
+            out List<Tri> triangles, out List<int> perTriangleGroup, out List<Rat3Hybrid> precisePositions)
+            => DecomposeCore(out positions, out normals, out uvs, out triangles, out perTriangleGroup, out precisePositions, true);
+
+        private void DecomposeCore(
+            out List<Vec3D> positions, out List<Vec3D> normals, out List<Vec2D> uvs,
+            out List<Tri> triangles, out List<int> perTriangleGroup, out List<Rat3Hybrid> precisePositions, bool includePrecise)
         {
-            Dictionary<UVNormalVertex, int> vertexToIndex = new Dictionary<UVNormalVertex, int>();
-
-            // Initialize output lists
-            positions = new List<Vec3D>();
-            normals = new List<Vec3D>();
-            uvs = new List<Vec2D>();
-            triangles = new List<Tri>();
-            perTriangleGroup = new List<int>();
-
-            // Process each triangle in the mesh
-            for (int i = 0; i < Triangles.Count; i++)
+            if (includePrecise && (PrecisionPositions == null || PrecisionPositions.Count != Positions.Count))
+                throw new InvalidOperationException("Exact decomposition requires one authoritative coordinate per source vertex.");
+            // UV seams may duplicate a source vertex. Equal display coordinates
+            // cannot establish source identity: distinct rational points can round
+            // to the same double, particularly after oblique intersections.
+            var vertexToIndex = new Dictionary<(int Source, TriangleVertexNormalUV Payload), int>();
+            var outputPositions = new List<Vec3D>();
+            var outputPrecise = includePrecise ? new List<Rat3Hybrid>() : null;
+            var outputNormals = new List<Vec3D>();
+            var outputUvs = new List<Vec2D>();
+            int Vertex(int source, TriangleVertexNormalUV payload)
             {
-                Tri meshTriangle = Triangles[i];
-                MeshTriangle<TriangleVertexNormalUV> extTriangle = TrianglesEx[i];
-
-                // Create vertices for each corner of the triangle
-                UVNormalVertex vertex0 = new UVNormalVertex
-                {
-                    Position = Positions[meshTriangle.A],
-                    Payload = extTriangle.V0
-                };
-
-                UVNormalVertex vertex1 = new UVNormalVertex
-                {
-                    Position = Positions[meshTriangle.B],
-                    Payload = extTriangle.V1
-                };
-
-                UVNormalVertex vertex2 = new UVNormalVertex
-                {
-                    Position = Positions[meshTriangle.C],
-                    Payload = extTriangle.V2
-                };
-
-                // Get or create indices for each vertex
-                int index0 = GetOrCreateVertexIndex(vertex0, vertexToIndex, positions, normals, uvs);
-                int index1 = GetOrCreateVertexIndex(vertex1, vertexToIndex, positions, normals, uvs);
-                int index2 = GetOrCreateVertexIndex(vertex2, vertexToIndex, positions, normals, uvs);
-
-                // Create the output triangle
-                Tri outputTriangle = new Tri
-                {
-                    A = index0,
-                    B = index1,
-                    C = index2
-                };
-
-                triangles.Add(outputTriangle);
-                perTriangleGroup.Add(extTriangle.GroupId);
-            }
-        }
-
-        private static int GetOrCreateVertexIndex(UVNormalVertex vertex, Dictionary<UVNormalVertex, int> vertexToIndex,
-           List<Vec3D> positions, List<Vec3D> normals, List<Vec2D> uvs)
-        {
-            if (vertexToIndex.TryGetValue(vertex, out int existingIndex))
-            {
-                return existingIndex;
+                var key = (source, payload);
+                if (vertexToIndex.TryGetValue(key, out int existing)) return existing;
+                int index = outputPositions.Count;
+                outputPositions.Add(Positions[source]);
+                if (includePrecise) outputPrecise.Add(PrecisionPositions[source]);
+                outputNormals.Add(payload.Normal);
+                outputUvs.Add(payload.UV);
+                vertexToIndex.Add(key, index);
+                return index;
             }
 
-            // Create new vertex
-            int newIndex = positions.Count;
-            positions.Add(vertex.Position);
-            normals.Add(vertex.Payload.Normal);
-            uvs.Add(vertex.Payload.UV);
-            vertexToIndex[vertex] = newIndex;
-
-            return newIndex;
+            triangles = new List<Tri>(Triangles.Count);
+            perTriangleGroup = new List<int>(Triangles.Count);
+            for (int i = 0; i < Triangles.Count; ++i)
+            {
+                var triangle = Triangles[i];
+                var data = TrianglesEx[i];
+                triangles.Add(new Tri(Vertex(triangle.A, data.V0), Vertex(triangle.B, data.V1), Vertex(triangle.C, data.V2)));
+                perTriangleGroup.Add(data.GroupId);
+            }
+            positions = outputPositions;
+            precisePositions = outputPrecise;
+            normals = outputNormals;
+            uvs = outputUvs;
         }
 
         public void SaveOff(string fileName)

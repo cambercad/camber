@@ -88,7 +88,10 @@ namespace Geo
             if (triangles.Count == 0 || triangles.Count != groupIdPerTriangle.Count)
                 return false;
 
-            TriangleAdjacency[] globalAdjacency = Adjacency.BuildAdjacencyInformation(triangles);
+            // Ambiguous edges are component barriers below, not a reason to
+            // reject an otherwise valid collection of edge-touching shells.
+            TriangleAdjacency[] globalAdjacency = Adjacency.BuildAdjacencyInformation(
+                triangles, out _, skipInvalidEdges: true);
             var edgeToTriangles = AdjacencyEx.BuildEdgeToTrianglesMap(triangles);
             var nonManifoldEdges = AdjacencyEx.CollectNonManifoldEdges(edgeToTriangles);
             var triangleIdsPerGroup = CoplanarGroupFusion.ExtractTriangleIdsPerGroup(groupIdPerTriangle);
@@ -118,23 +121,33 @@ namespace Geo
                 newIdCount += item.components.Count - 1;
 
             int nextId = allocateGroupIds(newIdCount);
+            // A later Boolean can split the unsuffixed face again while earlier
+            // components still exist. Reserve all names, including retained
+            // metadata, rather than restarting an already-used suffix sequence.
+            var reservedNames = new HashSet<string>(groupIdToName.Values, StringComparer.Ordinal);
+            if (surfaceMetaData != null)
+                reservedNames.UnionWith(surfaceMetaData.Keys);
 
             foreach (var (oldGroupId, originName, components) in pending)
             {
                 // Component 0 keeps oldGroupId / originName.
+                int nextSuffix = 1;
                 for (int i = 1; i < components.Count; i++)
                 {
                     int newGroupId = nextId++;
-                    string newName = EntityNaming.FormatPatchComponentName(originName, i);
+                    string newName;
+                    do
+                    {
+                        newName = EntityNaming.FormatPatchComponentName(originName, nextSuffix++);
+                    }
+                    while (!reservedNames.Add(newName));
 
                     if (groupIdToName.ContainsKey(newGroupId))
                         throw new NameCollisionException($"Group id already in use: {newGroupId}");
-                    if (groupIdToName.Values.Contains(newName))
-                        throw new NameCollisionException($"Patch name already registered: '{newName}'.");
 
                     groupIdToName[newGroupId] = newName;
 
-                    if (surfaceMetaData != null && surfaceMetaData.TryGetValue(originName, out var meta))
+                    if (surfaceMetaData != null && surfaceMetaData.TryGetValue(originName, out var meta) && meta != null)
                         surfaceMetaData[newName] = meta.Clone();
 
                     foreach (int triIndex in components[i])

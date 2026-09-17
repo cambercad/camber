@@ -2,9 +2,10 @@
 
 import ctypes
 import math
+from contextlib import contextmanager
 
 from . import glview as _g
-from .clipboard import copy_to_clipboard
+from .clipboard import copy_to_clipboard, create_window
 
 
 class MeshHandle(object):
@@ -58,17 +59,20 @@ class _CamParams(object):
 class Viewer(object):
     """Window host. Sketch code talks to this the way it used to talk to Polyscope."""
 
-    def __init__(self, title="Camber"):
-        pyglet, np, imgui, create_renderer = _g._import_gl()
+    def __init__(self, title="Camber", *, visible=True, size=None):
+        pyglet, np, imgui, create_renderer = _g._import_gl(ui=visible)
         self._pyglet = pyglet
         self._np = np
         self._imgui = imgui
+        self._imgui_context = None
+        self._imgui_letters = set()
         self._gl = pyglet.gl
-        w, h = _g._WINDOW_W, _g._WINDOW_H
+        w, h = size or (_g._WINDOW_W, _g._WINDOW_H)
         try:
             screen = pyglet.canvas.get_display().get_default_screen()
-            w = min(w, int(screen.width))
-            h = min(h, int(screen.height))
+            if size is None:
+                w = min(w, int(screen.width))
+                h = min(h, int(screen.height))
         except Exception:
             pass
         window = None
@@ -82,62 +86,101 @@ class Viewer(object):
                     major_version=major,
                     minor_version=minor,
                 )
-                window = pyglet.window.Window(w, h, title, resizable=True, config=config)
+                window = create_window(w, h, title, resizable=True, config=config, visible=visible)
                 break
             except Exception:
                 window = None
         if window is None:
-            window = pyglet.window.Window(w, h, title, resizable=True)
+            window = create_window(w, h, title, resizable=True, visible=visible)
         self.window = window
-        self.title = title
-        imgui.create_context()
-        from .imgui_compat import apply_viewer_style
-        apply_viewer_style(imgui)
-        self._impl = create_renderer(window)
-        self._batch = pyglet.graphics.Batch()
-        self._mesh_prog = self._compile(_g._MESH_VERT, _g._MESH_FRAG)
-        self._wire_prog = self._compile(_g._WIRE_VERT, _g._WIRE_FRAG)
-        self._line_prog = self._compile(_g._LINE_VERT, _g._LINE_FRAG)
-        self._point_prog = self._compile(_g._POINT_VERT, _g._POINT_FRAG)
-        self._flat_prog = self._compile(_g._FLAT_VERT, _g._FLAT_FRAG)
-        self._blit_prog = self._compile(_g._BLIT_VERT, _g._BLIT_FRAG)
-        self._resolve_prog = self._compile(_g._BLIT_VERT, _g._RESOLVE_FRAG)
-        self._depth_copy_prog = self._compile(_g._BLIT_VERT, _g._DEPTH_COPY_FRAG)
-        quad = (-1.0, -1.0, 0.0, 3.0, -1.0, 0.0, -1.0, 3.0, 0.0)
-        self._blit_vl = self._blit_prog.vertex_list(
-            3, self._gl.GL_TRIANGLES, in_pos=("f", quad))
-        self._resolve_vl = self._resolve_prog.vertex_list(
-            3, self._gl.GL_TRIANGLES, in_pos=("f", quad))
-        self._depth_copy_vl = self._depth_copy_prog.vertex_list(
-            3, self._gl.GL_TRIANGLES, in_pos=("f", quad))
-        self.camera = _g.Camera()
-        self._tick = None
-        self._overlays = {}
+        self._closed = False
+        self._impl = None
         self._solid = None
-        self._hidden_parts = set()
-        self._wireframe = False
-        self._solid_transparent = False
-        self._held = set()
-        self._transparency = "none"
-        self._peel = None
+        self._overlays = {}
         self._scene = None
-        self._draw_fbo = 0
-        self._draw_w = 1
-        self._draw_h = 1
-        self._draw_samples = 1
-        self._draw_ssaa = 1
-        gl = self._gl
-        self._dummy_depth = self._make_tex(
-            gl.GL_DEPTH_COMPONENT24, gl.GL_DEPTH_COMPONENT, gl.GL_UNSIGNED_INT, 1, 1, True)
-        window.push_handlers(self)
-        # pyglet's Window.on_key_press closes on Esc. Keep Esc for selection.
-        window.on_key_press = self._ignore_default_escape
-        self._sync_size()
+        self._peel = None
+        self._dummy_depth = 0
+        for name in ("_mesh_prog", "_wire_prog", "_line_prog", "_point_prog",
+                     "_flat_prog", "_blit_prog", "_resolve_prog", "_depth_copy_prog",
+                     "_blit_vl", "_resolve_vl", "_depth_copy_vl"):
+            setattr(self, name, None)
+        previous_ui_context = imgui.get_current_context() if imgui is not None else None
         try:
-            from .view import _center_native_window
-            _center_native_window(title)
-        except Exception:
-            pass
+            self.title = title
+            if visible:
+                self._imgui_context = imgui.create_context()
+                imgui.set_current_context(self._imgui_context)
+                from .imgui_compat import apply_viewer_style
+                apply_viewer_style(imgui)
+                self._impl = create_renderer(window)
+                io = imgui.get_io()
+                io.get_clipboard_text_fn = window.get_clipboard_text
+                io.set_clipboard_text_fn = window.set_clipboard_text
+            self._batch = pyglet.graphics.Batch()
+            self._mesh_prog = self._compile(_g._MESH_VERT, _g._MESH_FRAG)
+            self._wire_prog = self._compile(_g._WIRE_VERT, _g._WIRE_FRAG)
+            self._line_prog = self._compile(_g._LINE_VERT, _g._LINE_FRAG)
+            self._point_prog = self._compile(_g._POINT_VERT, _g._POINT_FRAG)
+            self._flat_prog = self._compile(_g._FLAT_VERT, _g._FLAT_FRAG)
+            self._blit_prog = self._compile(_g._BLIT_VERT, _g._BLIT_FRAG)
+            self._resolve_prog = self._compile(_g._BLIT_VERT, _g._RESOLVE_FRAG)
+            self._depth_copy_prog = self._compile(_g._BLIT_VERT, _g._DEPTH_COPY_FRAG)
+            quad = (-1.0, -1.0, 0.0, 3.0, -1.0, 0.0, -1.0, 3.0, 0.0)
+            self._blit_vl = self._blit_prog.vertex_list(
+                3, self._gl.GL_TRIANGLES, in_pos=("f", quad))
+            self._resolve_vl = self._resolve_prog.vertex_list(
+                3, self._gl.GL_TRIANGLES, in_pos=("f", quad))
+            self._depth_copy_vl = self._depth_copy_prog.vertex_list(
+                3, self._gl.GL_TRIANGLES, in_pos=("f", quad))
+            self.camera = _g.Camera()
+            self._tick = None
+            self._hidden_parts = set()
+            self._wireframe = False
+            self.checker = True
+            self._solid_transparent = False
+            self._held = set()
+            self._transparency = "none"
+            self._draw_fbo = 0
+            self._draw_w = 1
+            self._draw_h = 1
+            self._draw_samples = 1
+            self._draw_ssaa = 1
+            gl = self._gl
+            self._dummy_depth = self._make_tex(
+                gl.GL_DEPTH_COMPONENT24, gl.GL_DEPTH_COMPONENT, gl.GL_UNSIGNED_INT, 1, 1, True)
+            window.push_handlers(self)
+            # pyglet's Window.on_key_press closes on Esc. Keep Esc for selection.
+            window.on_key_press = self._ignore_default_escape
+            self._sync_size()
+            try:
+                from .view import _center_native_window
+                _center_native_window(title)
+            except Exception:
+                pass
+        except BaseException:
+            self.close()
+            raise
+        finally:
+            if imgui is not None:
+                imgui.set_current_context(previous_ui_context)
+
+    @contextmanager
+    def _ui_context(self):
+        context = getattr(self, "_imgui_context", None)
+        if context is None:
+            yield
+            return
+        imgui = self._imgui
+        previous = imgui.get_current_context()
+        previous_letters = imgui._camber_letters
+        imgui.set_current_context(context)
+        imgui._camber_letters = self._imgui_letters
+        try:
+            yield
+        finally:
+            # close() may destroy the context while this scope is active.
+            imgui.set_current_context(None if previous == context and self._imgui_context is None else previous)
+            imgui._camber_letters = previous_letters
 
     def _compile(self, vert, frag):
         shader = self._pyglet.graphics.shader
@@ -218,7 +261,8 @@ class Viewer(object):
 
     def _wants_keyboard(self):
         try:
-            return bool(self._imgui.GetIO().WantCaptureKeyboard)
+            with self._ui_context():
+                return bool(self._imgui.GetIO().WantCaptureKeyboard)
         except Exception:
             return False
 
@@ -229,7 +273,7 @@ class Viewer(object):
             return
         if not name or len(name) != 1 or not name.isalpha():
             return
-        letters = getattr(self._imgui, "_camber_letters", None)
+        letters = self._imgui_letters
         if letters is None:
             return
         if down:
@@ -241,18 +285,69 @@ class Viewer(object):
         self._sync_size()
 
     def on_close(self):
+        self.close()
+        return self._pyglet.event.EVENT_HANDLED
+
+    def close(self):
+        """Release owned GL resources while their context is still current."""
+        if self._closed:
+            return
+        with self._ui_context():
+            self._close_resources()
+
+    def _close_resources(self):
         try:
-            self._impl.shutdown()
-        except Exception:
-            pass
+            self.window.switch_to()
+            self._release_solid()
+            for record in self._overlays.values():
+                self._release_gpu(record)
+            self._overlays.clear()
+            self._release_scene()
+            self._release_peel()
+            self._gl_del(self._gl.glDeleteTextures, self._dummy_depth)
+            self._dummy_depth = 0
+            for name in ("_blit_vl", "_resolve_vl", "_depth_copy_vl"):
+                resource = getattr(self, name)
+                if resource is not None:
+                    resource.delete()
+                    setattr(self, name, None)
+            self._gl.glUseProgram(0)
+            for name in ("_mesh_prog", "_wire_prog", "_line_prog", "_point_prog",
+                         "_flat_prog", "_blit_prog", "_resolve_prog", "_depth_copy_prog"):
+                resource = getattr(self, name)
+                if resource is not None:
+                    resource.delete()
+                    setattr(self, name, None)
+            if self._impl is not None:
+                self._impl.shutdown()
+                self._impl = None
+        finally:
+            try:
+                if getattr(self, "_imgui_context", None) is not None:
+                    self._imgui.destroy_context(self._imgui_context)
+                    self._imgui_context = None
+            finally:
+                self._closed = True
+                self.window.close()
 
     def on_draw(self):
+        if self._closed:
+            return
+        with self._ui_context():
+            self._draw_frame()
+
+    def _draw_frame(self):
         self._sync_size()
         if hasattr(self._impl, "process_inputs"):
             self._impl.process_inputs()
+        if self._imgui is None:
+            self._draw_scene()
+            return
         self._imgui.new_frame()
         if self._tick is not None:
             self._tick()
+        if self._closed:
+            return
         self._draw_scene()
         self._bind_window()
         self._imgui.render()
@@ -279,19 +374,49 @@ class Viewer(object):
         self.camera.height = max(int(fh), 1)
         self._gl.glViewport(0, 0, self.camera.width, self.camera.height)
 
-    def capture_rgba(self):
-        """Read the resolved 3D framebuffer (no imgui). Bottom row first is flipped to top-down."""
+    def capture_rgba(self, label=None):
+        """Render to an owned offscreen target and return top-down RGBA pixels.
+
+        An invisible X11 window has no reliable back buffer. Resolving into
+        our own FBO also makes capture independent of occlusion and desktop
+        compositing. The renderer and its anti-aliasing are shared with show().
+        """
+        self.window.switch_to()
         self._sync_size()
-        self._draw_scene()
-        self._bind_window()
         gl = self._gl
         w, h = int(self.camera.width), int(self.camera.height)
-        buf = (ctypes.c_ubyte * (w * h * 4))()
-        gl.glPixelStorei(gl.GL_PACK_ALIGNMENT, 1)
-        gl.glReadBuffer(gl.GL_BACK)
-        gl.glReadPixels(0, 0, w, h, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, buf)
-        arr = self._np.frombuffer(buf, dtype=self._np.uint8).reshape(h, w, 4)
-        return arr[::-1].copy()
+        color = depth = fbo = 0
+        try:
+            color = self._make_tex(gl.GL_RGBA8, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, w, h)
+            depth = self._make_tex(gl.GL_DEPTH_COMPONENT24, gl.GL_DEPTH_COMPONENT, gl.GL_UNSIGNED_INT, w, h, True)
+            fbo = self._gl_gen(gl.glGenFramebuffers)
+            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo)
+            gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, color, 0)
+            gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_DEPTH_ATTACHMENT, gl.GL_TEXTURE_2D, depth, 0)
+            gl.glDrawBuffer(gl.GL_COLOR_ATTACHMENT0)
+            if gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) != gl.GL_FRAMEBUFFER_COMPLETE:
+                raise RuntimeError("Cannot allocate image capture framebuffer")
+            self._capture_fbo = fbo
+            self._draw_scene()
+            self._bind_window()
+            if label:
+                gl.glDisable(gl.GL_DEPTH_TEST)
+                caption = self._pyglet.text.Label(str(label), x=16, y=self.window.height-24,
+                                                  font_size=12, color=(45, 50, 58, 255))
+                caption.draw()
+                caption.delete()
+            buf = (ctypes.c_ubyte * (w*h*4))()
+            gl.glPixelStorei(gl.GL_PACK_ALIGNMENT, 1)
+            gl.glReadBuffer(gl.GL_COLOR_ATTACHMENT0)
+            gl.glReadPixels(0, 0, w, h, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, buf)
+            arr = self._np.frombuffer(buf, dtype=self._np.uint8).reshape(h, w, 4)
+            return arr[::-1].copy()
+        finally:
+            self._capture_fbo = 0
+            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+            self._gl_del(gl.glDeleteFramebuffers, fbo)
+            self._gl_del(gl.glDeleteTextures, color)
+            self._gl_del(gl.glDeleteTextures, depth)
 
     def set_user_callback(self, fn):
         self._tick = fn
@@ -300,10 +425,7 @@ class Viewer(object):
         self._pyglet.app.run()
 
     def unshow(self):
-        try:
-            self.window.close()
-        except Exception:
-            pass
+        self.close()
 
     def set_solid(self, packed):
         self._hidden_parts = set()
@@ -652,6 +774,7 @@ class Viewer(object):
         names = self._mesh_prog.uniforms
         self._mesh_prog["u_view"] = view
         self._mesh_prog["u_proj"] = proj
+        self._mesh_prog["u_checker"] = bool(self.checker)
         if "u_eye" in names:
             self._mesh_prog["u_eye"] = tuple(float(x) for x in cam.eye)
         if "u_light_dir" in names:
@@ -783,9 +906,10 @@ class Viewer(object):
 
     def _bind_window(self):
         gl = self._gl
-        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+        fbo = getattr(self, "_capture_fbo", 0)
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo)
         gl.glViewport(0, 0, int(self.camera.width), int(self.camera.height))
-        gl.glDrawBuffer(gl.GL_BACK)
+        gl.glDrawBuffer(gl.GL_COLOR_ATTACHMENT0 if fbo else gl.GL_BACK)
 
     def _make_rb(self, internal, w, h, samples):
         gl = self._gl
@@ -1286,7 +1410,7 @@ class Viewer(object):
         use_fbo = ssaa > 1 or int(getattr(_g, "_MSAA", 1)) > 1
         scene = self._ensure_scene(sw, sh) if use_fbo else None
         if scene is None:
-            self._draw_fbo = 0
+            self._draw_fbo = getattr(self, "_capture_fbo", 0)
             self._draw_w = fw
             self._draw_h = fh
             self._draw_samples = 1
@@ -1401,9 +1525,11 @@ class Viewer(object):
             self._resolve_ssaa(scene, fw, fh)
         else:
             self._bind_window()
+        from .inspection import _draw_annotations
+        _draw_annotations(self)
 
 
-def run_solid(obj, title="Camber"):
+def run_solid(obj, title="Camber", colors=None, checker=None):
     import time
 
     from .view import (
@@ -1422,9 +1548,16 @@ def run_solid(obj, title="Camber"):
     )
 
     viewer = Viewer(title)
-    packed = _g.pack_scene(_g._as_scene(obj))
+    packed = _g.pack_scene(_g._as_scene(obj), colors=colors)
     viewer.set_solid(packed)
+    viewer.checker = not bool(colors) if checker is None else bool(checker)
     viewer.camera.fit(*packed["bounds"])
+    from .inspection import Section
+    viewer.inspection = obj if isinstance(obj, Section) else None
+    measuring = [False]
+    measure_start = [None]
+    if viewer.inspection is not None:
+        _orient_view_to_frame(viewer, obj.plane)
     selected = []
     viewer.selected = selected
     imgui = viewer._imgui
@@ -1460,8 +1593,10 @@ def run_solid(obj, title="Camber"):
         label = _g._selection_python(selected) if selected else ""
         viewer.set_title(title + ("  —  " + label if label else ""))
         if label:
-            copy_to_clipboard(label)
-            toast_until[0] = time.monotonic() + 3.5
+            copied = copy_to_clipboard(label, window=viewer.window)
+            toast_until[0] = time.monotonic() + 3.5 if copied else 0.0
+            if not copied:
+                action_toast[:] = ["Could not copy selection to clipboard", time.monotonic() + 3.5]
         else:
             toast_until[0] = 0.0
 
@@ -1536,6 +1671,17 @@ def run_solid(obj, title="Camber"):
                     announce()
         else:
             latch["esc"] = False
+        if viewer.inspection is not None:
+            if viewer.key_down("M"):
+                if not latch["m"]:
+                    measuring[0] = not measuring[0]
+                    measure_start[0] = None
+                    latch["m"] = True
+            else:
+                latch["m"] = False
+            if viewer.key_down("ESCAPE"):
+                measuring[0] = False
+                measure_start[0] = None
         if constraints or part_names:
             if viewer.key_down("M"):
                 if not latch["m"]:
@@ -1583,6 +1729,21 @@ def run_solid(obj, title="Camber"):
             return
         if not want:
             released = _left_click_released(imgui, io)
+            if released is not None and measuring[0]:
+                mouse = getattr(io, "MousePos", (0.0, 0.0))
+                size = getattr(io, "DisplaySize", (1.0, 1.0))
+                ndc_x = float(mouse[0]) / max(float(size[0]), 1.0) * 2.0 - 1.0
+                ndc_y = 1.0 - float(mouse[1]) / max(float(size[1]), 1.0) * 2.0
+                hit = obj.raycast(*viewer.camera.ray(ndc_x, ndc_y))
+                if hit is not None:
+                    if measure_start[0] is None:
+                        measure_start[0] = hit
+                    else:
+                        result = obj.measure(measure_start[0], hit)
+                        action_toast[:] = [f"Distance: {result.length:.6g} model units", time.monotonic()+3]
+                        measure_start[0] = None
+                        measuring[0] = False
+                released = None
             if released is not None:
                 ctrl = bool(getattr(io, "KeyCtrl", False))
                 name = pick_at()
@@ -1607,6 +1768,9 @@ def run_solid(obj, title="Camber"):
             footnote = display_label + "    V: normal to planar face    S: sketch on that face"
         else:
             footnote = "Click a planar face, then press S to sketch  (V: view normal)"
+        if viewer.inspection is not None:
+            footnote = ("Pick second surface" if measure_start[0] else "Pick first surface") if measuring[0] else "M: measure between two surface picks"
+            footnote += "    Model units; point-to-point distance    Esc: cancel"
         if constraints or part_names:
             footnote += "    M: assembly panel"
         sel_top = _draw_footnote(imgui, footnote)

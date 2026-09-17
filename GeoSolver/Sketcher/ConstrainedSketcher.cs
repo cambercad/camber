@@ -704,7 +704,12 @@ For CLine2D at exactly u=0 or u=1, returns the actual CStart/CEnd parameter (so 
                     result = circular.CCenter;
                     return true;
                 }
-                return false; // @center only valid for circles/arcs
+                if (foundCurve is CEllipse2D ellipse)
+                {
+                    result = ellipse.CCenter;
+                    return true;
+                }
+                return false; // @center only valid for curves with a center
             }
 
             // B?zier @cvN addresses are geometric CVs, not constrainable CPoints.
@@ -743,6 +748,10 @@ Runs the numeric constraint solver on this sketch and returns the residual error
   preferMinimalMovement: when True, the solver prefers solutions close to the current parameter values (gentler updates), which usually gives more intuitive results when multiple solutions exist.
 External parameters referenced by constraints (e.g. points from another sketch) are temporarily frozen during the solve.")]
         public double SolveConstraints(bool preferMinimalMovement = true)
+            => SolveConstraintsDetailed(preferMinimalMovement).SumOfSquaredErrors;
+
+        /// <summary>Runs the same sketch solve and retains convergence and diagnostic information.</summary>
+        public SolveResult SolveConstraintsDetailed(bool preferMinimalMovement = true)
         {
             HashSet<Param> draggedParams = null;
             if (preferMinimalMovement)
@@ -873,7 +882,7 @@ External parameters referenced by constraints (e.g. points from another sketch) 
             return true;
         }
 
-        private double SolveInternal(HashSet<Param> draggedParams)
+        private SolveResult SolveInternal(HashSet<Param> draggedParams)
         {
             const double scaling = 1.0;
 
@@ -902,10 +911,9 @@ External parameters referenced by constraints (e.g. points from another sketch) 
 
             try
             {
-                int numParams, numConstraints;
-                double error = ConstraintSolver.Solve(constraints, draggedParams, scaling, out numParams, out numConstraints);
+                SolveResult result = ConstraintSolver.SolveDetailed(constraints, draggedParams, scaling);
                 UpdateAllObjects();
-                return error;
+                return result;
             }
             finally
             {

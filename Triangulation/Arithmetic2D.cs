@@ -236,10 +236,25 @@ namespace GeoCore
 
         public Box2D GetBounds(in Rat2Hybrid v)
         {
-            double x = v.X.ToDouble();
-            double y = v.Y.ToDouble();
-            var p = new Vec2D(x, y);
-            return new Box2D(p, p);
+            var x = Enclose(v.X);
+            var y = Enclose(v.Y);
+            return new Box2D(new Vec2D(x.Min, y.Min), new Vec2D(x.Max, y.Max));
+        }
+
+        private static (double Min, double Max) Enclose(BigRationalHybrid value)
+        {
+            double estimate = value.ToDouble();
+            if (value.IsInt32) return (estimate, estimate);
+            var exact = new BigRational(value.Numerator(), value.Denominator());
+            double lower = double.IsPositiveInfinity(estimate) ? double.MaxValue : estimate;
+            double upper = double.IsNegativeInfinity(estimate) ? -double.MaxValue : estimate;
+            // A rounded point is not an enclosure. Move outward until exact
+            // comparison certifies each bound; no geometric tolerance is used.
+            while (double.IsFinite(lower) && new BigRational(lower) > exact)
+                lower = Math.BitDecrement(lower);
+            while (double.IsFinite(upper) && new BigRational(upper) < exact)
+                upper = Math.BitIncrement(upper);
+            return (lower, upper);
         }
     }
 }

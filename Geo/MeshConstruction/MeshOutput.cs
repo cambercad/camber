@@ -7,6 +7,9 @@ namespace Geo
     /// </summary>
     public class MeshOutput
     {
+        internal Func<INurbsSurface> LoftSideSupportFactory { get; set; }
+        internal Dictionary<string, ParametricRange> LoftSideDomains { get; set; }
+
         public List<Tri> Triangles { get; } = new List<Tri>();
         public List<Vec3D> Vertices { get; } = new List<Vec3D>();
         public List<Vec3D> Normals { get; } = new List<Vec3D>();
@@ -16,11 +19,7 @@ namespace Geo
 
         public void TransformToWorldSpace(CoordinateConverter converter, CoordinateSystem cs)
         {
-            for (int i = 0; i < Vertices.Count; i++)
-                Vertices[i] = cs.PointFromCoordSysToWorld(Vertices[i]);
-            for (int i = 0; i < Normals.Count; i++)
-                Normals[i] = cs.DirectionFromCoordSysToWorld(Normals[i]);
-            RegeneratePrecisePositions(converter);
+            PreciseFrameTransform.Apply(converter, cs, Vertices, Normals, PrecisePositions);
         }
 
         public void RegeneratePrecisePositions(CoordinateConverter converter)

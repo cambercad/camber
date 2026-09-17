@@ -7,7 +7,8 @@ namespace GeoTests;
 
 public class MeshCleanTests : IDisposable
 {
-    public void Dispose() => GeoAPI.Clear();
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
 
     [Fact]
     public void OverlappingCuboidUnion_CollapsesCollinearGroupEdges()

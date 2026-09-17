@@ -72,7 +72,7 @@ namespace NURBS
             List<Vec2D> result = new List<Vec2D>();
             uValues = new List<double>();
             Stack<IList<Vec2D>> stack = new Stack<IList<Vec2D>>();
-            stack.Push(controlPoints);
+            stack.Push(new List<Vec2D>(controlPoints));
             Stack<Vec2D> uStack = new Stack<Vec2D>();
             uStack.Push(new Vec2D(0, 1));
 
@@ -89,8 +89,7 @@ namespace NURBS
                 double max = 0;
                 for (int i = 1; i < l; ++i)
                 {
-                    double t;
-                    double d = GeometricAlgorithms.DistancePointLineSquared(cp[i], start, end, out t);
+                    double d = GeometricAlgorithms.DistancePointSegmentSquared(cp[i], start, end);
 
                     if (d > max)
                         max = d;
@@ -155,7 +154,7 @@ namespace NURBS
             List<Vec3D> result = new List<Vec3D>();
             uValues = new List<double>();
             Stack<IList<Vec3D>> stack = new Stack<IList<Vec3D>>();
-            stack.Push(controlPoints);
+            stack.Push(new List<Vec3D>(controlPoints));
             Stack<Vec2D> uStack = new Stack<Vec2D>();
             uStack.Push(new Vec2D(0, 1));
 
@@ -172,8 +171,7 @@ namespace NURBS
                 double max = 0;
                 for (int i = 1; i < l; ++i)
                 {
-                    double t;
-                    double d = GeometricAlgorithms.DistancePointLineSquared(cp[i], start, end - start, out t);
+                    double d = GeometricAlgorithms.DistancePointSegmentSquared(cp[i], start, end);
 
                     if (d > max)
                         max = d;

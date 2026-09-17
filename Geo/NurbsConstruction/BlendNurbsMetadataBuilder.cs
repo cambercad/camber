@@ -20,14 +20,50 @@ namespace Geo.NurbsConstruction
 
                 string name = EntityNaming.BlendEdge(edge.SourceEdge.Name);
                 if (TryBuildBlendEdgeSurface(edge, out var surface))
-                    meta[name] = new SurfaceMetaData(SurfaceType.Unknown, surface, ParametricRange.UnitSquare);
+                {
+                    var patch = new SurfaceMetaData(SurfaceType.Unknown, surface, ParametricRange.UnitSquare);
+                    // A constant-radius fillet between two planes is cylindrical.
+                    // Retain this construction identity for subsequent tangent-chain features.
+                    if (edge.HasPlanarSourceFaces &&
+                        probeMesh.groupIdToExtendedName.TryGetValue(edge.SurfaceIndexA, out var nameA) &&
+                        probeMesh.groupIdToExtendedName.TryGetValue(edge.SurfaceIndexB, out var nameB) &&
+                        meta.TryGetValue(nameA, out var sourceA) && meta.TryGetValue(nameB, out var sourceB) &&
+                        sourceA.PlaneParams != null && sourceB.PlaneParams != null)
+                    {
+                        var a = sourceA.PlaneParams;
+                        var b = sourceB.PlaneParams;
+                        var na = a.Normal.Normalized();
+                        var nb = b.Normal.Normalized();
+                        double dot = Vec3DOps.Dot(na, nb);
+                        double determinant = 1 - dot * dot;
+                        if (determinant > 0)
+                        {
+                            var start = edge.CenterCurveVec3[0];
+                            double offset = edge.BlendType == EdgeBlendType.Convex ? -edge.BlendRadius : edge.BlendRadius;
+                            double da = offset - Vec3DOps.Dot(start - a.Origin, na);
+                            double db = offset - Vec3DOps.Dot(start - b.Origin, nb);
+                            var origin = start + na * ((da - dot * db) / determinant) +
+                                                 nb * ((db - dot * da) / determinant);
+                            var axis = Vec3DOps.Cross(na, nb).Normalized();
+                            if (Vec3DOps.Dot(edge.CenterCurveVec3[^1]-start, axis) < 0) axis = -axis;
+                            patch.SurfaceType = SurfaceType.Cylindrical;
+                            patch.CylinderParams = new CylinderSurfaceParams {
+                                Origin = origin, Axis = axis, RefDir = na, Radius = edge.BlendRadius,
+                                Height = Math.Abs(Vec3DOps.Dot(edge.CenterCurveVec3[^1] - start, axis))
+                            };
+                        }
+                    }
+                    meta[name] = patch;
+                }
             }
 
             foreach (var kv in probeMesh.extendedNameToGroupId)
             {
                 if (!kv.Key.StartsWith(EntityNaming.BlendCornerPrefix, StringComparison.Ordinal))
                     continue;
-                if (!probeMesh.TryGetSurface(kv.Key, out var patch))
+                if (meta.TryGetValue(kv.Key, out var existing) && existing.PlaneParams != null)
+                    continue;
+                if (!probeMesh.TryGetTopologySurface(kv.Key, out var patch))
                     continue;
                 if (TryBuildCornerSphere(patch, out var sphere))
                     meta[kv.Key] = new SurfaceMetaData(SurfaceType.Spherical, sphere, ParametricRange.UnitSquare);
@@ -53,7 +89,7 @@ namespace Geo.NurbsConstruction
             {
                 if (!kv.Key.StartsWith(EntityNaming.ChamferCornerPrefix, StringComparison.Ordinal))
                     continue;
-                if (!probeMesh.TryGetSurface(kv.Key, out var patch))
+                if (!probeMesh.TryGetTopologySurface(kv.Key, out var patch))
                     continue;
                 if (TryBuildCornerPlane(patch, out var planeParams))
                 {

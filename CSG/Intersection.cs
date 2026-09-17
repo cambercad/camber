@@ -17,7 +17,12 @@ namespace CSG
         //https://www.nas.nasa.gov/publications/software/docs/cart3d/pages/bool_intersection.html
         
         public static SegmentTriangleIntersectionType SegmentIntersectsTriangle(in Rat3Hybrid segmentStart, in Rat3Hybrid segmentEnd,
-           in Rat3Hybrid a, in Rat3Hybrid b, in Rat3Hybrid c, out Rat3Hybrid intersection, out bool intersectionPointIsOnBoundary, out bool startIsOnTriangle, out bool endIsOnTriangle)
+           in Rat3Hybrid a, in Rat3Hybrid b, in Rat3Hybrid c, out Rat3Hybrid intersection, out bool intersectionPointIsOnBoundary, out bool startIsOnTriangle, out bool endIsOnTriangle) =>
+            SegmentIntersectsTriangle(segmentStart, segmentEnd, a, b, c, out intersection,
+                out intersectionPointIsOnBoundary, out startIsOnTriangle, out endIsOnTriangle, null);
+
+        internal static SegmentTriangleIntersectionType SegmentIntersectsTriangle(in Rat3Hybrid segmentStart, in Rat3Hybrid segmentEnd,
+           in Rat3Hybrid a, in Rat3Hybrid b, in Rat3Hybrid c, out Rat3Hybrid intersection, out bool intersectionPointIsOnBoundary, out bool startIsOnTriangle, out bool endIsOnTriangle, ResolvePairStats stats)
         {
             intersectionPointIsOnBoundary = false;
             startIsOnTriangle = false;
@@ -26,10 +31,12 @@ namespace CSG
             if (SegmentTriangleAabbDisjoint(in segmentStart, in segmentEnd, in a, in b, in c))
             {
                 Interlocked.Increment(ref AabbCullCount);
+                if (stats != null) Interlocked.Increment(ref stats.SegTriAabbCulls);
                 intersection = default;
                 return SegmentTriangleIntersectionType.NoIntersection;
             }
             Interlocked.Increment(ref FullTestCount);
+            if (stats != null) Interlocked.Increment(ref stats.SegTriFull);
 
             int ab = Orient3DSign(segmentStart, segmentEnd, a, b);
             int bc = Orient3DSign(segmentStart, segmentEnd, b, c);

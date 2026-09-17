@@ -42,8 +42,7 @@ Build a solid from a triangle soup in world coordinates. Vertices are quantized 
             for (int i = 0; i < positions.Count; i++)
                 uvs.Add(default);
 
-            int gid = GetBaseGroupIndex();
-            IncrementBaseGroupIndex(1);
+            int gid = ReserveGroupIds(1);
             var groups = new List<int>(triangles.Count);
             for (int i = 0; i < triangles.Count; i++)
                 groups.Add(gid);

@@ -37,6 +37,22 @@ public class CurveTests
         Assert.InRange(onCurve.Length(), 0.98, 1.02);
     }
 
+    [Theory]
+    [InlineData(.1)]
+    [InlineData(1.0)]
+    [InlineData(120.0)]
+    public void RationalCircleArcLengthAndInverseRespectAngle(double radius)
+    {
+        var circle = new BSplineCircle(new Vec3D(0), new Vec3D(0, 0, 1), radius, new Vec3D(1, 0, 0));
+        Assert.InRange(Math.Abs(circle.TotalArcLength - 2 * Math.PI * radius), 0, radius * 1e-5);
+        foreach (double fraction in new[] { .07, .23, .47, .73, .9722222222222222 })
+        {
+            double parameter = circle.GetCurveParameter(circle.TotalArcLength * fraction);
+            var expected = new Vec3D(Math.Cos(2 * Math.PI * fraction), Math.Sin(2 * Math.PI * fraction), 0) * radius;
+            Assert.InRange((circle.EvaluateUniform(parameter) - expected).Length(), 0, radius * 1e-5);
+        }
+    }
+
     [Fact]
     public void BSplineCurve_SplitPreservesEndpoints()
     {

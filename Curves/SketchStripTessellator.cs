@@ -94,7 +94,8 @@ namespace Curves
             List<List<Vec2D>> norms,
             out List<Vec2D> poly,
             out List<Vec2D> pn,
-            out List<int> creaseStartIndicesInPoly)
+            out List<int> creaseStartIndicesInPoly,
+            bool preserveTangentJoints = true)
         {
             poly = new List<Vec2D>();
             pn = new List<Vec2D>();
@@ -103,7 +104,11 @@ namespace Curves
             {
                 var seg = points[si];
                 var ns = norms[si];
-                if (si > 0)
+                // Offset naming retains every authored joint; loft shading only
+                // needs geometrically sharp joints. A segment boundary is not
+                // necessarily a geometric crease.
+                // Preserve sharp corners, but keep tangent arc/spline joins smooth.
+                if (si > 0 && (preserveTangentJoints || !SameNormal(norms[si - 1][^1], ns[0])))
                     creaseStartIndicesInPoly.Add(poly.Count);
                 for (int j = 0; j < seg.Count - 1; j++)
                 {
@@ -122,8 +127,20 @@ namespace Curves
 
             if (points.Count > 1 && poly.Count >= 2 &&
                 Vec2DOps.DistanceSquared(poly[0], poly[^1]) <= DefaultClosedToleranceSq &&
+                (preserveTangentJoints || !SameNormal(norms[^1][^1], norms[0][0])) &&
                 !creaseStartIndicesInPoly.Contains(0))
                 creaseStartIndicesInPoly.Add(0);
+        }
+
+        private static bool SameNormal(Vec2D a, Vec2D b)
+        {
+            double aLength = Math.Sqrt(a.X * a.X + a.Y * a.Y);
+            double bLength = Math.Sqrt(b.X * b.X + b.Y * b.Y);
+            if (aLength < 1e-15 || bLength < 1e-15)
+                return false;
+            double dx = a.X / aLength - b.X / bLength;
+            double dy = a.Y / aLength - b.Y / bLength;
+            return dx * dx + dy * dy <= 1e-12;
         }
 
         public static bool IsClosedPolyline(IReadOnlyList<Vec2D> polyline, double toleranceSq = DefaultClosedToleranceSq)

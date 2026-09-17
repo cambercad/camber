@@ -395,6 +395,13 @@ namespace Remeshing
                         if (!AreSameGroups(groupsEdgeXI, groupsEdgeIY))
                             continue; // Skip this collinear edge - groups don't match
 
+                        // Collinearity of two edges does not make a junction of
+                        // additional face groups removable. Its other incident
+                        // patches would acquire vertices/attributes from another face.
+                        if (connectedTriangles[i].Any(index => triangles[index].A >= 0 &&
+                            !groupsEdgeXI.Contains(triangles[index].GroupId)))
+                            continue;
+
                         var dx = (points[x] - pI).LengthSquared();
                         var dy = (points[y] - pI).LengthSquared();
 

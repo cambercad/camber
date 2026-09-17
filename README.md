@@ -1,10 +1,28 @@
 # camber
 
-**Alpha** — scripting- and AI-first CAD. Triangle-first kernel (exact rationals, CSG, optional NURBS, sketch constraints) with a thin Python API and an optional OpenGL viewer. Designed to stay small and avoid dependency bloat.
+**Alpha.** AI-ready CAD for people and agents: the same Python API, a small dependency footprint, and an optional OpenGL viewer.
 
-This is **not** a fork or reimplementation of CadQuery, build123d, FreeCAD, or OpenSCAD. Those use OpenCascade B-rep (or OpenSCAD’s own language / a full GUI). Camber is a separate mesh kernel; `camber.cqcompat` is only a familiarity shim, not OCCT.
+Parts are **triangle meshes** (ideally watertight). Exact-rational CSG, constrained sketches, and optional NURBS all work on that mesh. Curves and surfaces are recovered when you need them for export; they do not own the model. You can also load and edit STL/OBJ from elsewhere.
 
-Status: APIs and file formats will change. Expect breakage. Much of the code is AI-assisted; the goal is useful geometry code, not AI slop — but plenty of bugs remain. It is already good enough to be useful for real scripts.
+This is **not** a fork of CadQuery, build123d, FreeCAD, or OpenSCAD. Those use OpenCascade B-rep (or OpenSCAD’s language / a full GUI). Camber is a separate mesh kernel; `camber.cqcompat` is only a familiarity shim, not OCCT.
+
+Status: APIs and file formats will change. Expect breakage. Much of the code is AI-assisted; the goal is useful geometry, not AI slop — but plenty of bugs remain. It is already good enough for real scripts.
+
+## API design
+
+This guideline applies throughout Camber: the kernel, language bindings,
+modelling and verification tools, rendering, diagnostics, and examples.
+
+Camber's tools should serve engineers, Python users, and AI agents through the
+same API. Prefer familiar CAD operations, constrained sketches, explicit part
+interfaces, and inspectable assembly relationships. Keep roles clear: geometry
+constructs parts, mates locate occurrences, and inspection reports model state.
+
+Add public methods for recurring modelling or verification tasks, reuse existing
+kernel and renderer capabilities, and avoid parallel APIs for humans and agents.
+Return structured results that can also be displayed, state units and tolerances,
+and identify affected components in errors. Inspection should not silently alter
+the model or treat a failed calculation as a successful check.
 
 ## Install
 
@@ -28,11 +46,19 @@ import camber
 
 `cffi` is a normal dependency of the native module. pip may print `cffi` under `cambercad`; that is expected.
 
-## Triangles first
+## Tests
 
-The source of truth is a triangle mesh (ideally watertight). You can **load and modify** meshes from any source (STL, OBJ, …). NURBS is optional: objects built inside camber keep NURBS metadata when available, but you do not need it to work on imported meshes.
+From the repo root, after a local wheel is installed in `.venv` (or `Geo.Python/.venv`):
 
-For export and analytic surfaces, **NURBS boundaries are derived from the triangles** where needed — triangles stay primary; curves/surfaces are recovered for convenience rather than owning the model.
+```powershell
+.\run-tests.ps1
+```
+
+```bash
+./run-tests.sh
+```
+
+That runs `dotnet test camber.sln` and Python `unittest` under `Geo.Python/python/tests`. Native Python tests skip if the wheel is missing. C# only: `dotnet test GeoTests/GeoTests.csproj -c Release`. More detail: [Geo.Python/README.md](Geo.Python/README.md), [GeoTests/README.md](GeoTests/README.md).
 
 ## What you get
 
@@ -64,8 +90,8 @@ Both Windows and Linux publish scripts write **only** `cambercad-*.whl` into the
 ```text
 camber/
   dist/
-    cambercad-0.1.1-py3-none-win_amd64.whl
-    cambercad-0.1.1-py3-none-manylinux_2_17_x86_64.whl
+    cambercad-0.1.2-py3-none-win_amd64.whl
+    cambercad-0.1.2-py3-none-manylinux_2_17_x86_64.whl
 ```
 
 That layout matches PyPI (`twine upload dist/cambercad-*.whl`). Dependency wheels (`cffi`, …) are staged temporarily and not kept in `dist/`. Scripts retag DotWrap’s `py3-none-any` name to a platform tag so Win/Linux wheels can sit side by side. PyPI rejects a bare `linux_x86_64` tag; Linux wheels use `manylinux_2_17_x86_64`.
@@ -88,22 +114,6 @@ uv pip install --python .\.venv\Scripts\python.exe (Get-ChildItem ..\dist\camber
 # uv pip install --python .\.venv\Scripts\python.exe "$((Get-ChildItem ..\dist\cambercad*.whl | Select-Object -Last 1).FullName)[view]"
 python python\smoke.py
 ```
-
-## Tests
-
-From the repo root:
-
-```powershell
-.\run-tests.ps1
-```
-
-```bash
-./run-tests.sh
-```
-
-Runs C# tests (`dotnet test camber.sln`) and Python `unittest` under `Geo.Python/python/tests`. Uses `.venv` at the repo root or `Geo.Python/.venv` if present, otherwise `python` on PATH. Native Python tests skip when the wheel is not installed.
-
-More detail: [Geo.Python/README.md](Geo.Python/README.md).
 
 ## Build the wheel (Linux / WSL Ubuntu 24.04)
 
@@ -182,12 +192,3 @@ Full license texts are under [`third_party/`](third_party/).
 | **DotWrap** 0.3.0 (NuGet, build-time) | MIT | `Geo.Python/Geo.Python.csproj` | Generates the Python native module |
 
 Optional runtime deps (not vendored): **cffi**, and for the viewer **pyglet** / **imgui** / **numpy**.
-
-## Layout
-
-```text
-camber.sln
-Geo.Python/          # wheel build + python/camber package + examples
-Geo/ …               # kernel projects listed above
-third_party/         # MIT / Boost license copies
-```

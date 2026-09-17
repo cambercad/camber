@@ -7,10 +7,10 @@ using GeoCore;
 namespace GeoTests;
 
 /// <summary>Broader export smoke tests beyond the unit cube.</summary>
-[Collection("GeoAPISequential")]
 public class BRepExportSmokeTests : IDisposable
 {
-    public void Dispose() => GeoAPI.Clear();
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
 
     private static (int faces, int exportable, string stepPath, string igesPath) ExportAndInspect(GeoAPI api, AnchorMesh mesh, string label)
     {

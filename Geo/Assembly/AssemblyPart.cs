@@ -66,10 +66,19 @@ Infers a planar face from a patch on this part's mesh (e.g. ExtrudeTop, ExtrudeB
         public AssemblyPlaneDatum AddPlaneDatum(string reference)
         {
             Assembly.EnsureOwnedPart(this);
-            PlaneDatumLocal plane = AssemblyDatumResolver.ResolvePlane(Mesh, reference);
+            PlaneDatumLocal plane = AssemblyDatumResolver.ResolvePlane(Mesh, reference, Assembly.Converter);
             Vec3D normal = plane.Normal;
             normal.Normalize();
             return new AssemblyPlaneDatum(this, plane.Origin, normal, AssemblyDatumResolver.EntityName(Mesh, reference));
+        }
+
+        /// <summary>Return an oriented planar face frame in body-local coordinates.
+        /// Preserves its authored in-plane reference direction where available;
+        /// otherwise uses a deterministic orthonormal basis. Display poses do not affect it.</summary>
+        public CoordinateSystem GetPlaneFrame(string reference)
+        {
+            Assembly.EnsureOwnedPart(this);
+            return AssemblyDatumResolver.ResolvePlaneFrame(Mesh, reference, Assembly.Converter);
         }
 
         [APIDescription(@"AddPlaneDatumAt(localOrigin: Vec3D, localNormal: Vec3D) -> AssemblyPlaneDatum

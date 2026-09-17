@@ -148,6 +148,9 @@
                         nonNegative = new HashSet<Param>();
                     nonNegative.Add(contact.Lambda);
                 }
+                if (c is TangentCircularCircular2d tangent &&
+                    tangent.TryGenerateJoinedArcEquation(cons, equations))
+                    continue;
                 c.GenerateEquations(equations, scaling);
             }
 

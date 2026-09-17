@@ -387,7 +387,7 @@ def _face_normals(verts, faces):
     return out
 
 
-def pack_scene(scene):
+def pack_scene(scene, colors=None):
     """Flatten a DisplayScene into CPU buffers (no GL)."""
     used = set()
     mesh_pos = []
@@ -411,6 +411,15 @@ def pack_scene(scene):
             order.append(name)
     n_unique = len(order)
     color_of = {name: segment_color(i, n_unique) for i, name in enumerate(order)}
+
+    if colors:
+        from fnmatch import fnmatchcase
+        for name in color_of:
+            for pattern, rgb in colors.items():
+                if fnmatchcase(name, pattern):
+                    if len(rgb) != 3 or any(not 0 <= c <= 1 for c in rgb):
+                        raise ValueError("colors must contain RGB triples in [0, 1]")
+                    color_of[name] = tuple(rgb)
 
     for patch in patches:
         tris = patch.get("faces") or []
@@ -907,6 +916,7 @@ void main() {
 _MESH_FRAG = """
 #version 330
 uniform vec3 u_light_dir;
+uniform bool u_checker;
 uniform float u_alpha;
 """ + _PEEL_GLSL + """
 in vec3 v_n;
@@ -926,7 +936,7 @@ void main() {
         spec = 0.1 * pow(abs(dot(N, H)), 8.0);
     float a = clamp(u_alpha, 0.0, 1.0);
     vec3 albedo = v_color;
-    if (a >= 0.999) {
+    if (u_checker && a >= 0.999) {
         ivec2 cell = ivec2(floor(v_uv * 10.0));
         float checker = float((cell.x + cell.y) & 1);
         albedo *= mix(1.0, 0.75, checker);
@@ -1220,14 +1230,21 @@ def _as_scene(obj):
     return decode(dump())
 
 
-def _import_gl():
+def _import_gl(ui=True):
     try:
         import numpy as np
         import pyglet
 
+        if not ui:
+            return pyglet, np, None, None
         from .imgui_compat import import_imgui
         imgui = import_imgui()
-        from imgui.integrations.pyglet import create_renderer
+        try:
+            from imgui.integrations.pyglet import create_renderer
+        except ModuleNotFoundError as exc:
+            if exc.name not in ("distutils", "distutils.version"):
+                raise
+            from .imgui_compat import create_pyglet_renderer as create_renderer
     except ImportError:
         raise ImportError(
             "The OpenGL viewer needs pyglet, imgui, and numpy. Install with:\n"

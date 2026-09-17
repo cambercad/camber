@@ -122,6 +122,20 @@ namespace Geo.NurbsConstruction
                 }, ParametricRange.UnitSquare);
                 if (curve2d is Circle2D circle2d)
                     sideMeta.CylinderParams = BuildCylinderParams(circle2d, bottomFrame, extrudeDir, extrudeLength);
+                else if (curve2d is Arc2D arc2d)
+                    sideMeta.CylinderParams = BuildCylinderParams(arc2d.Center, arc2d.StartPosition,
+                        arc2d.Radius, bottomFrame, extrudeDir, extrudeLength);
+                else if (curve2d is Line2D line2d)
+                {
+                    var origin = bottomFrame.PointTo3D(line2d.StartPosition);
+                    var tangent = bottomFrame.PointTo3D(line2d.EndPosition) - origin;
+                    sideMeta.PlaneParams = new PlaneSurfaceParams
+                    {
+                        Origin = origin,
+                        Normal = Vec3DOps.Cross(tangent, extrudeDir).Normalized(),
+                        RefDir = tangent.Normalized()
+                    };
+                }
                 result[sideName] = sideMeta;
             }
 
@@ -163,7 +177,11 @@ namespace Geo.NurbsConstruction
                 var sideMeta = new SurfaceMetaData(classified.SurfaceType, () =>
                 {
                     var revolveSurface = NurbsSurfaceFactory.Revolve(pointOnAxisCopy, axisCopy, profile, zeroDirCopy);
-                    return NurbsSurfaceFactory.WrapForMeshUv(revolveSurface, profile, vRangeCopy);
+                    // Mesh V is normalized rotation angle, whereas a rational
+                    // circle's knot parameter is not uniform in angle.
+                    var circle = new BSplineCircle(pointOnAxisCopy, axisCopy, 1, zeroDirCopy);
+                    return NurbsSurfaceFactory.WrapForMeshUv(revolveSurface, profile, vRangeCopy,
+                        railCurveForArcLengthV: circle);
                 }, vRange);
                 sideMeta.PlaneParams = classified.PlaneParams;
                 sideMeta.CylinderParams = classified.CylinderParams;
@@ -279,10 +297,17 @@ namespace Geo.NurbsConstruction
         }
 
         public static Dictionary<string, SurfaceMetaData> BuildLoftMetadata(
+            IReadOnlyList<PlotterSketcherCoordSys> sketches, double maxDeviation,
+            LoftOptions options, string operationName)
+            => BuildLoftMetadata(sketches, maxDeviation, options, operationName, null);
+
+        internal static Dictionary<string, SurfaceMetaData> BuildLoftMetadata(
             IReadOnlyList<PlotterSketcherCoordSys> sketches,
             double maxDeviation,
             LoftOptions options,
-            string operationName)
+            string operationName,
+            Func<INurbsSurface> loftSideSupportFactory,
+            IReadOnlyDictionary<string, ParametricRange> sideDomains = null)
         {
             var result = new Dictionary<string, SurfaceMetaData>();
             if (sketches == null || sketches.Count < 2)
@@ -294,7 +319,12 @@ namespace Geo.NurbsConstruction
             int samplesU = Math.Max(2, options.ProfileSamplesU);
             var loftStyle = options.Style;
             var sketchesCopy = sketches;
-            if (TryBuildCompatibleLoftProfiles(sketches, out var exactProfiles))
+            if (loftSideSupportFactory != null)
+            {
+                result[EntityNaming.LoftSide(operationName)] =
+                    new SurfaceMetaData(SurfaceType.Unknown, loftSideSupportFactory, ParametricRange.UnitSquare);
+            }
+            else if (TryBuildCompatibleLoftProfiles(sketches, out var exactProfiles))
             {
                 result[EntityNaming.LoftSide(operationName)] =
                     new SurfaceMetaData(SurfaceType.Unknown, () =>
@@ -311,6 +341,14 @@ namespace Geo.NurbsConstruction
                         var profileSamples = SampleLoftProfiles(sketchesCopy, maxDeviation, samplesU);
                         return NurbsSurfaceFactory.LoftFromProfileSamples(profileSamples, loftStyle);
                     }, ParametricRange.UnitSquare);
+            }
+
+            if (sideDomains != null)
+            {
+                result.Remove(EntityNaming.LoftSide(operationName));
+                foreach (var face in sideDomains)
+                    result.Add(face.Key, new SurfaceMetaData(SurfaceType.Unknown,
+                        loftSideSupportFactory, face.Value));
             }
 
             if (options.CapEnds)
@@ -718,9 +756,19 @@ namespace Geo.NurbsConstruction
             CoordinateSystem bottomFrame,
             Vec3D extrudeDir,
             double extrudeLength)
+            => BuildCylinderParams(circle.Center, circle.StartPosition, circle.Radius,
+                bottomFrame, extrudeDir, extrudeLength);
+
+        private static CylinderSurfaceParams BuildCylinderParams(
+            Vec2D profileCenter,
+            Vec2D profileStart,
+            double radius,
+            CoordinateSystem bottomFrame,
+            Vec3D extrudeDir,
+            double extrudeLength)
         {
-            var center = bottomFrame.PointTo3D(circle.Center);
-            var refDir = bottomFrame.PointTo3D(circle.StartPosition) - center;
+            var center = bottomFrame.PointTo3D(profileCenter);
+            var refDir = bottomFrame.PointTo3D(profileStart) - center;
             if (refDir.Length() < 1e-12)
                 refDir = bottomFrame.X;
             else
@@ -731,7 +779,7 @@ namespace Geo.NurbsConstruction
                 Origin = center,
                 Axis = extrudeDir.Normalized(),
                 RefDir = refDir,
-                Radius = circle.Radius,
+                Radius = radius,
                 Height = extrudeLength
             };
         }

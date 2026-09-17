@@ -303,12 +303,19 @@ namespace GeoCore
             int n = points.Count;
             if (n < 4) return false; // need at least 4 points
 
+            // Normal equations in absolute world coordinates lose the small
+            // radius through cancellation on translated parts. Fit in a local,
+            // unit-sized frame and transform the result back afterward.
+            var origin = points[0];
+            double scale = points.Max(p => (p - origin).Length());
+            if (!(scale > 0) || !double.IsFinite(scale)) return false;
+
             Mat4D A = new Mat4D();
             Vec4D B = new Vec4D(0, 0, 0, 0);
 
             for (int i = 0; i < n; i++)
             {
-                Vec3D p = points[i];
+                Vec3D p = (points[i] - origin) / scale;
                 double s = p.LengthSquared();
 
                 // Accumulate normal equations
@@ -346,9 +353,10 @@ namespace GeoCore
 
             Vec4D P = AInv * B;
 
-            center = new Vec3D(P.X, P.Y, P.Z);
+            var localCenter = new Vec3D(P.X, P.Y, P.Z);
             double c = P.W;
-            radius = Math.Sqrt(Math.Max(0.0, center.LengthSquared() + c));
+            radius = Math.Sqrt(Math.Max(0.0, localCenter.LengthSquared() + c)) * scale;
+            center = origin + localCenter * scale;
 
             return true;
         }

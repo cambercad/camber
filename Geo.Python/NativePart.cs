@@ -232,9 +232,10 @@ public class NativePart
         _inner.AddPlane(planeName, originAnchorName);
     }
 
-    public NativeSolid ExtrudeAlongCurve(NativeSketch sketch, NativeCurve curve, double maxDeviation, double twistRatePerExtrudeDistance, string name)
+    public NativeSolid ExtrudeAlongCurve(NativeSketch sketch, NativeCurve curve, double maxDeviation, double twistRatePerExtrudeDistance, string name, string referenceDirection)
     {
-        return new NativeSolid(_inner.ExtrudeAlongCurve(sketch.Native, curve.Native, maxDeviation, NativeUtil.EmptyToNull(name), twistRatePerExtrudeDistance));
+        return new NativeSolid(_inner.ExtrudeAlongCurve(sketch.Native, curve.Native, maxDeviation, NativeUtil.EmptyToNull(name), twistRatePerExtrudeDistance,
+            string.IsNullOrEmpty(referenceDirection) ? null : NativePack.ReadPoints3(referenceDirection)[0]));
     }
 
     public NativeSolid ExtrudeAlongCurveStrip(NativeSketch sketch, NativeCurveList guide, double maxDeviation, double twistRatePerExtrudeDistance, string name)
@@ -247,10 +248,20 @@ public class NativePart
         return new NativeSolid(_inner.ExtrudeAlongSketch(profile.Native, guide.Native, maxDeviation, NativeUtil.EmptyToNull(name)));
     }
 
-    public NativeSolid Loft(NativeSketchList sketches, NativeLoftOptions options, double maxDeviation, string name)
+    public NativeSolid Loft(NativeSketchList sketches, NativeLoftOptions options, double maxDeviation, string name, string firstCurves)
     {
         LoftOptions loftOptions = options == null ? LoftOptions.Default : options.ToLoftOptions();
+        if (!string.IsNullOrEmpty(firstCurves)) loftOptions.FirstCurves = firstCurves.Split('|');
         return new NativeSolid(_inner.Loft(sketches.Items, loftOptions, NativeUtil.EmptyToNull(name), maxDeviation));
+    }
+
+    public NativeSolid LoftSurface(NativeSketchList sections, NativeCurveList guides,
+        string startTangent, string endTangent, double maxDeviation, string name)
+    {
+        static Vec3D? Tangent(string packed) => string.IsNullOrEmpty(packed)
+            ? null : NativePack.ReadPoints3(packed)[0];
+        return new NativeSolid(_inner.LoftSurface(sections.Items, guides?.Items,
+            Tangent(startTangent), Tangent(endTangent), NativeUtil.EmptyToNull(name), maxDeviation));
     }
 
     public NativeSolid Boolean(NativeSolid a, NativeSolid b, int operation, string name)
@@ -290,6 +301,23 @@ public class NativePart
     {
         return new NativeSolid(_inner.CopyMeshAsInstance(source.Native, name));
     }
+
+    public NativeSolidList PatternLinear(NativeSolid seed, int count, double x, double y, double z, string name)
+    {
+        var result = new NativeSolidList();
+        result.Items.AddRange(_inner.PatternLinear(seed.Native, count, new Vec3D(x, y, z), NativeUtil.EmptyToNull(name)));
+        return result;
+    }
+
+    public NativeSolidList PatternCircular(NativeSolid seed, int count, NativeFrame axis, double angle, string name)
+    {
+        var result = new NativeSolidList();
+        result.Items.AddRange(_inner.PatternCircular(seed.Native, count, axis.Native, angle, NativeUtil.EmptyToNull(name)));
+        return result;
+    }
+
+    public NativeSolid Mirror(NativeSolid source, NativeFrame plane, string name)
+        => new NativeSolid(_inner.Mirror(source.Native, plane.Native, NativeUtil.EmptyToNull(name)));
 
     public NativeSolid Fillet(NativeSolid mesh, string edgeNames, double radius, double maxDeviation, string name)
     {
@@ -357,6 +385,11 @@ public class NativePart
         _inner.SaveUsdaFile(mesh.Native, filePath);
     }
 
+    public NativeSection Section(NativeFrame plane) => new(new SectionView(_inner.GetMeshes(), _inner.Converter, plane.Native));
+
+    public NativeSection SectionSolid(NativeSolid solid, NativeFrame plane)
+        => new(new SectionView(new[] { solid.Native }, _inner.Converter, plane.Native));
+
     public string DumpDisplay()
     {
         return DisplayPack.PackMeshes(_inner.GetMeshes());
@@ -379,17 +412,7 @@ public class NativePart
         {
             return string.Empty;
         }
-        var inv = System.Globalization.CultureInfo.InvariantCulture;
-        return string.Join(" ",
-            hit.Point.X.ToString("G17", inv),
-            hit.Point.Y.ToString("G17", inv),
-            hit.Point.Z.ToString("G17", inv),
-            hit.GeometricNormal.X.ToString("G17", inv),
-            hit.GeometricNormal.Y.ToString("G17", inv),
-            hit.GeometricNormal.Z.ToString("G17", inv),
-            hit.ParameterT.ToString("G17", inv),
-            hit.TriangleIndex.ToString(inv),
-            hit.GroupId.ToString(inv));
+        return NativeSection.PackHit(hit);
     }
 
     public string DumpSolidDisplay(NativeSolid mesh)
@@ -437,6 +460,17 @@ public class NativeSketch
             line = Native.AddLine(new Vec2D(x0, y0), new Vec2D(x1, y1));
         }
         ApplyCurveName(line, name);
+    }
+
+    public void AddEllipse(double cx, double cy, double rx, double ry, double rotation, string name)
+    {
+        var axis = new Vec2D(rx*Math.Cos(rotation),rx*Math.Sin(rotation));
+        if (!double.IsFinite(rx) || rx <= 0 || !double.IsFinite(rotation))
+            throw new ArgumentOutOfRangeException(nameof(rx), "Ellipse radii must be positive and rotation finite.");
+        var ellipse = Native.AddEllipse(new Vec2D(cx,cy),axis,ry);
+        if (Native is ConstrainedSketcher)
+            _constraintCurves.Add(ellipse);
+        ApplyCurveName(ellipse,name);
     }
 
     public void AddCircle(double cx, double cy, double radius)
@@ -502,19 +536,29 @@ public class NativeSketch
             Native.AddRectangleFromCorners(new Vec2D(x0, y0), new Vec2D(x1, y1));
     }
 
+    public void AddRectangleNamed(double x0, double y0, double x1, double y1,
+        string south, string east, string north, string west)
+    {
+        AddRectangle(x0, y0, x1, y1);
+        NameRectangleSides(south, east, north, west);
+    }
+
     public void AddRectangleCentered(double cx, double cy, double sizeX, double sizeY)
     {
-        Native.AddRectangle(new Vec2D(cx, cy), sizeX, sizeY);
+        AddRectangle(cx - sizeX / 2, cy - sizeY / 2, cx + sizeX / 2, cy + sizeY / 2);
     }
 
     public void AddRectangleCenteredNamed(
         double cx, double cy, double sizeX, double sizeY,
         string south, string east, string north, string west)
     {
-        Native.AddRectangle(new Vec2D(cx, cy), sizeX, sizeY);
+        AddRectangleCentered(cx, cy, sizeX, sizeY);
+        NameRectangleSides(south, east, north, west);
+    }
+
+    void NameRectangleSides(string south, string east, string north, string west)
+    {
         var all = Native.GetAllCurves();
-        if (all == null || all.Count < 4)
-            return;
         ApplyCurveName(all[all.Count - 4], south);
         ApplyCurveName(all[all.Count - 3], east);
         ApplyCurveName(all[all.Count - 2], north);
@@ -864,6 +908,22 @@ public class NativeSketch
         }
     }
 
+    public string LastCurveName()
+    {
+        var curves = Native.GetAllCurves();
+        if (curves.Count == 0)
+            throw new InvalidOperationException("The sketch has no curves.");
+        return curves[curves.Count-1].Name;
+    }
+
+    public int ConstraintCurveIndex(string name)
+    {
+        int index = _constraintCurves.IndexOf(FindCurveByName(name));
+        if (index < 0)
+            throw new ArgumentException($"Sketch curve '{name}' is not a constrainable curve.");
+        return index;
+    }
+
     public int ConstraintCurveCount
     {
         get { return _constraintCurves.Count; }
@@ -1155,9 +1215,18 @@ public class NativeSketch
     }
 
     /// <summary>DotWrap-friendly XY accessors; <c>out</c> triples are not callable from Python.</summary>
-    public double EvaluateConstraintPointX(string name) => NamedConstraintPoint(name).Evaluate().X;
+    public double EvaluateConstraintPointX(string name) => EvaluateSketchPoint(name).X;
 
-    public double EvaluateConstraintPointY(string name) => NamedConstraintPoint(name).Evaluate().Y;
+    public double EvaluateConstraintPointY(string name) => EvaluateSketchPoint(name).Y;
+
+    Vec2D EvaluateSketchPoint(string name)
+    {
+        if (Native is ConstrainedSketcher)
+            return NamedConstraintPoint(name).Evaluate();
+        if (Native.TryGetPointOnEdge(name,out var point))
+            return point;
+        throw new ArgumentException($"Sketch point '{name}' was not found.");
+    }
 
     public void SetParallel(int curveA, int curveB) =>
         ConstraintSketcher().SetParallel(
@@ -1200,8 +1269,12 @@ public class NativeSketch
     public void SetLength(int curve, double length) =>
         ConstraintSketcher().SetLength(ConstraintCurve<CLine2D>(curve), length);
 
-    public void SetRadius(int curve, double radius) =>
+    public void SetRadius(int curve, double radius)
+    {
+        if (ConstraintCurve<Curve2D>(curve) is Ellipse2D)
+            throw new ArgumentException("An ellipse has two semiaxes; dimension distances from its center to its quarter points.");
         ConstraintSketcher().SetRadius(ConstraintCurve<ICircular2D>(curve), radius);
+    }
 
     public void SetDistance(
         int curveA, int pointA, int curveB, int pointB, double distance) =>
@@ -1218,7 +1291,12 @@ public class NativeSketch
 
     public void SolveConstraints()
     {
-        ConstraintSketcher().SolveConstraints();
+        var result = ConstraintSketcher().SolveConstraintsDetailed();
+        if (!result.Converged)
+            throw new InvalidOperationException(
+                $"Sketch constraint solve failed: {result.Message ?? "did not converge"}. " +
+                $"Residual sum of squares: {result.SumOfSquaredErrors:R}; " +
+                $"{result.NumEquations} equations, {result.NumParameters} parameters.");
     }
 
     /// <summary>
@@ -1409,6 +1487,16 @@ public class NativeSolid
 
     public int IsVolume { get { return Native.IsVolume ? 1 : 0; } }
 
+    public int EdgeCount
+    {
+        get { Native.EnsureCoplanarPostProcessed(); return Native.GroupEdges.Count; }
+    }
+
+    public string EdgeNameAt(int index)
+    {
+        return Native.GetEdgeReference(index);
+    }
+
     public string DumpDisplay()
     {
         return DisplayPack.PackSolid(Native);
@@ -1423,7 +1511,11 @@ public class NativeSolid
     public int IsWatertight()
     {
         Native.EnsureCoplanarPostProcessed();
-        return GeoCore.MeshAnalysis.IsWatertightMesh(Native.Mesh.Positions, Native.Mesh.Triangles) ? 1 : 0;
+        var mesh = Native.Mesh;
+        bool watertight = mesh.PrecisionPositions != null && mesh.PrecisionPositions.Count == mesh.Positions.Count
+            ? GeoCore.MeshAnalysis.IsWatertightMesh(mesh.PrecisionPositions, mesh.Triangles)
+            : GeoCore.MeshAnalysis.IsWatertightMesh(mesh.Positions, mesh.Triangles);
+        return watertight ? 1 : 0;
     }
 
     public string PackMesh()

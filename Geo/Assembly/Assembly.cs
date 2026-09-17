@@ -6,9 +6,10 @@ using GeoSolver.Kinematics;
 namespace Geo
 {
     [APIDescription(@"Assembly: 3D mate solver for registered meshes. AddPart places solids; AddSubAssembly places a child assembly (which may itself contain parts and sub-assemblies) as a rigid occurrence. Create datums on parts (including nested ones); apply mates; then SolveConstraints().")]
-    public class Assembly
+    public partial class Assembly
     {
         private readonly GeoAPI _api;
+        internal CoordinateConverter Converter => _api.Converter;
         private readonly KinematicSolver _solver = new KinematicSolver();
         private readonly List<AssemblyPart> _parts = new List<AssemblyPart>();
         private readonly List<AssemblyOccurrence> _occurrences = new List<AssemblyOccurrence>();
@@ -117,7 +118,8 @@ Locks the part at its current pose (6 DOF). A nested part locks the rigid sub-as
             RecordMate(new AssemblyMateRecord(
                 AssemblyMateKind.FixPart,
                 $"Fix {part.Mesh.Name}",
-                part),
+                part).WithFixedTarget(SolverTransformOf(part).Evaluate(),
+                    part.Assembly == this ? null : FindDirectOccurrenceContaining(part.Assembly)),
                 part.Mesh.Name + ":");
             AddSolverConstraints(new FixedTransformConstraint3d(SolverTransformOf(part)));
         }
@@ -140,7 +142,8 @@ Locks the part at the given world pose.")]
             RecordMate(new AssemblyMateRecord(
                 AssemblyMateKind.FixPart,
                 $"Fix {part.Mesh.Name}",
-                part),
+                part).WithFixedTarget(desired,
+                    part.Assembly == this ? null : FindDirectOccurrenceContaining(part.Assembly)),
                 part.Mesh.Name + ":");
             AddSolverConstraints(new FixedTransformConstraint3d(SolverTransformOf(part), desired));
         }
@@ -154,7 +157,7 @@ Locks a nested sub-assembly at its current pose (6 DOF).")]
             RecordMate(new AssemblyMateRecord(
                 AssemblyMateKind.FixPart,
                 $"Fix {occurrence.Child.Name}",
-                leaf),
+                leaf).WithFixedTarget(occurrence.EvaluatePose(), occurrence),
                 occurrence.Child.Name + ":");
             AddSolverConstraints(new FixedTransformConstraint3d(occurrence.Transform));
         }
@@ -300,7 +303,7 @@ Face-on-face mate: planes coplanar (parallel normals and coincident origins).")]
 
         [APIDescription(@"SetCoincidentOriented(a: AssemblyPlaneDatum, b: AssemblyPlaneDatum, oppositeNormals: bool) -> None
 Face-on-face mate with directed normals. True requires n_a = −n_b; False requires n_a = n_b.
-Named extrude caps (ExtrudeTop / ExtrudeBottom) both store the sketch +Z, not the solid outward normal, so a flange-to-flange mate of those names uses False to get anti-parallel outward faces.")]
+Named planar faces use their actual outward surface normals; mating two opposing bearing faces uses True.")]
         public void SetCoincidentOriented(
             AssemblyPlaneDatum a,
             AssemblyPlaneDatum b,
@@ -453,6 +456,7 @@ Runs the 6-DOF rigid-body solver. preferMinimalMovement biases toward the curren
 
         private void AddSolverConstraints(params IBaseEquation[] constraints)
         {
+            _mateEquations.Add((_mateRecords[^1], (IBaseEquation[])constraints.Clone()));
             for (int i = 0; i < constraints.Length; i++)
                 _solver.AddConstraint(constraints[i]);
 
@@ -615,27 +619,28 @@ Pose of a direct or nested part in this assembly's frame.")]
             return TransformMath.Compose(occ.EvaluatePose(), PoseInAssembly(part, occ.Child));
         }
 
-        public void CollectLeafWorldPoses(List<AssemblyPart> parts, List<Transform> worldPoses)
+        public void CollectLeafWorldPoses(List<AssemblyPart> parts, List<Transform> worldPoses, List<string> paths = null)
         {
             CollectLeafWorldPoses(
                 parts,
                 worldPoses,
-                new Transform(default, TransformMath.IdentityOrientation));
+                new Transform(default, TransformMath.IdentityOrientation), paths, Name);
         }
 
-        private void CollectLeafWorldPoses(List<AssemblyPart> parts, List<Transform> worldPoses, Transform parentWorld)
+        private void CollectLeafWorldPoses(List<AssemblyPart> parts, List<Transform> worldPoses, Transform parentWorld, List<string> paths, string path)
         {
             for (int i = 0; i < _parts.Count; i++)
             {
                 AssemblyPart part = _parts[i];
                 parts.Add(part);
+                paths?.Add($"{path}/{part.Mesh.Name}[{i+1}]");
                 worldPoses.Add(TransformMath.Compose(parentWorld, part.EvaluatePose()));
             }
             for (int i = 0; i < _occurrences.Count; i++)
             {
                 AssemblyOccurrence occ = _occurrences[i];
                 Transform occWorld = TransformMath.Compose(parentWorld, occ.EvaluatePose());
-                occ.Child.CollectLeafWorldPoses(parts, worldPoses, occWorld);
+                occ.Child.CollectLeafWorldPoses(parts, worldPoses, occWorld, paths, $"{path}/{occ.Child.Name}[{i+1}]");
             }
         }
 

@@ -6,6 +6,8 @@ namespace GeoCore
         private List<Vec> polygon;
         private int count;
         private int[] offsets;
+        private int[] xRanks;
+        private int[] yRanks;
         private IList<int> indexMap;
         private Arithmetic arithmetic = new Arithmetic();
         private readonly Dictionary<(int, int, int), int> orient2DCache = new Dictionary<(int, int, int), int>();
@@ -110,11 +112,10 @@ namespace GeoCore
             for (int h = 0; h < holes.Count; ++h)
                 holePolygonBounds.Add(PolygonBounds(holes[h]));
 
-            var originalOuterPointIndices = new HashSet<int>(outerBorder);
             for (int i = 0; i < maxXPerHole.Count; ++i)
             {
                 var hole = maxXPerHole[i];
-                int inPolygonId = FindVisiblePoint(hole.Item2, outerBorder, hole.Item3, hole.Item4, holePolygonBounds, originalOuterPointIndices);
+                int inPolygonId = FindVisiblePoint(hole.Item2, outerBorder, hole.Item3, hole.Item4, holePolygonBounds);
                 if (inPolygonId < 0)
                     throw new InvalidOperationException("No visible bridge found for polygon hole");
 
@@ -169,7 +170,7 @@ namespace GeoCore
             return result;
         }
 
-        private int FindVisiblePoint(int sourcePointId, List<int> outerBorder, List<int> hole, int holeIndex, List<Box2D> holePolygonBounds, HashSet<int> allowedOuterPointIndices)
+        private int FindVisiblePoint(int sourcePointId, List<int> outerBorder, List<int> hole, int holeIndex, List<Box2D> holePolygonBounds)
         {
             int sourcePoint = hole[sourcePointId];
             Box2D outerBox = PolygonBounds(outerBorder);
@@ -178,7 +179,11 @@ namespace GeoCore
             for (int i = 0; i < outerBorder.Count; ++i)
             {
                 int targetPoint = outerBorder[i];
-                if (!allowedOuterPointIndices.Contains(targetPoint))
+                // Previously joined holes are now part of the boundary too.
+                // Check the filled-side cone at each endpoint: nonintersection
+                // alone can choose the wrong occurrence of a doubled bridge.
+                if (!LocallyInside(outerBorder, i, sourcePoint) ||
+                    !LocallyInside(hole, sourcePointId, targetPoint))
                     continue;
 
                 Int2 segment = new Int2(sourcePoint, targetPoint);
@@ -189,6 +194,21 @@ namespace GeoCore
                     return i;
             }
             return -1;
+        }
+
+        private bool LocallyInside(List<int> boundary, int index, int target)
+        {
+            var previous = bridgePoints[boundary[(index + boundary.Count - 1) % boundary.Count]];
+            var current = bridgePoints[boundary[index]];
+            var next = bridgePoints[boundary[(index + 1) % boundary.Count]];
+            var point = bridgePoints[target];
+            int incoming = arithmetic.Orient2D(previous, current, point);
+            int outgoing = arithmetic.Orient2D(current, next, point);
+            // Outer loops are counterclockwise and holes clockwise, so material
+            // is consistently on the left of each directed boundary edge.
+            return arithmetic.Orient2D(previous, current, next) >= 0
+                ? incoming >= 0 && outgoing >= 0
+                : incoming >= 0 || outgoing >= 0;
         }
 
         private bool SegmentIsClear(Int2 segment, in Box2D segmentBox, List<int> outerBorder, List<int> hole,
@@ -338,6 +358,8 @@ namespace GeoCore
 #endif
 
             ClearOrient2DCache();
+            xRanks = CoordinateRanks(0);
+            yRanks = CoordinateRanks(1);
             List<Tri> tmp = new List<Tri>();
 
             int index = 0;
@@ -396,6 +418,8 @@ namespace GeoCore
 #endif
 
             ClearOrient2DCache();
+            xRanks = CoordinateRanks(0);
+            yRanks = CoordinateRanks(1);
             int index = 0;
             int skippedVertices = 0;
             while (count >= 3)
@@ -488,27 +512,41 @@ namespace GeoCore
         /// <param name="next">Second vertex index of the candidate ear triangle</param>
         /// <param name="nextnext">Third vertex index of the candidate ear triangle</param>
         /// <returns>True if the ear is valid (no vertices inside), false otherwise</returns>
-        private bool VertexStrictlyOutsideEarAabb(Scalar minX, Scalar maxX, Scalar minY, Scalar maxY, int j)
+        // Ear AABBs need only coordinate ordering, not distances. Rank once
+        // with the original arithmetic, then retain that exact ordering in the
+        // repeated rejection tests. Equal coordinates must share a rank.
+        private int[] CoordinateRanks(int coordinate)
         {
-            var pj = polygon[j];
-            Scalar jx = arithmetic.Get(pj, 0);
-            if (arithmetic.Compare(jx, minX) < 0 || arithmetic.Compare(jx, maxX) > 0)
-                return true;
+            var values = new Scalar[polygon.Count];
+            var order = new int[polygon.Count];
+            for (int i = 0; i < polygon.Count; i++)
+            {
+                values[i] = arithmetic.Get(polygon[i], coordinate);
+                order[i] = i;
+            }
+            Array.Sort(order, (a, b) => arithmetic.Compare(values[a], values[b]));
+            var ranks = new int[polygon.Count];
+            int rank = 0;
+            for (int i = 0; i < order.Length; i++)
+            {
+                if (i > 0 && arithmetic.Compare(values[order[i - 1]], values[order[i]]) != 0)
+                    rank++;
+                ranks[order[i]] = rank;
+            }
+            return ranks;
+        }
 
-            Scalar jy = arithmetic.Get(pj, 1);
-            return arithmetic.Compare(jy, minY) < 0 || arithmetic.Compare(jy, maxY) > 0;
+        private bool VertexStrictlyOutsideEarAabb(int minX, int maxX, int minY, int maxY, int j)
+        {
+            return xRanks[j] < minX || xRanks[j] > maxX || yRanks[j] < minY || yRanks[j] > maxY;
         }
 
         private bool IsValid(int index, int next, int nextnext)
         {
-            var p0 = polygon[index];
-            var p1 = polygon[next];
-            var p2 = polygon[nextnext];
-
-            Scalar minX = arithmetic.Min(arithmetic.Min(arithmetic.Get(p0, 0), arithmetic.Get(p1, 0)), arithmetic.Get(p2, 0));
-            Scalar maxX = arithmetic.Max(arithmetic.Max(arithmetic.Get(p0, 0), arithmetic.Get(p1, 0)), arithmetic.Get(p2, 0));
-            Scalar minY = arithmetic.Min(arithmetic.Min(arithmetic.Get(p0, 1), arithmetic.Get(p1, 1)), arithmetic.Get(p2, 1));
-            Scalar maxY = arithmetic.Max(arithmetic.Max(arithmetic.Get(p0, 1), arithmetic.Get(p1, 1)), arithmetic.Get(p2, 1));
+            int minX = Math.Min(Math.Min(xRanks[index], xRanks[next]), xRanks[nextnext]);
+            int maxX = Math.Max(Math.Max(xRanks[index], xRanks[next]), xRanks[nextnext]);
+            int minY = Math.Min(Math.Min(yRanks[index], yRanks[next]), yRanks[nextnext]);
+            int maxY = Math.Max(Math.Max(yRanks[index], yRanks[next]), yRanks[nextnext]);
 
             int j = index;
             for (int i = 0; i < count; ++i)

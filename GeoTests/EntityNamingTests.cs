@@ -3,8 +3,21 @@ using GeoMeta;
 
 namespace GeoTests;
 
+[Collection("GlobalCadState")]
 public sealed class EntityNamingTests
 {
+    [Theory]
+    [InlineData("[A,B]", "[B,A]", true)]
+    [InlineData("[A,B]_2", "[B,A]", true)]
+    [InlineData("[A,B]_2", "[B,A]_2", true)]
+    [InlineData("[A,B]_2", "[B,A]_1", false)]
+    [InlineData("[A,B]", "[B,C]", false)]
+    [InlineData("[A,B]", "[B,A]@0.500", false)]
+    public void GroupEdgeQueries_UseUnorderedFacesAndPreserveComponentIndex(string candidate, string query, bool matches)
+    {
+        Assert.Equal(matches, EntityNaming.MatchesGroupEdgeName(candidate, query));
+    }
+
     [Fact]
     public void PatchFormatters_MatchGoldenStrings()
     {
@@ -194,10 +207,18 @@ public sealed class EntityNamingTests
     [Fact]
     public void GenerateGlobalName_IncrementsPerPrefix()
     {
-        EntityNaming.ResetGlobalNameCounters();
-        Assert.Equal("Part1", EntityNaming.GenerateGlobalName("Part"));
-        Assert.Equal("Part2", EntityNaming.GenerateGlobalName("Part"));
-        Assert.Equal("Extrude1", EntityNaming.GenerateGlobalName("Extrude"));
+        Geo.GeoAPI.Clear();
+        try
+        {
+            EntityNaming.ResetGlobalNameCounters();
+            Assert.Equal("Part1", EntityNaming.GenerateGlobalName("Part"));
+            Assert.Equal("Part2", EntityNaming.GenerateGlobalName("Part"));
+            Assert.Equal("Extrude1", EntityNaming.GenerateGlobalName("Extrude"));
+        }
+        finally
+        {
+            Geo.GeoAPI.Clear();
+        }
     }
 
     [Fact]

@@ -22,6 +22,13 @@ namespace Geo
             return V0.Interpolate(in V1, in V2, in barycentricWeights);
         }
 
+        internal T InterpolateExact(in Rat3Hybrid weights)
+        {
+            if (V0 is TriangleVertexNormalUV a && V1 is TriangleVertexNormalUV b && V2 is TriangleVertexNormalUV c)
+                return (T)(object)a.InterpolateExact(b, c, weights);
+            return Interpolate(new Vec3D(weights.X.ToDouble(), weights.Y.ToDouble(), weights.Z.ToDouble()));
+        }
+
         public override string ToString()
         {
             return GroupId.ToString();
@@ -74,7 +81,7 @@ namespace Geo
 
         // https://github.com/BrunoLevy/geogram/discussions/230
         //https://github.com/BrunoLevy/geogram/discussions/261
-        protected static M BooleanOperation<M>(M a, M b, BooleanOp op, CoordinateConverter converter, List<List<IntersectionSegmentEx>> intersectionStrips = null) where M : Mesh<T>, new()
+        protected static M BooleanOperation<M>(M a, M b, BooleanOp op, CoordinateConverter converter, List<List<IntersectionSegmentEx>> intersectionStrips = null, Action<BooleanFragments> classifiedFragments = null) where M : Mesh<T>, new()
         {
             if (a == null || b == null)
                 return null;
@@ -82,7 +89,7 @@ namespace Geo
 
             M result = new M();
             Resolver.Resolve(op, a.PrecisionPositions, a.Triangles, b.PrecisionPositions, b.Triangles,
-                out result.PrecisionPositions, out result.Triangles, out List<SourceTriangle> sources, null, intersectionStrips);
+                out result.PrecisionPositions, out result.Triangles, out List<SourceTriangle> sources, null, intersectionStrips, classifiedFragments);
 
             result.TrianglesEx = new List<MeshTriangle<T>>();
 
@@ -99,7 +106,7 @@ namespace Geo
                 // Determine source of this triangle and create extended triangle data
                 MeshTriangle<T> sourceExtTriangle;
                 Tri sourceTriangle;
-                List<Vec3D> sourcePositions;
+                List<Rat3Hybrid> sourcePositions;
 
                 SourceTriangle s = sources[i];
                 //int sourceTriangleId = -1;
@@ -110,14 +117,14 @@ namespace Geo
                         // Triangle comes from mesh A
                         sourceExtTriangle = a.TrianglesEx[s.SourceTriangleIndex];
                         sourceTriangle = a.Triangles[s.SourceTriangleIndex];
-                        sourcePositions = a.Positions;
+                        sourcePositions = a.PrecisionPositions;
                     }
                     else if (s.MeshOrigin == MeshOrigin.MeshB)
                     {
                         // Triangle comes from mesh B
                         sourceExtTriangle = b.TrianglesEx[s.SourceTriangleIndex];
                         sourceTriangle = b.Triangles[s.SourceTriangleIndex];
-                        sourcePositions = b.Positions;
+                        sourcePositions = b.PrecisionPositions;
                     }
                     else
                     {
@@ -131,9 +138,9 @@ namespace Geo
                 //}
 
                 MeshTriangle<T> resultExtTriangle;
-                resultExtTriangle.V0 = sourceExtTriangle.Interpolate(InterpolationHelpers.GetBarycentricWeights(result.Positions[triangle.A], sourceTriangle, sourcePositions));
-                resultExtTriangle.V1 = sourceExtTriangle.Interpolate(InterpolationHelpers.GetBarycentricWeights(result.Positions[triangle.B], sourceTriangle, sourcePositions));
-                resultExtTriangle.V2 = sourceExtTriangle.Interpolate(InterpolationHelpers.GetBarycentricWeights(result.Positions[triangle.C], sourceTriangle, sourcePositions));
+                resultExtTriangle.V0 = sourceExtTriangle.InterpolateExact(InterpolationHelpers.GetExactBarycentricWeights(result.PrecisionPositions[triangle.A], sourceTriangle, sourcePositions));
+                resultExtTriangle.V1 = sourceExtTriangle.InterpolateExact(InterpolationHelpers.GetExactBarycentricWeights(result.PrecisionPositions[triangle.B], sourceTriangle, sourcePositions));
+                resultExtTriangle.V2 = sourceExtTriangle.InterpolateExact(InterpolationHelpers.GetExactBarycentricWeights(result.PrecisionPositions[triangle.C], sourceTriangle, sourcePositions));
                 var debug = sourceExtTriangle.GroupId;
                 //resultExtTriangle.GroupId = sourceTriangleId;// sourceExtTriangle.GroupId;
                 resultExtTriangle.GroupId = sourceExtTriangle.GroupId;

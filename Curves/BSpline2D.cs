@@ -192,9 +192,17 @@ namespace Curves
 
         public override List<CurveVertex2D> Tessellate(double maxDeviation)
         {
-            // Simple adaptive sampling based on control point count
-            int numPoints = Math.Max(50, _controlPoints.Length * 10);
-            return Tessellate(numPoints);
+            // Use the same control-hull subdivision as spatial NURBS curves.
+            // Normalize a copy: sketch splines may use an arbitrary knot domain.
+            var points = _controlPoints.Select(p => new Vec3D(p.X, p.Y, 0)).ToArray();
+            var knots = _knots.Select(u => (u - _uMin) / (_uMax - _uMin)).ToArray();
+            var curve = _weights == null
+                ? new NURBS.BSplineCurve(_degree, points, knots)
+                : new NURBS.BSplineCurve(_degree, points, _weights, knots);
+            _ = curve.Tessellate(maxDeviation, out var parameters);
+            var result = parameters.Select(EvaluateVertex).ToList();
+            result.Add(EvaluateVertex(1));
+            return result;
         }
 
         public override List<CurveVertex2D> Tessellate(int numPoints)

@@ -23,6 +23,9 @@ from .api import (
     BOOLEAN_INTERSECT,
     BOOLEAN_UNION,
     Assembly,
+    AssemblySolveResult,
+    MateResidual,
+    Interference,
     AssemblyAxisDatum,
     AssemblyOccurrence,
     AssemblyPart,
@@ -41,15 +44,22 @@ from .api import (
     set_progress_log,
 )
 
-def show(obj, title="Camber"):
-    """Open the 3D viewer (pyglet + imgui). Requires: pip install pyglet imgui[pyglet] numpy."""
-    from .view import show as _show
-    _show(obj, title=title)
+def show(obj, title="Camber", *, colors=None, checker=None):
+    """Open the CAD viewer. ``checker=True`` shows UV checks with any palette.
+
+    ``checker=None`` preserves the default: on unless custom colors are supplied.
+    """
+    from .host import run_solid
+    run_solid(obj, title=title, colors=colors, checker=checker)
+
+from .render import render_views
+from .inspection import section, Section, Measurement
 
 __all__ = [
     "Part", "Sketch", "SketchCurve", "Solid", "ProjectedSketch", "Frame", "Curve", "LoftOptions",
-    "Assembly", "AssemblyOccurrence", "AssemblyPart", "AssemblyPointDatum", "AssemblyAxisDatum", "AssemblyPlaneDatum",
-    "vec2", "vec3", "show", "frame_from_axis",
+    "AssemblySolveResult", "MateResidual", "Interference", "Assembly", "AssemblyOccurrence", "AssemblyPart", "AssemblyPointDatum", "AssemblyAxisDatum", "AssemblyPlaneDatum",
+    "vec2", "vec3", "show", "render_views", "frame_from_axis",
+    "section", "Section", "Measurement",
     "BOOLEAN_UNION", "BOOLEAN_DIFFERENCE", "BOOLEAN_INTERSECT",
     "RayHit", "triangulate", "signed_area", "is_ccw", "point_in_polygon",
     "convex_hull", "tessellate_bezier", "text_outlines",

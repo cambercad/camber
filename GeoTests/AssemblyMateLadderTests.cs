@@ -8,26 +8,21 @@ using Xunit.Abstractions;
 
 namespace GeoTests;
 
-[CollectionDefinition("GeoAPISequential", DisableParallelization = true)]
-public class GeoAPISequentialCollection
-{
-}
-
 /// <summary>
 /// Assembly Newton ladder: translation-only → small rotation → stacked identity.
 /// Two plane mates (face + clocking) leave one slide DOF, so translation checks
 /// only the constrained directions.
 /// </summary>
-[Collection("GeoAPISequential")]
 public sealed class AssemblyMateLadderTests : IDisposable
 {
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
     private const double Arm = 40;
     private const double PosTol = 0.75;
     private readonly ITestOutputHelper _output;
 
     public AssemblyMateLadderTests(ITestOutputHelper output) => _output = output;
 
-    public void Dispose() => GeoAPI.Clear();
 
     private static Quaternion RotZ(double radians)
     {
@@ -259,8 +254,8 @@ public sealed class AssemblyMateLadderTests : IDisposable
         AnchorMesh pipe1 = BuildFlangedElbow(api, "pipe1");
         AnchorMesh pipe2 = api.CopyMeshAsInstance(pipe1, "pipe2");
 
-        PlaneDatumLocal top = AssemblyDatumResolver.ResolvePlane(pipe1, "pipe1-top_flange-ExtrudeTop");
-        PlaneDatumLocal bot = AssemblyDatumResolver.ResolvePlane(pipe2, "pipe2-bottom_flange-ExtrudeBottom");
+        PlaneDatumLocal top = AssemblyDatumResolver.ResolvePlane(pipe1, "pipe1-top_flange-ExtrudeTop", api.Converter);
+        PlaneDatumLocal bot = AssemblyDatumResolver.ResolvePlane(pipe2, "pipe2-bottom_flange-ExtrudeBottom", api.Converter);
 
         Vec3D wantNormal = top.Normal;
         wantNormal.Normalize();

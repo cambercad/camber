@@ -367,7 +367,7 @@ def finalize_sketch_session(ps, session, part_var="part", sketch_var="sk"):
             name=state.get("sketch_name") or session.get("sketch_name") or "",
             frame=session.get("frame") if session.get("emit_frame") else None,
         )
-        copy_to_clipboard(code)
+        session["clipboard_copied"] = copy_to_clipboard(code)
     if not state.get("keep_sketch"):
         _unregister_session_sketch(part, sketch)
         state["sketch"] = None

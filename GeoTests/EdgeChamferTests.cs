@@ -6,7 +6,8 @@ namespace GeoTests;
 
 public class EdgeChamferTests : IDisposable
 {
-    public void Dispose() => GeoAPI.Clear();
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
 
     private static double ComputeMeshVolume(MeshNormalUV mesh) =>
         Math.Abs(MeshAnalysis.ComputeSignedMeshVolume(mesh.Positions, mesh.Triangles));

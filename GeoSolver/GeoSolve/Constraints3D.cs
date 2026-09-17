@@ -550,15 +550,11 @@ namespace GeoSolver
 
         public void GenerateEquations(List<Expr> equations, double scaling)
         {
-            // cos(angle) = (v1 · v2) / (|v1| * |v2|)
-            // We'll use: v1 · v2 = |v1| * |v2| * cos(angle)
             var dot = Vector1.Ex * Vector2.Ex + Vector1.Ey * Vector2.Ey + Vector1.Ez * Vector2.Ez;
             var len1Sq = Vector1.Ex * Vector1.Ex + Vector1.Ey * Vector1.Ey + Vector1.Ez * Vector1.Ez;
             var len2Sq = Vector2.Ex * Vector2.Ex + Vector2.Ey * Vector2.Ey + Vector2.Ez * Vector2.Ez;
-            
-            // To avoid square roots, we use: (v1 · v2)² = |v1|² * |v2|² * cos²(angle)
-            var cosAngle = Expr.Cos(Angle);
-            equations.Add(dot * dot - len1Sq * len2Sq * cosAngle * cosAngle);
+            // Squaring this equation incorrectly accepts the supplementary angle.
+            equations.Add(dot - Expr.Sqrt(len1Sq * len2Sq) * Expr.Cos(Angle));
         }
 
         public IEnumerator<Param> GetEnumerator()
@@ -566,6 +562,7 @@ namespace GeoSolver
             foreach (Param p in Vector1) yield return p;
             foreach (Param p in Vector2) yield return p;
             foreach (Param p in Angle) yield return p;
+
         }
 
         IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }

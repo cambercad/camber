@@ -72,6 +72,8 @@ class GeomTests(unittest.TestCase):
         hit = part.raycast(cube, (0.5, 0.5, -1), (0, 0, 1))
         self.assertIsNotNone(hit)
         self.assertAlmostEqual(0.0, hit.point.z, places=4)
+        self.assertIsNone(part.raycast(cube, (2, 2, -1), (0, 0, 1)))
+        self.assertIsNone(part.raycast(cube, (.5, .5, -1), (0, 0, -1)))
         rebuilt = part.solid_from_mesh(pts, tris, name="copy")
         self.assertAlmostEqual(cube.volume(), rebuilt.volume(), places=3)
 

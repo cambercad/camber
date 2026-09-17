@@ -109,6 +109,21 @@ namespace Curves
                         m[i] = 0.5 * (p[i + 1] - p[i - 1]);
                 }
 
+                // A repeated endpoint denotes a closed per-knot guide. Match
+                // the derivative magnitude across its seam even when the two
+                // adjacent chords have different lengths. Open and two-end
+                // constructor conventions remain unchanged.
+                if (n > 2 && (p[0] - p[n - 1]).LengthSquared() == 0 &&
+                    knotTangentDirections[0].HasValue && knotTangentDirections[n - 1].HasValue)
+                {
+                    var first = knotTangentDirections[0].Value;
+                    var last = knotTangentDirections[n - 1].Value;
+                    if (first.LengthSquared() == 0 || last.LengthSquared() == 0 ||
+                        (first.Normalized() - last.Normalized()).LengthSquared() > 1e-24)
+                        throw new ArgumentException("Closed Hermite endpoint tangent directions must agree.", nameof(knotTangentDirections));
+                    double reference = .5 * ((p[1] - p[0]).Length() + (p[n - 1] - p[n - 2]).Length());
+                    m[0] = m[n - 1] = HermiteEndDerivativeFromDirection(first, reference);
+                }
                 return m;
             }
 
@@ -199,7 +214,48 @@ namespace Curves
                 }
             }
 
+            TransportFrames(result);
             return result;
+        }
+
+        // The pointwise perpendicular in Evaluate is only a seed. Transport
+        // that seed along the guide instead of switching reference axes.
+        private static void TransportFrames(List<CurveVertex3D> samples)
+        {
+            if (samples.Count < 2) return;
+            var distances = new double[samples.Count];
+            for (int i = 1; i < samples.Count; i++)
+            {
+                var previous = samples[i - 1];
+                var current = samples[i];
+                var axis = Vec3DOps.Cross(previous.Tangent, current.Tangent);
+                double cosine = Math.Clamp(Vec3DOps.Dot(previous.Tangent, current.Tangent), -1, 1);
+                if (cosine <= -1 + 1e-12)
+                    throw new ArgumentException("Hermite sweep has opposing adjacent tangents; its orientation is undefined.");
+                var up = previous.Up + Vec3DOps.Cross(axis, previous.Up) +
+                    Vec3DOps.Cross(axis, Vec3DOps.Cross(axis, previous.Up)) / (1 + cosine);
+                current.Up = (up - current.Tangent * Vec3DOps.Dot(up, current.Tangent)).Normalized();
+                samples[i] = current;
+                distances[i] = distances[i - 1] + (current.Origin - previous.Origin).Length();
+            }
+            if ((samples[0].Origin - samples[^1].Origin).LengthSquared() == 0 &&
+                (samples[0].Tangent - samples[^1].Tangent).LengthSquared() < 1e-24)
+            {
+                // Distribute closed-loop transport holonomy by travelled
+                // distance, avoiding an orientation jump at the seam.
+                var first = samples[0]; var last = samples[^1];
+                double correction = Math.Atan2(Vec3DOps.Dot(first.Tangent,
+                    Vec3DOps.Cross(last.Up, first.Up)), Vec3DOps.Dot(last.Up, first.Up));
+                for (int i = 1; i < samples.Count; i++)
+                {
+                    var current = samples[i];
+                    double angle = correction * distances[i] / distances[^1];
+                    current.Up = current.Up * Math.Cos(angle) +
+                        Vec3DOps.Cross(current.Tangent, current.Up) * Math.Sin(angle);
+                    samples[i] = current;
+                }
+                last = samples[^1]; last.Up = first.Up; samples[^1] = last;
+            }
         }
 
         private static void Hermite(double s, Vec3D p0, Vec3D m0, Vec3D p1, Vec3D m1, out Vec3D p, out Vec3D dpds)

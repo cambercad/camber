@@ -130,6 +130,7 @@ namespace Geo
         private static void EmitPlanarCapFromSketch2D(
             Vec2D[] sketchLoop,
             Vec3D[] worldRow,
+            Rat3Hybrid[] preciseRim,
             Vec3D capNormalUnit,
             bool flipWinding,
             int groupId,
@@ -141,8 +142,7 @@ namespace Geo
             List<Vec2D> uv,
             List<Rat3Hybrid> precisePositions,
             List<Tri> triangles,
-            List<int> triangleGroups,
-            int[] sideRimVertexIndices = null)
+            List<int> triangleGroups)
         {
             int n = sketchLoop.Length;
             if (worldRow == null || worldRow.Length != n)
@@ -164,7 +164,7 @@ namespace Geo
             double span = Math.Max(max.X - min.X, max.Y - min.Y);
 
             // Dedicated cap rim verts: independent UV island from minimum-area rectangle in sketch space.
-            // Side rim indices (if provided) only receive blended normals; watertightness still holds via coincident positions.
+            // The cap is a distinct planar face; its sharp rim retains separate normals.
             Vec2D[] rimUv = AutoUV.ComputePlanarUvFromPoints2D(sketchLoop);
             var rimIdx = new int[n];
             int capBase = vertices.Count;
@@ -172,23 +172,10 @@ namespace Geo
             {
                 Vec3D pos = worldRow[i];
                 rimIdx[i] = capBase + i;
-                vertices.Add(pos);
+                vertices.Add(converter.Convert(preciseRim[i]));
                 normals.Add(capNormalUnit);
                 uv.Add(rimUv[i]);
-                precisePositions.Add(MeshConstructionHelpers.ToPrecise(converter, pos));
-            }
-
-            if (sideRimVertexIndices != null)
-            {
-                if (sideRimVertexIndices.Length != n)
-                    throw new ArgumentException("sideRimVertexIndices must match sketchLoop length.", nameof(sideRimVertexIndices));
-                for (int i = 0; i < n; i++)
-                {
-                    int vi = sideRimVertexIndices[i];
-                    if (vi < 0 || vi >= normals.Count)
-                        throw new ArgumentOutOfRangeException(nameof(sideRimVertexIndices));
-                    normals[vi] = (normals[vi] + capNormalUnit).Normalized();
-                }
+                precisePositions.Add(preciseRim[i]);
             }
 
             SanitizeSketchLoopForCapTriangulation(sketchLoop, span, out var cleanSketch, out var cleanToOrig);
@@ -204,20 +191,25 @@ namespace Geo
             if (useFanCap)
             {
                 Vec3D centroid = new Vec3D(0, 0, 0);
+                var preciseCentroid = new Rat3Hybrid(0, 0, 0);
                 Vec2D sketchCentroid = new Vec2D(0, 0);
                 for (int i = 0; i < n; i++)
                 {
                     centroid += worldRow[i];
+                    preciseCentroid += preciseRim[i];
+                    preciseCentroid.Simplify();
                     sketchCentroid.X += sketchLoop[i].X;
                     sketchCentroid.Y += sketchLoop[i].Y;
                 }
                 centroid = centroid * (1.0 / n);
                 sketchCentroid = sketchCentroid * (1.0 / n);
                 int ci = vertices.Count;
-                vertices.Add(centroid);
+                preciseCentroid /= new BigRationalHybrid(n);
+                preciseCentroid.Simplify();
+                vertices.Add(converter.Convert(preciseCentroid));
                 normals.Add(capNormalUnit);
                 uv.Add(AutoUV.ComputePlanarUvPoint(sketchCentroid, sketchLoop));
-                precisePositions.Add(MeshConstructionHelpers.ToPrecise(converter, centroid));
+                precisePositions.Add(preciseCentroid);
 
                 for (int i = 0; i < n; i++)
                 {
@@ -227,9 +219,9 @@ namespace Geo
                     Tri newTri = flipWinding
                         ? new Tri(rimIdx[i], rimIdx[j], ci)
                         : new Tri(rimIdx[j], rimIdx[i], ci);
-                    Vec3D pa = worldRow[i];
-                    Vec3D pb = worldRow[j];
-                    if (MeshConstructionHelpers.IsDegenerateTriangleMesh(newTri, pa, pb, centroid, minSquaredCrossNorm))
+                    Vec3D pa = vertices[rimIdx[i]];
+                    Vec3D pb = vertices[rimIdx[j]];
+                    if (MeshConstructionHelpers.IsDegenerateTriangleMesh(newTri, pa, pb, vertices[ci], minSquaredCrossNorm))
                         continue;
                     triangles.Add(newTri);
                     triangleGroups.Add(groupId);
@@ -248,7 +240,7 @@ namespace Geo
 
             List<Tri> capTris = TriangulateSimpleClosedCapInSketchSpace(cleanSketch, span);
 
-            EmitCapTrisFromClean(capTris, cleanToOrig, rimIdx, flipWinding, groupId, worldRow, minSquaredCrossNorm, triangles, triangleGroups);
+            EmitCapTrisFromClean(capTris, cleanToOrig, rimIdx, flipWinding, groupId, vertices, minSquaredCrossNorm, triangles, triangleGroups);
         }
 
         private static void EmitCapTrisFromClean(
@@ -257,7 +249,7 @@ namespace Geo
             int[] rimIdx,
             bool flipWinding,
             int groupId,
-            Vec3D[] worldRow,
+            IReadOnlyList<Vec3D> vertices,
             double minSquaredCrossNorm,
             List<Tri> triangles,
             List<int> triangleGroups)
@@ -273,9 +265,9 @@ namespace Geo
                     ? new Tri(rimIdx[oa], rimIdx[ob], rimIdx[oc])
                     : new Tri(rimIdx[oa], rimIdx[oc], rimIdx[ob]);
 
-                Vec3D pa = worldRow[oa];
-                Vec3D pb = worldRow[ob];
-                Vec3D pc = worldRow[oc];
+                Vec3D pa = vertices[rimIdx[oa]];
+                Vec3D pb = vertices[rimIdx[ob]];
+                Vec3D pc = vertices[rimIdx[oc]];
                 if (MeshConstructionHelpers.IsDegenerateTriangleMesh(newTri, pa, pb, pc, minSquaredCrossNorm))
                     continue;
 

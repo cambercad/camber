@@ -20,6 +20,13 @@ public class NativeAssembly
 
     public string Name { get { return _inner.Name; } }
 
+    public NativeSection Section(NativeFrame plane) => new(_inner.Section(plane.Native));
+
+    public NativeInterferences Interferences(double minVolume)
+    {
+        return new NativeInterferences(_inner.Interferences(minVolume));
+    }
+
     public int SolveAfterEveryConstraint
     {
         get { return _inner.SolveAfterEveryConstraint ? 1 : 0; }
@@ -54,6 +61,18 @@ public class NativeAssembly
         return new NativeAssemblyOccurrence(_inner.AddSubAssembly(child.Native, new Vec3D(px, py, pz), orientation));
     }
 
+    public NativeAssemblyOccurrences PatternLinearSubassembly(NativeAssemblyOccurrence seed,int count,double x,double y,double z)
+        => new(_inner.PatternLinear(seed.Native,count,new Vec3D(x,y,z)));
+
+    public NativeAssemblyOccurrences PatternCircularSubassembly(NativeAssemblyOccurrence seed,int count,NativeFrame axis,double angle)
+        => new(_inner.PatternCircular(seed.Native,count,axis.Native,angle));
+
+    public NativeAssemblyParts PatternLinear(NativeAssemblyPart seed,int count,double x,double y,double z)
+        => new(_inner.PatternLinear(seed.Native,count,new Vec3D(x,y,z)));
+
+    public NativeAssemblyParts PatternCircular(NativeAssemblyPart seed,int count,NativeFrame axis,double angle)
+        => new(_inner.PatternCircular(seed.Native,count,axis.Native,angle));
+
     public void FixPart(NativeAssemblyPart part)
     {
         _inner.FixPart(part.Native);
@@ -77,6 +96,12 @@ public class NativeAssembly
     {
         return new NativeAssemblyOccurrence(_inner.GetSubAssemblies()[index]);
     }
+
+    public NativeAssemblyPart MirrorPart(NativeAssemblyPart seed, NativeFrame plane, string name)
+        => new(_inner.Mirror(seed.Native, plane.Native, NativeUtil.EmptyToNull(name)));
+
+    public NativeAssemblyOccurrence MirrorSubAssembly(NativeAssemblyOccurrence seed, NativeFrame plane, string name)
+        => new(_inner.Mirror(seed.Native, plane.Native, NativeUtil.EmptyToNull(name)));
 
     public double GetWorldPoseX(NativeAssemblyPart part)
     {
@@ -149,14 +174,7 @@ public class NativeAssembly
     public string SolveConstraints()
     {
         SolveResult result = _inner.SolveConstraintsDetailed();
-        return string.Format(
-            System.Globalization.CultureInfo.InvariantCulture,
-            "converged={0} sse={1:G6} n={2} m={3} msg={4}",
-            result.Converged,
-            result.SumOfSquaredErrors,
-            result.NumParameters,
-            result.NumEquations,
-            result.Message ?? "");
+        return AssemblyDiagnosticsJson.Serialize(result,_inner.CharacteristicLength,_inner.GetMateResiduals());
     }
 
     public string DumpDisplay()
@@ -164,6 +182,8 @@ public class NativeAssembly
         return DisplayPack.PackAssembly(_inner);
     }
 
+    /// <summary>World frame of an oriented face, preserving its authored in-plane axis.
+    /// Repeated bodies require a qualified occurrence path.</summary>
     public NativeFrame GetPlaneFrame(string reference)
     {
         if (string.IsNullOrWhiteSpace(reference))
@@ -171,34 +191,36 @@ public class NativeAssembly
 
         var parts = new List<AssemblyPart>();
         var poses = new List<Transform>();
-        _inner.CollectLeafWorldPoses(parts, poses);
+        var paths = new List<string>();
+        _inner.CollectLeafWorldPoses(parts, poses, paths);
+        var matches = new List<(int Index, string LocalReference)>();
         for (int i = 0; i < parts.Count; i++)
         {
-            AssemblyPart part = parts[i];
-            string prefix = (part.Mesh.Name ?? "") + ":";
-            if (!reference.StartsWith(prefix, System.StringComparison.Ordinal))
-                continue;
-
-            string localReference = reference.Substring(prefix.Length);
-            if (!part.Mesh.TryGetPlaneFromPatch(localReference, out PlaneSurfaceParams plane))
-                throw new System.ArgumentException($"'{reference}' does not resolve to a planar surface.");
-
-            Transform pose = poses[i];
-            Vec3D localOrigin = plane.Origin;
-            if (part.Mesh.TryGetSurface(localReference, out UVSurface surface) && surface.IsPlanar())
-                localOrigin = surface.ApproximatePlanarSurfaceCenter(out _, out _, out _);
-            Vec3D origin = TransformMath.TransformPoint(in pose, localOrigin);
-            Vec3D z = TransformMath.TransformDirection(in pose, plane.Normal);
-            Vec3D x = TransformMath.TransformDirection(in pose, plane.RefDir);
-            z.Normalize();
-            x -= Vec3DOps.Dot(x, z) * z;
-            if (x.LengthSquared() < 1e-12)
-                x = Vec3DOps.GetOrthoNormal(z);
-            x.Normalize();
-            Vec3D y = Vec3DOps.Cross(z, x);
-            y.Normalize();
-            x = Vec3DOps.Cross(y, z);
-            x.Normalize();
+            string qualifiedPrefix = paths[i] + ":";
+            string shortPrefix = (parts[i].Mesh.Name ?? "") + ":";
+            if (reference.StartsWith(qualifiedPrefix, System.StringComparison.Ordinal))
+                matches.Add((i, reference.Substring(qualifiedPrefix.Length)));
+            else if (reference.StartsWith(shortPrefix, System.StringComparison.Ordinal))
+                matches.Add((i, reference.Substring(shortPrefix.Length)));
+        }
+        if (matches.Count > 1)
+        {
+            var candidates = new List<string>();
+            foreach (var match in matches)
+                candidates.Add(paths[match.Index] + ":" + match.LocalReference);
+            throw new System.ArgumentException(
+                $"'{reference}' is ambiguous; use an occurrence path: {string.Join(", ", candidates)}.");
+        }
+        foreach (var match in matches)
+        {
+            AssemblyPart part = parts[match.Index];
+            string localReference = match.LocalReference;
+            CoordinateSystem localFrame = part.GetPlaneFrame(localReference);
+            Transform pose = poses[match.Index];
+            Vec3D origin = TransformMath.TransformPoint(in pose, localFrame.Origin);
+            Vec3D x = TransformMath.TransformDirection(in pose, localFrame.X);
+            Vec3D y = TransformMath.TransformDirection(in pose, localFrame.Y);
+            Vec3D z = TransformMath.TransformDirection(in pose, localFrame.Z);
             return new NativeFrame(new CoordinateSystem(origin, x, y, z));
         }
         throw new System.ArgumentException($"'{reference}' does not resolve to an assembly surface.");
@@ -457,4 +479,35 @@ public class NativeAssemblyPlaneDatum
     }
 
     public string Entity { get { return Native.Entity ?? ""; } }
+}
+
+
+[DotWrapExpose]
+public class NativeInterferences
+{
+    readonly IReadOnlyList<AssemblyInterference> _items;
+    internal NativeInterferences(IReadOnlyList<AssemblyInterference> items) { _items = items; }
+    public int Count { get { return _items.Count; } }
+    public string First(int index) => _items[index].First;
+    public string Second(int index) => _items[index].Second;
+    public double Volume(int index) => _items[index].Volume;
+    public NativeSolid Geometry(int index) => new NativeSolid(_items[index].Geometry);
+}
+
+[DotWrapExpose]
+public class NativeAssemblyParts
+{
+    private readonly IReadOnlyList<AssemblyPart> _parts;
+    internal NativeAssemblyParts(IReadOnlyList<AssemblyPart> parts) { _parts=parts; }
+    public int Count => _parts.Count;
+    public NativeAssemblyPart Get(int index) => new(_parts[index]);
+}
+
+[DotWrapExpose]
+public class NativeAssemblyOccurrences
+{
+    private readonly IReadOnlyList<AssemblyOccurrence> _items;
+    internal NativeAssemblyOccurrences(IReadOnlyList<AssemblyOccurrence> items) { _items=items; }
+    public int Count => _items.Count;
+    public NativeAssemblyOccurrence Get(int index) => new(_items[index]);
 }

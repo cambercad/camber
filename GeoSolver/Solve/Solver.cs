@@ -8,6 +8,10 @@ namespace GeoSolver
         public const double CONVERGE_TOLERANCE = LENGTH_EPS / 1e2;
         public const int SparseParameterThreshold = 80;
 
+        /// <summary>Acceptance threshold for normalized equation residuals.</summary>
+        public static double ResidualTolerance(bool regularizedContact) =>
+            regularizedContact ? Math.Max(CONVERGE_TOLERANCE, 5e-5) : CONVERGE_TOLERANCE;
+
         public static bool NewtonSolve(Expr e, Param p, double eps = 1e-12)
         {
             double f = e.Evaluate();
@@ -53,14 +57,8 @@ namespace GeoSolver
                 return new SolveResult(true, 0, numParameters, 0);
 
             // Regularized Fischer–Burmeister residuals settle near ~sqrt(ε)≈1e-5, not LENGTH_EPS/100.
-            // Soft overconstrained kinematics keep a small consistent-redundancy floor.
-            double residualTol;
-            if (nonNegativeParams != null && nonNegativeParams.Count > 0)
-                residualTol = Math.Max(CONVERGE_TOLERANCE, 5e-5);
-            else if (allowSoftOverconstrained)
-                residualTol = LENGTH_EPS;
-            else
-                residualTol = CONVERGE_TOLERANCE;
+            // Redundant equality equations change the linear solve, not the required accuracy.
+            double residualTol = ResidualTolerance(nonNegativeParams != null && nonNegativeParams.Count > 0);
 
             double[] b = new double[Math.Max(numEquations, 1)];
             FillResidual(equations, b);
@@ -208,6 +206,9 @@ namespace GeoSolver
                     }
                 }
 
+                // Fewer equations than parameters does not imply independent
+                // rows: e.g. a plane-normal mate has a redundant component.
+                AddTraceDamping(work, numEquations);
                 double[] rhs = new double[numEquations];
                 Array.Copy(b, rhs, numEquations);
                 if (SolveLinearSystem(scratch, work, rhs, numEquations))
@@ -262,10 +263,14 @@ namespace GeoSolver
             double trace = 0;
             for (int r = 0; r < n; r++)
                 trace += work[r, r];
-            double damp = 1e-8 * (1.0 + Math.Abs(trace) / Math.Max(1, n));
+            double damp = TraceDamping(trace, n);
             for (int r = 0; r < n; r++)
                 work[r, r] += damp;
         }
+
+        // One regularization policy for dense and sparse normal equations.
+        internal static double TraceDamping(double trace, int dimension) =>
+            1e-8 * (1.0 + Math.Abs(trace) / Math.Max(1, dimension));
 
         internal static double[] BuildColumnScales(
             IEquationContainer equations,

@@ -281,7 +281,7 @@
             for (int i = 0; i < l; ++i)
             {
                 TriangleEdge e = edges[i];
-                if (e.NeighbourIndex2 != -1)
+                if (e.NeighbourIndex1 >= 0 && e.NeighbourIndex2 >= 0)
                 {
                     Tri t1 = triangles[e.NeighbourIndex1];
                     Tri t2 = triangles[e.NeighbourIndex2];
@@ -335,7 +335,7 @@
             for (int i = 0; i < l; ++i)
             {
                 TriangleEdge e = edges[i];
-                if (e.NeighbourIndex2 >= 0)
+                if (e.NeighbourIndex1 >= 0 && e.NeighbourIndex2 >= 0)
                 {
                     Tri t1 = triangles[e.NeighbourIndex1];
                     Tri t2 = triangles[e.NeighbourIndex2];
@@ -388,7 +388,7 @@
                                 dict[e] = edge;
                             }
                             else
-                                throw new Exception("This can happen if there are triangle with duplicate indices (degenerate zero area triangle)");
+                                throw new Exception($"Non-manifold edge ({s}, {e}): more than two incident triangles (existing {edge.NeighbourIndex1}, {edge.NeighbourIndex2}; additional {i}). Check duplicate faces and touching solid boundaries.");
                         }
                         else
                         {
@@ -425,12 +425,15 @@
                                 dict[e] = edge;
                             }
                             else
-                                throw new Exception("This can happen if there are triangle with duplicate indices (degenerate zero area triangle)");
+                                throw new Exception($"Non-manifold edge ({s}, {e}): more than two incident triangles (existing {edge.NeighbourIndex1}, {edge.NeighbourIndex2}; additional {i}). Check duplicate faces and touching solid boundaries.");
                         }
-                        edge.NeighbourIndex2 = i;
-                        edge.Neighbour2EdgeType = TriEdgeType.BC;
-                        //Write back (Edge is a value type, a struct!!!)
-                        dict[e] = edge;
+                        else
+                        {
+                            edge.NeighbourIndex2 = i;
+                            edge.Neighbour2EdgeType = TriEdgeType.BC;
+                            // Preserve the invalid-edge sentinel once a third face is found.
+                            dict[e] = edge;
+                        }
                     }
                     else
                     {
@@ -459,12 +462,15 @@
                                 dict[e] = edge;
                             }
                             else
-                                throw new Exception("This can happen if there are triangle with duplicate indices (degenerate zero area triangle)");
+                                throw new Exception($"Non-manifold edge ({s}, {e}): more than two incident triangles (existing {edge.NeighbourIndex1}, {edge.NeighbourIndex2}; additional {i}). Check duplicate faces and touching solid boundaries.");
                         }
-                        edge.NeighbourIndex2 = i;
-                        edge.Neighbour2EdgeType = TriEdgeType.CA;
-                        //Write back (Edge is a value type, a struct!!!)
-                        dict[e] = edge;
+                        else
+                        {
+                            edge.NeighbourIndex2 = i;
+                            edge.Neighbour2EdgeType = TriEdgeType.CA;
+                            // Preserve the invalid-edge sentinel once a third face is found.
+                            dict[e] = edge;
+                        }
                     }
                     else
                     {

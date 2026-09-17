@@ -51,7 +51,17 @@ namespace Curves
                 return copy;
             }
 
-            if (source is CubicHermiteSpline2D || source is Ellipse2D)
+            if (source is Ellipse2D ellipse)
+            {
+                var center = map(ellipse.Center);
+                var major = map(ellipse.Center + ellipse.MajorAxis) - center;
+                var minor = map(ellipse.Center + new Vec2D(-ellipse.MajorAxis.Y,ellipse.MajorAxis.X)) - center;
+                double sign = major.X*minor.Y-major.Y*minor.X < 0 ? -1 : 1;
+                return factory.CreateEllipse2D(center,major,ellipse.MinorAxisLength,
+                    sign*ellipse.StartAngle,sign*ellipse.EndAngle,source.Flags);
+            }
+
+            if (source is CubicHermiteSpline2D)
             {
                 var copy = source.GetCopy();
                 var refPts = source.ToReferencePoints();

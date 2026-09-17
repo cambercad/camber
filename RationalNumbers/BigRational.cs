@@ -451,16 +451,13 @@ namespace GeoCore
             }
 
             Numerator = significand;
-            Denominator = 1 << 52;
-
-            if (exponent > 0)
-            {
-                Numerator = BigInteger.Pow(Numerator, exponent);
-            }
-            else if (exponent < 0)
-            {
-                Denominator = BigInteger.Pow(Denominator, -exponent);
-            }
+            // SplitDoubleIntoParts returns value = sign * significand * 2^exponent.
+            // Shift powers of two; exponentiating the significand changes the value.
+            Denominator = BigInteger.One;
+            if (exponent >= 0)
+                Numerator <<= exponent;
+            else
+                Denominator <<= -exponent;
             if (sign < 0)
             {
                 Numerator = BigInteger.Negate(Numerator);
@@ -719,12 +716,16 @@ namespace GeoCore
 
         public static BigRational operator +(BigRational r1, BigRational r2)
         {
+            if (r1.Denominator == r2.Denominator)
+                return new BigRational(r1.Numerator + r2.Numerator, r1.Denominator);
             // a/b + c/d  == (ad + bc)/bd
             return new BigRational((r1.Numerator * r2.Denominator) + (r1.Denominator * r2.Numerator), (r1.Denominator * r2.Denominator));
         }
 
         public static BigRational operator -(BigRational r1, BigRational r2)
         {
+            if (r1.Denominator == r2.Denominator)
+                return new BigRational(r1.Numerator - r2.Numerator, r1.Denominator);
             // a/b - c/d  == (ad - bc)/bd
             return new BigRational((r1.Numerator * r2.Denominator) - (r1.Denominator * r2.Numerator), (r1.Denominator * r2.Denominator));
         }

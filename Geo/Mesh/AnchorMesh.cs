@@ -12,10 +12,49 @@ namespace Geo
         public MeshNormalUV Mesh;
         public List<GroupEdge> GroupEdges; //These are the anchors (plus their end points and mid points)
 
+        private List<GroupEdge> edgeReferenceSnapshot;
+        private Guid edgeReferenceScope;
+
+        internal Guid CurrentEdgeReferenceScope
+        {
+            get
+            {
+                if (!ReferenceEquals(edgeReferenceSnapshot, GroupEdges))
+                {
+                    edgeReferenceSnapshot = GroupEdges;
+                    edgeReferenceScope = Guid.NewGuid();
+                }
+                return edgeReferenceScope;
+            }
+        }
+
+        /// <summary>
+        /// Return a selectable feature edge. Ambiguous diagnostic names are
+        /// qualified for this exact mesh snapshot; reacquire them after rebuilding.
+        /// Authored unambiguous provenance names remain ordinary strings.
+        /// </summary>
+        public string GetEdgeReference(int index)
+        {
+            EnsureCoplanarPostProcessed();
+            if (index < 0 || index >= GroupEdges.Count)
+                throw new ArgumentOutOfRangeException(nameof(index));
+            return FaceLineageEdges.Reference(this, GroupEdges[index]);
+        }
+
         public Dictionary<string, int> extendedNameToGroupId;
         public Dictionary<int, string> groupIdToExtendedName;
 
         public Dictionary<string, SurfaceMetaData> surfaceMetaData;
+        internal Dictionary<int, FaceLineage> FaceLineages = new();
+        internal HashSet<string> AmbiguousFaceReferences = new(StringComparer.Ordinal);
+
+        private void InitializeFaceLineage(Dictionary<int, FaceLineage> inherited = null)
+        {
+            FaceLineages = inherited == null ? new() : new(inherited);
+            foreach (var (id, label) in groupIdToExtendedName)
+                if (!FaceLineages.ContainsKey(id)) FaceLineages[id] = new FaceLineage(new[] { label });
+        }
+
 
         /// <summary>
         /// True for closed solid meshes (Extrude/Loft/CSG volumes, watertight imports).
@@ -34,6 +73,7 @@ namespace Geo
 
         private bool _rigidBodyActive;
         private Vec3D[] _rigidRestLocal;
+        private Rat3Hybrid[] _rigidRestExact;
         private Dictionary<string, SurfaceMetaData> _rigidRestMeta;
         private CoordinateConverter _rigidConverter;
         private bool _rigidConverterSet;
@@ -64,7 +104,8 @@ namespace Geo
         {
         }
 
-        internal AnchorMesh(string name, MeshNormalUV mesh, Dictionary<string, int> extendedNameToGroupId, Dictionary<string, SurfaceMetaData> surfaceMetaData, bool deferCoplanarPostProcess, bool preferLexClosedLoopStarts = false, bool isVolume = true)
+        internal AnchorMesh(string name, MeshNormalUV mesh, Dictionary<string, int> extendedNameToGroupId, Dictionary<string, SurfaceMetaData> surfaceMetaData, bool deferCoplanarPostProcess, bool preferLexClosedLoopStarts = false, bool isVolume = true,
+            Dictionary<int, FaceLineage> faceLineages = null, HashSet<string> ambiguousReferences = null)
         {
             Name = name;
             Mesh = mesh;
@@ -75,6 +116,8 @@ namespace Geo
             this.surfaceMetaData = surfaceMetaData;
             PreferLexClosedLoopStarts = preferLexClosedLoopStarts;
             IsVolume = isVolume;
+            InitializeFaceLineage(faceLineages);
+            if (ambiguousReferences != null) AmbiguousFaceReferences.UnionWith(ambiguousReferences);
             FinishConstruction(deferCoplanarPostProcess);
         }
 
@@ -91,7 +134,8 @@ namespace Geo
             bool deferCoplanarPostProcess,
             bool skipCoplanarFusion = false,
             bool isVolume = true,
-            bool preserveTriangulation = false)
+            bool preserveTriangulation = false,
+            Dictionary<int, FaceLineage> faceLineages = null, HashSet<string> ambiguousReferences = null)
         {
             Name = name;
             Mesh = mesh;
@@ -107,6 +151,8 @@ namespace Geo
             }
 
             IsVolume = isVolume;
+            InitializeFaceLineage(faceLineages);
+            if (ambiguousReferences != null) AmbiguousFaceReferences.UnionWith(ambiguousReferences);
             FinishConstruction(deferCoplanarPostProcess, skipCoplanarFusion, preserveTriangulation);
         }
 
@@ -117,6 +163,7 @@ namespace Geo
         {
             if (preserveTriangulation)
             {
+                ValidateLineageReferences(Mesh.GetTriangleGroups());
                 GroupEdges = GroupEdgeExtractor.ExtractGroupEdges(
                     Mesh.Triangles, Mesh.GetTriangleGroups(), Mesh.Positions, null,
                     groupIdToExtendedName, surfaceMetaData, PreferLexClosedLoopStarts);
@@ -155,7 +202,7 @@ namespace Geo
             if (!IsVolume || Mesh.Triangles.Count == 0)
                 return;
 
-            if (!MeshAnalysis.IsWatertightMesh(Mesh.Positions, Mesh.Triangles, true))
+            if (!MeshAnalysis.IsWatertightMesh(Mesh.PrecisionPositions, Mesh.Triangles, true))
                 throw new Exception("Mesh is not watertight");
             if (!MeshAnalysis.AreTrianglesConsistentlyOriented(Mesh.PrecisionPositions, Mesh.Triangles, true))
                 throw new Exception("Mesh triangles are not consistently oriented");
@@ -195,7 +242,7 @@ namespace Geo
 
         /// <summary>
         /// Checks if a group has any vertex data discontinuities (UV seams, sharp edges, etc.).
-        /// Groups with discontinuities should not be retriangulated or Delaunay-optimized 
+        /// Groups with discontinuities should not be retriangulated or Delaunay-optimized
         /// as this would lose per-corner vertex data.
         /// </summary>
         private bool GroupHasVertexDataDiscontinuities(int groupId, List<int> triangleIndices)
@@ -207,7 +254,7 @@ namespace Geo
             {
                 var tri = Mesh.Triangles[triIndex];
                 var triEx = Mesh.TrianglesEx[triIndex];
-                
+
                 // Only check triangles in this group
                 if (triEx.GroupId != groupId)
                     continue;
@@ -268,11 +315,19 @@ namespace Geo
             if (idsOfPlanarGroups.Count > 0)
             {
                 HashSet<int> retriangulatedGroupIds = new HashSet<int>();
+                HashSet<int> affineUvGroups = new();
                 if (!skipCoplanarFusion)
                 {
+                    var oldGroupsForLineage = Mesh.GetTriangleGroups();
                     var representativeTriangles = CoplanarGroupFusion.FuseCoplanarGroups(Mesh.Triangles, Mesh.GetTriangleGroups(), Mesh.PrecisionPositions,
                         groupIdToExtendedName, idsOfPlanarGroups, out var newGroupPerTriangle, out var newGroupToId);
+                    var mergedLineage = new Dictionary<int, FaceLineage>();
+                    foreach (var group in Enumerable.Range(0, newGroupPerTriangle.Count).GroupBy(i => newGroupPerTriangle[i]))
+                        mergedLineage[group.Key] = FaceLineage.Merge(group.Select(i => oldGroupsForLineage[i]).Distinct().Select(id => FaceLineages[id]));
+                    FaceLineages = mergedLineage;
+
                     groupIdToExtendedName = newGroupToId;
+                    RefreshFusedLineageNames();
                     Mesh.SetTriangleGroups(newGroupPerTriangle);
 
                     CoplanarGroupFusionUVUpdate.UpdateUVsForFusedGroups(
@@ -281,12 +336,13 @@ namespace Geo
                         Mesh.TrianglesEx,
                         newGroupPerTriangle,
                         representativeTriangles);
+                    affineUvGroups.UnionWith(representativeTriangles.Keys);
 
                     retriangulatedGroupIds = CoplanarGroupRetriangulation.RetriangulateCoplanar(
                         Mesh.PrecisionPositions, Mesh.Triangles, Mesh.TrianglesEx, idsOfPlanarGroups);
                 }
 
-                CleanMesh(Mesh.PrecisionPositions, Mesh.Triangles, Mesh.TrianglesEx);
+                CleanMesh(Mesh.PrecisionPositions, Mesh.Triangles, Mesh.TrianglesEx, affineUvGroups);
 
                 int triCountBeforeDelaunay = Mesh.Triangles.Count;
                 DelaunayFlipper.MakeDelaunay(Mesh.PrecisionPositions, Mesh.Triangles, Mesh.TrianglesEx, idsOfPlanarGroups, retriangulatedGroupIds);
@@ -307,21 +363,34 @@ namespace Geo
         private void SplitDisconnectedPatchGroups()
         {
             var groupIdPerTriangle = Mesh.GetTriangleGroups();
+            var originalLineageGroups = groupIdPerTriangle.ToArray();
             bool changed = DisconnectedGroupSplit.SplitDisconnectedGroups(
                 Mesh.Triangles,
                 Mesh.Positions,
                 groupIdPerTriangle,
                 groupIdToExtendedName,
                 surfaceMetaData,
-                count =>
-                {
-                    int baseId = GeoAPI.GetBaseGroupIndex();
-                    GeoAPI.IncrementBaseGroupIndex(count);
-                    return baseId;
-                });
+                GeoAPI.ReserveGroupIds);
 
             if (changed)
+            {
+                var before = new Dictionary<int, FaceLineage>(FaceLineages);
+                var splitGroups = Enumerable.Range(0, groupIdPerTriangle.Count)
+                    .GroupBy(i => originalLineageGroups[i])
+                    .Where(group => group.Select(i => groupIdPerTriangle[i]).Distinct().Count() > 1)
+                    .Select(group => group.Key).ToHashSet();
+                var assigned = new HashSet<int>();
+                for (int i = 0; i < groupIdPerTriangle.Count; i++)
+                {
+                    if (!assigned.Add(groupIdPerTriangle[i])) continue;
+                    var old = before[originalLineageGroups[i]];
+                    FaceLineages[groupIdPerTriangle[i]] = splitGroups.Contains(originalLineageGroups[i])
+                        ? new FaceLineage(old.Roots, old.Separators, true, old.Supported) : old;
+                }
                 Mesh.SetTriangleGroups(groupIdPerTriangle);
+            }
+            ValidateLineageReferences(groupIdPerTriangle);
+
 
             // Fusion and splits may leave the reverse map stale — rebuild from survivors.
             extendedNameToGroupId = EntityNaming.BuildNameToGroupId(groupIdToExtendedName);
@@ -341,7 +410,8 @@ namespace Geo
         private void CleanMesh(
             List<Rat3Hybrid> positions,
             List<Tri> triangles,
-            List<MeshTriangle<TriangleVertexNormalUV>> trianglesEx) 
+            List<MeshTriangle<TriangleVertexNormalUV>> trianglesEx,
+            HashSet<int> affineUvGroups)
         {
             // ═══════════════════════════════════════════════════════════════════════════════
             // STEP 1: Identify vertices that CANNOT be collapsed
@@ -379,13 +449,19 @@ namespace Geo
             // - removeCollinearEdges=true: collapse edges where middle vertex is collinear
             // - vertexMustBePreserved: prevents collapsing UV seams / sharp edges
             // ═══════════════════════════════════════════════════════════════════════════════
+            // Planar fusion has already rebuilt these groups from one affine UV
+            // frame. They require no per-collapse parameter validation.
+            Func<Dictionary<int, Remeshing.FullTriangle>, bool> validateUv = null;
+            if (trianglesEx.Any(t => !affineUvGroups.Contains(t.GroupId)))
+                validateUv = new AffineUvCollapseGuard(positions, originalTriangles,
+                    originalTrianglesEx, affineUvGroups).Validate;
             Remeshing.EdgeCollapser.CleanMesh(
                 positions,
                 trianglesWithGroups,
                 minDist: BigRationalHybrid.Zero,
                 allowVertexRelocation: false,
                 removeCollinearEdges: true,
-                validateCollapseCallback: null,
+                validateCollapseCallback: validateUv,
                 vertexMustBePreserved: vertexMustBePreserved);
 
             // ═══════════════════════════════════════════════════════════════════════════════
@@ -395,17 +471,17 @@ namespace Geo
             // ═══════════════════════════════════════════════════════════════════════════════
             triangles.Clear();
             trianglesEx.Clear();
-            
+
             for (int i = 0; i < trianglesWithGroups.Count; i++)
             {
                 var triWithGroup = trianglesWithGroups[i];
-                
+
                 // A < 0 means triangle was deleted (degenerate after collapse)
                 if (triWithGroup.A >= 0)
                 {
                     // Use new vertex indices from collapsed mesh
                     triangles.Add(new Tri(triWithGroup.A, triWithGroup.B, triWithGroup.C));
-                    
+
                     var oldTri = originalTriangles[i];
                     var oldTriEx = originalTrianglesEx[i];
                     trianglesEx.Add(new MeshTriangle<TriangleVertexNormalUV>
@@ -474,7 +550,7 @@ namespace Geo
             // This groups all triangles touching each vertex, subdivided by material group
             // ─────────────────────────────────────────────────────────────────────────────
             var trianglesPerVertexPerGroup = new Dictionary<int, Dictionary<int, List<int>>>();
-            
+
             for (int i = 0; i < triangles.Count; i++)
             {
                 var tri = triangles[i];
@@ -553,15 +629,15 @@ namespace Geo
         private bool AreVertexDataEqual(TriangleVertexNormalUV a, TriangleVertexNormalUV b)
         {
             const double epsSquared = 1e-10;  // (1e-5)² - anything within 0.00001 units is "equal"
-            
+
             // UV check: |a.UV - b.UV|² ≤ eps²
             if (Vec2DOps.DistanceSquared(a.UV, b.UV) > epsSquared)
                 return false;
-            
+
             // Normal check: |a.Normal - b.Normal|² ≤ eps²
             if (Vec3DOps.DistanceSquared(a.Normal, b.Normal) > epsSquared)
                 return false;
-            
+
             return true;
         }
 
@@ -601,6 +677,10 @@ namespace Geo
 
         private void RenameExtendedNamesPrefix(string oldPrefix, string newPrefix)
         {
+            string RenameAtom(string value) => EntityNaming.RewriteMeshNameInEntity(value, oldPrefix, newPrefix);
+            FaceLineages = FaceLineages.ToDictionary(pair => pair.Key, pair => pair.Value.Remap(RenameAtom));
+            AmbiguousFaceReferences = AmbiguousFaceReferences.Select(RenameAtom).ToHashSet(StringComparer.Ordinal);
+
             extendedNameToGroupId = EntityNaming.RewriteDictionaryKeys(
                 extendedNameToGroupId,
                 key => EntityNaming.RewriteMeshNameInEntity(key, oldPrefix, newPrefix));
@@ -713,8 +793,8 @@ namespace Geo
                 if (triEx.GroupId == groupId)
                 {
                     result.Add(triangles[i]);
-                }    
-            }            
+                }
+            }
             return new UVSurface(positions, normals, uvs, result);
         }
 
@@ -789,13 +869,13 @@ namespace Geo
             for(int i = 0; i < GroupEdges.Count; i++)
             {
                 var ge = GroupEdges[i];
-                if ((ge.GroupIdA == groupIdA && ge.GroupIdB == groupIdB) || 
+                if ((ge.GroupIdA == groupIdA && ge.GroupIdB == groupIdB) ||
                     (ge.GroupIdA == groupIdB && ge.GroupIdB == groupIdA))
                 {
                     matchingEdges.Add(ge);
                 }
             }
-            
+
             // With the new extraction logic, each GroupEdge represents one connected edge component
             // The edges are already sorted spatially during extraction
             if (edgeIndex < matchingEdges.Count)
@@ -805,7 +885,7 @@ namespace Geo
                 if (ge.LineStrips3D.Count > 0)
                     return ge.LineStrips3D[0];
             }
-            
+
             return null;
         }
 
@@ -832,7 +912,7 @@ namespace Geo
         //    double uniformParam = double.Parse(parts[3]);
 
         //    string verify;
-        //    var result = GetPointOnEdge(groupIdA, groupIdB, edgeIndex, uniformParam, out verify);            
+        //    var result = GetPointOnEdge(groupIdA, groupIdB, edgeIndex, uniformParam, out verify);
 
         //    if (verify != name)
         //        throw new Exception("AnchorMesh.GetPointOnEdge: internal error in name generation.");
@@ -845,7 +925,7 @@ namespace Geo
             return TryGetPointOnSurface(name, out point, out _, out _, out _, out _);
         }
 
-        public bool TryGetPointOnSurface(string name, out Vec3D point, out Vec3D normal, 
+        public bool TryGetPointOnSurface(string name, out Vec3D point, out Vec3D normal,
             out Vec2D uv, out Vec3D tangentX, out Vec3D tangentY)
         {
             point = default;
@@ -858,6 +938,7 @@ namespace Geo
                 return false;
             }
 
+            ValidateEntityReference(name);
             if (!extendedNameToGroupId.TryGetValue(address.PatchName, out int groupId))
             {
                 normal = default;
@@ -903,6 +984,7 @@ namespace Geo
 
         public bool TryGetEdge(string name, out LineStrip3D result)
         {
+            ValidateEntityReference(name);
             name = name.Trim();
             result = default;
             if (EntityNaming.TryParseGroupEdgeAddress(name, out var address, requireFullMatch: true))
@@ -933,40 +1015,90 @@ namespace Geo
 
             return false;
         }
-        public bool TryGetSurface(string name, out UVSurface result)
+        /// <summary>Extracts a patch with per-corner UV/normal seams and exact source positions.</summary>
+        public bool TryGetSurface(string name, out UVSurface result) => TryGetSurfaceCore(name, out result, false, true);
+
+        // Geometric algorithms operate on parent-mesh vertex identities. Blend
+        // extension and fitted export boundaries require this welded topology.
+        internal bool TryGetTopologySurface(string name, out UVSurface result) => TryGetSurfaceCore(name, out result, false, false);
+
+        // Assembly datums refer to the captured body-local geometry, including
+        // when another occurrence has already updated this shared mesh's pose.
+        internal bool TryGetLocalSurface(string name, out UVSurface result) => TryGetSurfaceCore(name, out result, true, false);
+
+        private bool TryGetSurfaceCore(string name, out UVSurface result, bool localGeometry, bool preserveCornerAttributes)
         {
             result = null;
-            if(!extendedNameToGroupId.ContainsKey(name)) 
+            if(!extendedNameToGroupId.ContainsKey(name))
                 return false;
 
             int groupId = extendedNameToGroupId[name];
 
-            int vertexCount = Mesh.Positions.Count;
-
-            List<Tri> triangles = new List<Tri>();
-            List<Vec3D> normals = EmptyList<Vec3D>(vertexCount); 
-            List<Vec2D> uv = EmptyList<Vec2D>(vertexCount);
-            for (int i=0;i<Mesh.Triangles.Count;++i)
+            if (preserveCornerAttributes)
             {
-                var triEx = Mesh.TrianglesEx[i];
-                if(triEx.GroupId == groupId)
+                var precise = localGeometry && _rigidRestExact != null ? _rigidRestExact.ToList() : Mesh.PrecisionPositions;
+                var positions = localGeometry && _rigidConverterSet ? _rigidConverter.Convert(precise) : Mesh.Positions;
+                var patch = new MeshNormalUV
                 {
-                    var tri = Mesh.Triangles[i];
-                    triangles.Add(tri);
-
-                    normals[tri.A] = triEx.V0.Normal;
-                    normals[tri.B] = triEx.V1.Normal;
-                    normals[tri.C] = triEx.V2.Normal;
-
-                    uv[tri.A] = triEx.V0.UV;
-                    uv[tri.B] = triEx.V1.UV;
-                    uv[tri.C] = triEx.V2.UV;
+                    Positions = positions,
+                    PrecisionPositions = precise,
+                    Triangles = new List<Tri>(),
+                    TrianglesEx = new()
+                };
+                for (int i = 0; i < Mesh.Triangles.Count; i++)
+                {
+                    if (Mesh.TrianglesEx[i].GroupId != groupId)
+                        continue;
+                    patch.Triangles.Add(Mesh.Triangles[i]);
+                    patch.TrianglesEx.Add(Mesh.TrianglesEx[i]);
                 }
-            }
 
-            // Using the full size vertex lists is a bit wasteful but it does not modify vertex indexing so it is worth it
-            result = new UVSurface(Mesh.Positions, normals, uv, triangles, Mesh.PrecisionPositions);
-            if (surfaceMetaData != null && surfaceMetaData.TryGetValue(name, out var meta))
+                // A geometric vertex can carry distinct UVs or normals in adjacent
+                // corners. Decomposition preserves those seams and their exact source
+                // coordinates instead of allowing the last corner to overwrite them.
+                List<Rat3Hybrid> patchPrecise = null;
+                List<Vec3D> patchPositions, normals;
+                List<Vec2D> uv;
+                List<Tri> triangles;
+                if (precise == null)
+                    patch.Decompose(out patchPositions, out normals, out uv, out triangles, out _);
+                else
+                    patch.Decompose(out patchPositions, out normals, out uv, out triangles, out _, out patchPrecise);
+                result = new UVSurface(patchPositions, normals, uv, triangles, patchPrecise);
+            }
+            else
+            {
+                int vertexCount = Mesh.Positions.Count;
+
+                List<Tri> triangles = new List<Tri>();
+                List<Vec3D> normals = EmptyList<Vec3D>(vertexCount);
+                List<Vec2D> uv = EmptyList<Vec2D>(vertexCount);
+                for (int i=0;i<Mesh.Triangles.Count;++i)
+                {
+                    var triEx = Mesh.TrianglesEx[i];
+                    if(triEx.GroupId == groupId)
+                    {
+                        var tri = Mesh.Triangles[i];
+                        triangles.Add(tri);
+
+                        normals[tri.A] = triEx.V0.Normal;
+                        normals[tri.B] = triEx.V1.Normal;
+                        normals[tri.C] = triEx.V2.Normal;
+
+                        uv[tri.A] = triEx.V0.UV;
+                        uv[tri.B] = triEx.V1.UV;
+                        uv[tri.C] = triEx.V2.UV;
+                    }
+                }
+
+                // Using the full size vertex lists is a bit wasteful but it does not modify vertex indexing so it is worth it
+                var precise = localGeometry && _rigidRestExact != null ? _rigidRestExact.ToList() : Mesh.PrecisionPositions;
+                var positions = localGeometry && _rigidConverterSet ? _rigidConverter.Convert(precise) : Mesh.Positions;
+                result = new UVSurface(positions, normals, uv, triangles, precise);
+            }
+            // Local face datums need authoritative geometry, not transformed
+            // analytic display metadata or lazy NURBS materialization.
+            if (!localGeometry && surfaceMetaData != null && surfaceMetaData.TryGetValue(name, out var meta))
             {
                 result.NurbsSurface = meta.NurbsSurface;
                 result.NurbsParamRange = meta.ParamRange;
@@ -1016,10 +1148,15 @@ namespace Geo
 
         internal void CaptureRigidRestPose(CoordinateConverter converter)
         {
+            // Reusing a solid must retain its original local geometry, even
+            // when an earlier occurrence has already updated the shared mesh.
+            if (_rigidBodyActive)
+                return;
             EnsureCoplanarPostProcessed();
 
             int count = Mesh.Positions.Count;
             _rigidRestLocal = new Vec3D[count];
+            _rigidRestExact = Mesh.PrecisionPositions.ToArray();
             _rigidConverter = converter;
             _rigidConverterSet = true;
 
@@ -1031,20 +1168,53 @@ namespace Geo
             _rigidBodyActive = true;
         }
 
+        internal MeshNormalUV SnapshotRigidPose(Transform transform, int? groupId = null)
+        {
+            if (!_rigidBodyActive || _rigidRestExact == null)
+                throw new InvalidOperationException($"Mesh '{Name}' is not an assembly body.");
+            return Mesh.SnapshotRigidPose(_rigidRestExact, _rigidConverter, transform, groupId);
+        }
+
+        /// <summary>Copy a body definition with its original display and exact coordinates.</summary>
+        internal AnchorMesh SnapshotRigidDefinition(string name)
+        {
+            var identity = new Transform(new Vec3D(0), TransformMath.IdentityOrientation);
+            var mesh = SnapshotRigidPose(identity);
+            // Inspection snapshots deliberately display the precision topology.
+            // A copied definition must retain the authored continuous display geometry too.
+            mesh.Positions = new List<Vec3D>(_rigidRestLocal);
+            return new AnchorMesh(name, mesh, new Dictionary<int, string>(groupIdToExtendedName),
+                SurfaceMetaData.CloneDictionary(_rigidRestMeta), deferCoplanarPostProcess: true,
+                isVolume: IsVolume, preserveTriangulation: true,
+                faceLineages: FaceLineages, ambiguousReferences: AmbiguousFaceReferences);
+        }
+
+        // Use rest geometry even if a prior display updated the shared body.
+        internal AnchorMesh SnapshotForInspection(CoordinateConverter converter, Transform pose, string name)
+        {
+            var mesh = _rigidBodyActive ? SnapshotRigidPose(pose)
+                : Mesh.SnapshotRigidPose(Mesh.PrecisionPositions, converter, pose);
+            var metadata = SurfaceMetaData.CloneDictionary(_rigidBodyActive ? _rigidRestMeta : surfaceMetaData);
+            var matrix = TransformMath.ToMat4D(in pose);
+            foreach (var item in metadata.Values) item.Transform(in matrix);
+            return new AnchorMesh(name, mesh, new Dictionary<int, string>(groupIdToExtendedName),
+                metadata, deferCoplanarPostProcess: true, isVolume: IsVolume, preserveTriangulation: true,
+                faceLineages: FaceLineages, ambiguousReferences: AmbiguousFaceReferences);
+        }
+
         public void Update(Transform transform)
         {
             if (!_rigidBodyActive || _rigidRestLocal == null || !_rigidConverterSet)
                 throw new InvalidOperationException($"Mesh '{Name}' is not registered as a rigid assembly body.");
 
             Mat4D worldFromLocal = TransformMath.ToMat4D(in transform);
-            CoordinateConverter c = _rigidConverter;
+            var preciseTransform = new PreciseRigidTransform(_rigidConverter, in transform);
 
             for (int i = 0; i < _rigidRestLocal.Length; i++)
             {
                 Vec3D world = worldFromLocal.TransformPoint(_rigidRestLocal[i]);
                 Mesh.Positions[i] = world;
-                Int3 lattice = c.Convert(world);
-                Mesh.PrecisionPositions[i] = new Rat3Hybrid(lattice.X, lattice.Y, lattice.Z);
+                Mesh.PrecisionPositions[i] = preciseTransform.Apply(_rigidRestExact[i]);
             }
 
             RestoreSurfaceMetaFromRest(in worldFromLocal);
@@ -1115,6 +1285,79 @@ namespace Geo
             return true;
         }
 
+        internal bool TryGetLocalPlaneReferenceDirection(string reference, out Vec3D direction)
+        {
+            direction = default;
+            string name = ResolveLocalPatchName(reference);
+            var metadata = _rigidBodyActive ? _rigidRestMeta : surfaceMetaData;
+            if (name == null || metadata == null || !metadata.TryGetValue(name, out var face) ||
+                face?.PlaneParams == null)
+                return false;
+            direction = face.PlaneParams.RefDir;
+            return true;
+        }
+
+        internal void ValidateEntityReference(string reference)
+        {
+            if (string.IsNullOrWhiteSpace(reference)) return;
+            if (reference.StartsWith(Name + ":", StringComparison.Ordinal))
+                reference = reference.Substring(Name.Length + 1);
+            if (EntityNaming.TryParseSurfacePointAddress(reference, out var surface))
+                Check(surface.PatchName);
+            else if (EntityNaming.TryParseGroupEdgeAddress(reference, out var edge))
+            {
+                Check(edge.PatchA);
+                Check(edge.PatchB);
+            }
+            else Check(reference);
+
+            void Check(string patch)
+            {
+                if (AmbiguousFaceReferences.Contains(patch))
+                    throw new GeoMeta.NameCollisionException($"Face reference '{patch}' has ambiguous or obsolete split ancestry; use a current provenance-qualified face name.");
+            }
+        }
+
+        private void RefreshFusedLineageNames()
+        {
+            foreach (var group in FaceLineages.GroupBy(pair => pair.Value.Reference))
+            {
+                if (group.Count() != 1 || AmbiguousFaceReferences.Contains(group.Key)) continue;
+                var pair = group.Single();
+                var lineage = pair.Value;
+                if (!lineage.Split || !lineage.Supported) continue;
+                string previous = groupIdToExtendedName[pair.Key];
+                if (previous == lineage.Reference) continue;
+                // Fusion changes ancestry. Publish its unique combined identity,
+                // while old names remain obsolete rather than being resurrected.
+                if (groupIdToExtendedName.Any(item => item.Key != pair.Key && item.Value == lineage.Reference)) continue;
+                groupIdToExtendedName[pair.Key] = lineage.Reference;
+                if (surfaceMetaData.TryGetValue(previous, out var metadata))
+                    surfaceMetaData[lineage.Reference] = metadata?.Clone();
+                AmbiguousFaceReferences.Add(previous);
+            }
+        }
+
+        private void ValidateLineageReferences(List<int> groups)
+        {
+            var active = groups.Distinct().Where(FaceLineages.ContainsKey).ToArray();
+            foreach (var byReference in active.GroupBy(id => FaceLineages[id].Reference))
+            {
+                bool ambiguous = byReference.Count() > 1 || byReference.Any(id => !FaceLineages[id].Supported);
+                foreach (int id in byReference)
+                {
+                    var lineage = FaceLineages[id];
+                    if (!lineage.Split) continue;
+                    foreach (var root in lineage.Roots) AmbiguousFaceReferences.Add(root);
+                    if (ambiguous)
+                    {
+                        AmbiguousFaceReferences.Add(lineage.Reference);
+                        AmbiguousFaceReferences.Add(groupIdToExtendedName[id]);
+                    }
+                }
+            }
+        }
+
         internal string ResolveLocalPatchNamePublic(string reference) => ResolveLocalPatchName(reference);
 
         private string ResolveLocalPatchName(string reference)
@@ -1123,6 +1366,8 @@ namespace Geo
                 return null;
 
             reference = reference.Trim();
+            ValidateEntityReference(reference);
+
             if (extendedNameToGroupId.ContainsKey(reference))
                 return reference;
 

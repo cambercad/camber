@@ -12,7 +12,9 @@ namespace Geo
         /// <summary>Only uniform u in [0,1]; ignores tessellation vertex anchors (preview / fast mode only).</summary>
         UniformUOnly,
         /// <summary>Uniform u merged with analytic segment joints (and optional tessellation anchors when sampling is tessellated).</summary>
-        AnalyticFeatureAnchors
+        AnalyticFeatureAnchors,
+        /// <summary>Match ordered polygon edges, or named exact curves when FirstCurves is supplied, across equal-count sections.</summary>
+        MatchingVertices
     }
 
     /// <summary>Which profiles contribute crease columns at segment joints.</summary>
@@ -29,11 +31,12 @@ namespace Geo
     /// <summary>How closed profiles choose the zero normalized arc-length point (u=0 / seam) before lofting.</summary>
     public enum LoftAlignmentMode
     {
-        /// <summary>u=0 is the closest point on the closed profile to sketch origin (0,0). Default (enum 0).</summary>
+        /// <summary>u=0 is the closest tessellated vertex to sketch origin (0,0).
+        /// This explicit legacy mode can be ambiguous on symmetric profiles.</summary>
         OriginFootRoll = 0,
         /// <summary>For closed profiles after the first: continuous u0 minimizing 3D mismatch vs the previous profile; first profile uses origin-foot.</summary>
         MinimumTwist = 1,
-        /// <summary>u=0 is the sketch / tessellation strip start (no automatic reparameterization).</summary>
+        /// <summary>Default: u=0 is the sketch / tessellation strip start (no automatic reparameterization).</summary>
         AsAuthored = 2
     }
 
@@ -92,6 +95,10 @@ namespace Geo
         public CoordinateSystem System;
         /// <summary>Non-null when <see cref="LoftProfileSamplingSource.AnalyticCurveStrip"/>; evaluation uses true arc length.</summary>
         public CurveStrip2D AnalyticStrip;
+        public IReadOnlyList<Curve2D> SourceCurves;
+        public string FirstCurveName;
+        public NURBS.BSplineCurve MatchedCurve;
+        public IReadOnlyList<string> MatchedCurveNames;
         /// <summary>
         /// Seam in authored strip parameter: evaluate shared column u at authored <c>Frac(u + SeamU0)</c> (closed).
         /// Zero means as-authored / open profiles.

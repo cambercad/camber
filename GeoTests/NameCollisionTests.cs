@@ -8,7 +8,8 @@ namespace GeoTests;
 
 public sealed class NameCollisionTests : IDisposable
 {
-    public void Dispose() => GeoAPI.Clear();
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
 
     [Fact]
     public void RegisterMesh_ReplacesExistingMeshWithSameName()

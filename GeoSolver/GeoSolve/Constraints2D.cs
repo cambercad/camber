@@ -476,8 +476,8 @@ namespace GeoSolver
         /// </summary>
         public IEnumerable<IBaseEquation> GetInternalConstraints()
         {
-            yield return new UnitVector2d(CStartDir);
-            yield return new UnitVector2d(CEndDir);
+            yield return new UnitVector2d(CStartDir, CRadius);
+            yield return new UnitVector2d(CEndDir, CRadius);
         }
 
         /// <summary>
@@ -529,20 +529,28 @@ namespace GeoSolver
     {
         public CVec2D Vector { get; private set; }
 
-        public UnitVector2d(CVec2D vector)
+        private readonly Expr _radius;
+
+        public UnitVector2d(CVec2D vector, Expr radius = null)
         {
             Vector = vector;
+            _radius = radius;
         }
 
         public void GenerateEquations(List<Expr> equations, double scaling)
         {
-            // x² + y² - 1 = 0
-            equations.Add(Vector.Ex * Vector.Ex + Vector.Ey * Vector.Ey - Expr.Constant(1.0));
+            var error = Vector.Ex * Vector.Ex + Vector.Ey * Vector.Ey - Expr.Constant(1.0);
+            // Arc endpoint displacement is radius times direction-length error.
+            // Express its normalization residual in model length units, so a
+            // large arc cannot satisfy a dimensionless tolerance yet open a wire.
+            equations.Add(_radius == null ? error : _radius * error);
         }
 
         public IEnumerator<Param> GetEnumerator()
         {
             foreach (Param p in Vector) yield return p;
+            if (_radius != null)
+                foreach (Param p in _radius) yield return p;
         }
 
         IEnumerator IEnumerable.GetEnumerator() { return GetEnumerator(); }
@@ -1254,6 +1262,41 @@ namespace GeoSolver
             TangentType = tangentType;
             LabelAnchorWrtCenter = labelAnchorWrtCenter;
         }
+
+        // A distance-based circle tangency has a double root when coincidence
+        // already joins the arc endpoints. Use the equivalent first-order
+        // parallel-radii equation in that case. Match symbolic point identity,
+        // never proximity, so nearby unconstrained endpoints are not joined.
+        internal bool TryGenerateJoinedArcEquation(IList<IBaseEquation> constraints, List<Expr> equations)
+        {
+            if (TangentType != CircleTangentType.Auto ||
+                Circular1 is not CArc2D first || Circular2 is not CArc2D second)
+                return false;
+
+            var firstEnds = new[] { (first.CStart, first.CStartDir), (first.CEnd, first.CEndDir) };
+            var secondEnds = new[] { (second.CStart, second.CStartDir), (second.CEnd, second.CEndDir) };
+            foreach (var constraint in constraints)
+            {
+                if (constraint is not PointOnPoint2d join)
+                    continue;
+                foreach (var (pointA, directionA) in firstEnds)
+                foreach (var (pointB, directionB) in secondEnds)
+                {
+                    if (!(SamePoint(join.Point1, pointA) && SamePoint(join.Point2, pointB)) &&
+                        !(SamePoint(join.Point2, pointA) && SamePoint(join.Point1, pointB)))
+                        continue;
+                    var cross = directionA.Ex * directionB.Ey - directionA.Ey * directionB.Ex;
+                    // Use the mean radius to express angular error in model length
+                    // units, consistently with endpoint coincidence residuals.
+                    equations.Add((first.CRadius + second.CRadius) * .5 * cross);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool SamePoint(CVec2D a, CVec2D b)
+            => a.Ex.Identical(b.Ex) && a.Ey.Identical(b.Ey);
 
         public void GenerateEquations(List<Expr> equations, double scaling)
         {

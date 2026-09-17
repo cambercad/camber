@@ -110,10 +110,10 @@ namespace GeoCore
         {
             var ctx = TriangulationWorkspaces.Int2Constrained.Value;
             ctx.BeginSession(points);
-            TriangulateConstrained<Int2Arithmetic, Int2, int>.Triangulate(ctx, borderPolygon, constraints, pointsToInsert);
+            var segments = TriangulateConstrained<Int2Arithmetic, Int2, int>.TriangulateWithConstraints(ctx, borderPolygon, constraints, pointsToInsert);
 
             if (delaunayPostProcess)
-                DelaunayOptimizer<Int2CircleArithmetic, Int2>.Optimize(points, ctx.Triangles, constraints);
+                DelaunayOptimizer<Int2CircleArithmetic, Int2>.Optimize(points, ctx.Triangles, segments);
 
             return new List<Tri>(ctx.Triangles);
         }
@@ -122,10 +122,10 @@ namespace GeoCore
         {
             var ctx = TriangulationWorkspaces.Vec2DConstrained.Value;
             ctx.BeginSession(points);
-            TriangulateConstrained<Vec2DArithmeticNoPredicates, Vec2D, double>.Triangulate(ctx, borderPolygon, constraints, pointsToInsert);
+            var segments = TriangulateConstrained<Vec2DArithmeticNoPredicates, Vec2D, double>.TriangulateWithConstraints(ctx, borderPolygon, constraints, pointsToInsert);
 
             if (delaunayPostProcess)
-                DelaunayOptimizer<Vec2DCircleArithmeticNoPredicates, Vec2D>.Optimize(points, ctx.Triangles, constraints);
+                DelaunayOptimizer<Vec2DCircleArithmeticNoPredicates, Vec2D>.Optimize(points, ctx.Triangles, segments);
 
             return new List<Tri>(ctx.Triangles);
         }
@@ -134,10 +134,10 @@ namespace GeoCore
         {
             var ctx = TriangulationWorkspaces.Rat2HybridConstrained.Value;
             ctx.BeginSession(points);
-            TriangulateConstrained<Rat2HybridArithmetic, Rat2Hybrid, BigRationalHybrid>.Triangulate(ctx, borderPolygon, constraints, pointsToInsert);
+            var segments = TriangulateConstrained<Rat2HybridArithmetic, Rat2Hybrid, BigRationalHybrid>.TriangulateWithConstraints(ctx, borderPolygon, constraints, pointsToInsert);
 
             if (delaunayPostProcess)
-                DelaunayOptimizer<Rat2HybridCircleArithmetic, Rat2Hybrid>.Optimize(points, ctx.Triangles, constraints);
+                DelaunayOptimizer<Rat2HybridCircleArithmetic, Rat2Hybrid>.Optimize(points, ctx.Triangles, segments);
 
             return new List<Tri>(ctx.Triangles);
         }

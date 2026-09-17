@@ -360,3 +360,88 @@ _CONSTANTS = (
     ("ImGuiKey_Y", "KEY_Y"),
     ("ImGuiKey_Z", "KEY_Z"),
 )
+
+
+def create_pyglet_renderer(window):
+    """Modern pyglet event adapter without pyimgui's removed distutils import.
+
+    The actual GUI drawing stays in pyimgui's existing GL renderer. This
+    adapter translates pyglet events into the legacy pyimgui 2 IO structure.
+    """
+    import time
+    import imgui
+    from pyglet.window import key, mouse
+    from imgui.integrations.opengl import ProgrammablePipelineRenderer
+
+    class Renderer(ProgrammablePipelineRenderer):
+        def __init__(self):
+            super().__init__()
+            self._last_time = time.perf_counter()
+            pairs = [(key.TAB, imgui.KEY_TAB), (key.LEFT, imgui.KEY_LEFT_ARROW),
+                     (key.RIGHT, imgui.KEY_RIGHT_ARROW), (key.UP, imgui.KEY_UP_ARROW),
+                     (key.DOWN, imgui.KEY_DOWN_ARROW), (key.PAGEUP, imgui.KEY_PAGE_UP),
+                     (key.PAGEDOWN, imgui.KEY_PAGE_DOWN), (key.HOME, imgui.KEY_HOME),
+                     (key.END, imgui.KEY_END), (key.INSERT, imgui.KEY_INSERT),
+                     (key.DELETE, imgui.KEY_DELETE), (key.BACKSPACE, imgui.KEY_BACKSPACE),
+                     (key.SPACE, imgui.KEY_SPACE), (key.RETURN, imgui.KEY_ENTER),
+                     (key.ESCAPE, imgui.KEY_ESCAPE), (key.NUM_ENTER, imgui.KEY_PAD_ENTER)]
+            pairs += [(getattr(key, letter), getattr(imgui, "KEY_"+letter)) for letter in "ACVXYZ"]
+            self._keys = dict(pairs)
+            for index in self._keys.values():
+                self.io.key_map[index] = index
+            window.push_handlers(self)
+            self.process_inputs()
+
+        def process_inputs(self):
+            now = time.perf_counter()
+            self.io.delta_time = max(now-self._last_time, 1e-6)
+            self._last_time = now
+            w, h = window.get_size()
+            fw, fh = window.get_framebuffer_size()
+            self.io.display_size = w, h
+            self.io.display_fb_scale = fw/max(w, 1), fh/max(h, 1)
+
+        def on_mouse_motion(self, x, y, dx, dy):
+            self.io.mouse_pos = x, window.height-y
+
+        def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
+            self.on_mouse_motion(x, y, dx, dy)
+
+        def on_mouse_press(self, x, y, button, modifiers):
+            self.on_mouse_motion(x, y, 0, 0)
+            for flag, index in ((mouse.LEFT, 0), (mouse.RIGHT, 1), (mouse.MIDDLE, 2)):
+                if button & flag:
+                    self.io.mouse_down[index] = True
+
+        def on_mouse_release(self, x, y, button, modifiers):
+            for flag, index in ((mouse.LEFT, 0), (mouse.RIGHT, 1), (mouse.MIDDLE, 2)):
+                if button & flag:
+                    self.io.mouse_down[index] = False
+
+        def on_mouse_scroll(self, x, y, sx, sy):
+            self.io.mouse_wheel += sy
+            self.io.mouse_wheel_horizontal += sx
+
+        def _key(self, symbol, modifiers, down):
+            if symbol in self._keys:
+                self.io.keys_down[self._keys[symbol]] = down
+            self.io.key_ctrl = bool(modifiers & key.MOD_CTRL)
+            self.io.key_shift = bool(modifiers & key.MOD_SHIFT)
+            self.io.key_alt = bool(modifiers & key.MOD_ALT)
+            self.io.key_super = bool(modifiers & key.MOD_COMMAND)
+
+        def on_key_press(self, symbol, modifiers):
+            self._key(symbol, modifiers, True)
+
+        def on_key_release(self, symbol, modifiers):
+            self._key(symbol, modifiers, False)
+
+        def on_text(self, text):
+            for char in text:
+                self.io.add_input_character(ord(char))
+
+        def shutdown(self):
+            window.remove_handlers(self)
+            super().shutdown()
+
+    return Renderer()

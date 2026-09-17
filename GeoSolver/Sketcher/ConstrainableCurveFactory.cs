@@ -11,6 +11,10 @@ namespace GeoSolver.Sketcher
             return new CLine2D(start, end, flags);
         }
 
+        public override Ellipse2D CreateEllipse2D(Vec2D center, Vec2D majorAxis, double minorRadius,
+            double startAngle, double endAngle, CurveFlags flags)
+            => new CEllipse2D(center,majorAxis,minorRadius,startAngle,endAngle,flags);
+
         public override Circle2D CreateCircle2D(Vec2D center, double radius, CurveFlags flags)
         {
             return new CCircle2D(center, radius, flags);

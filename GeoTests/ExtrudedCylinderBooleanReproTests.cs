@@ -10,7 +10,8 @@ namespace GeoTests;
 /// </summary>
 public sealed class ExtrudedCylinderBooleanReproTests : IDisposable
 {
-    public void Dispose() => GeoAPI.Clear();
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
 
     [Fact]
     public void Boolean_OrthogonalExtrudedCylinders_Union_IsConsistentlyOrientedAndPositiveVolume()

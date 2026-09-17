@@ -16,6 +16,21 @@ namespace Geo
     {
         private const double CopyMeshIdentityRotationEpsilon = 1e-8;
 
+        private static void ApplyCopiedLineageNames(AnchorMesh source,
+            Dictionary<int, int> oldToNewGroup, Dictionary<int, FaceLineage> copiedLineages,
+            Dictionary<int, string> copiedNames)
+        {
+            foreach (var (oldId, newId) in oldToNewGroup)
+            {
+                var lineage = copiedLineages[newId];
+                // Distinct diagnostic labels must stay distinct. Only an
+                // addressable structural name is regenerated from renamed atoms.
+                if (lineage.Split && lineage.Supported &&
+                    !source.AmbiguousFaceReferences.Contains(source.groupIdToExtendedName[oldId]))
+                    copiedNames[newId] = lineage.Reference;
+            }
+        }
+
         /// <summary>
         /// Deep-copies an <see cref="AnchorMesh"/> by the rigid map
         /// <see cref="CoordinateSystem.GetTransform"/> (<paramref name="fromPose"/> → <paramref name="toPose"/>).
@@ -80,6 +95,19 @@ Translation-only transforms snap to the integer lattice (exact). Rotations apply
                 }
             }
 
+            return CopyTransformedMesh(source, t, transformedPos, transformedPrec,
+                surfaceNameAffix, affixKind, newMeshName, reverseWinding: false);
+        }
+
+        private AnchorMesh CopyTransformedMesh(AnchorMesh source, Mat4D t,
+            Vec3D[] transformedPos, Rat3Hybrid[] transformedPrec,
+            string surfaceNameAffix, SurfacePatchNameAffix affixKind, string newMeshName,
+            bool reverseWinding, bool rewriteNames = false)
+        {
+            string CopyName(string original) => rewriteNames
+                ? EntityNaming.RewriteMeshNameInEntity(original, source.Name, newMeshName)
+                : EntityNaming.DecoratePatchName(original, surfaceNameAffix, affixKind == SurfacePatchNameAffix.Prefix);
+            var srcMesh = source.Mesh;
             var usedGroupIds = new HashSet<int>();
             foreach (var ex in srcMesh.TrianglesEx)
                 usedGroupIds.Add(ex.GroupId);
@@ -87,7 +115,7 @@ Translation-only transforms snap to the integer lattice (exact). Rotations apply
             var sortedOldIds = new List<int>(usedGroupIds);
             sortedOldIds.Sort();
 
-            int baseGroup = GetBaseGroupIndex();
+            int baseGroup = ReserveGroupIds(sortedOldIds.Count);
             var oldToNewGroup = new Dictionary<int, int>();
             var newGroupIdToName = new Dictionary<int, string>();
             for (int i = 0; i < sortedOldIds.Count; i++)
@@ -97,17 +125,19 @@ Translation-only transforms snap to the integer lattice (exact). Rotations apply
                 oldToNewGroup[oldId] = newId;
                 if (!source.groupIdToExtendedName.TryGetValue(oldId, out string oldName))
                     throw new InvalidOperationException($"Missing surface name for group id {oldId}.");
-                newGroupIdToName[newId] = EntityNaming.DecoratePatchName(
-                    oldName, surfaceNameAffix, affixKind == SurfacePatchNameAffix.Prefix);
+                newGroupIdToName[newId] = CopyName(oldName);
             }
 
-            IncrementBaseGroupIndex(sortedOldIds.Count);
+
+            var copiedLineages = oldToNewGroup.ToDictionary(pair => pair.Value,
+                pair => source.FaceLineages[pair.Key].Remap(CopyName));
+            ApplyCopiedLineageNames(source, oldToNewGroup, copiedLineages, newGroupIdToName);
 
             var newSurfaceMeta = new Dictionary<string, SurfaceMetaData>();
             foreach (var kv in source.surfaceMetaData)
             {
-                string decoratedKey = EntityNaming.DecoratePatchName(
-                    kv.Key, surfaceNameAffix, affixKind == SurfacePatchNameAffix.Prefix);
+                string decoratedKey = source.extendedNameToGroupId.TryGetValue(kv.Key, out int oldId) && oldToNewGroup.TryGetValue(oldId, out int newId)
+                    ? newGroupIdToName[newId] : CopyName(kv.Key);
                 var cloned = kv.Value.Clone();
                 cloned.Transform(in t);
                 newSurfaceMeta[decoratedKey] = cloned;
@@ -126,8 +156,10 @@ Translation-only transforms snap to the integer lattice (exact). Rotations apply
                 MeshTriangle<TriangleVertexNormalUV> ex = srcMesh.TrianglesEx[ti];
 
                 AppendCorner(cornerPos, cornerNormals, cornerUv, cornerPrecise, transformedPos, transformedPrec, tri.A, ex.V0, in t);
-                AppendCorner(cornerPos, cornerNormals, cornerUv, cornerPrecise, transformedPos, transformedPrec, tri.B, ex.V1, in t);
-                AppendCorner(cornerPos, cornerNormals, cornerUv, cornerPrecise, transformedPos, transformedPrec, tri.C, ex.V2, in t);
+                AppendCorner(cornerPos, cornerNormals, cornerUv, cornerPrecise, transformedPos, transformedPrec,
+                    reverseWinding ? tri.C : tri.B, reverseWinding ? ex.V2 : ex.V1, in t);
+                AppendCorner(cornerPos, cornerNormals, cornerUv, cornerPrecise, transformedPos, transformedPrec,
+                    reverseWinding ? tri.B : tri.C, reverseWinding ? ex.V1 : ex.V2, in t);
 
                 int i0 = cornerPos.Count - 3;
                 newTris.Add(new Tri(i0, i0 + 1, i0 + 2));
@@ -145,7 +177,9 @@ Translation-only transforms snap to the integer lattice (exact). Rotations apply
                 deferCoplanarPostProcess: false,
                 skipCoplanarFusion: true,
                 isVolume: source.IsVolume,
-                preserveTriangulation: true);
+                preserveTriangulation: true,
+                faceLineages: copiedLineages,
+                ambiguousReferences: new HashSet<string>(source.AmbiguousFaceReferences.Select(CopyName), StringComparer.Ordinal));
             RegisterMesh(result);
             return result;
         }
@@ -173,7 +207,7 @@ Deep-copies a solid in place. `newMeshName` is required and must differ from the
 
             var sortedOldIds = new List<int>(usedGroupIds);
             sortedOldIds.Sort();
-            int baseGroup = GetBaseGroupIndex();
+            int baseGroup = ReserveGroupIds(sortedOldIds.Count);
             var oldToNewGroup = new Dictionary<int, int>();
             var newGroupIdToName = new Dictionary<int, string>();
             for (int i = 0; i < sortedOldIds.Count; i++)
@@ -186,7 +220,6 @@ Deep-copies a solid in place. `newMeshName` is required and must differ from the
                 newGroupIdToName[newId] =
                     EntityNaming.RewriteMeshNameInEntity(oldName, source.Name, newMeshName);
             }
-            IncrementBaseGroupIndex(sortedOldIds.Count);
 
             var triangleData = new List<MeshTriangle<TriangleVertexNormalUV>>(source.Mesh.TrianglesEx.Count);
             foreach (MeshTriangle<TriangleVertexNormalUV> sourceTriangle in source.Mesh.TrianglesEx)
@@ -204,11 +237,15 @@ Deep-copies a solid in place. `newMeshName` is required and must differ from the
                 TrianglesEx = triangleData
             };
 
+            string CopyName(string value) => EntityNaming.RewriteMeshNameInEntity(value, source.Name, newMeshName);
+            var copiedLineages = oldToNewGroup.ToDictionary(pair => pair.Value,
+                pair => source.FaceLineages[pair.Key].Remap(CopyName));
+            ApplyCopiedLineageNames(source, oldToNewGroup, copiedLineages, newGroupIdToName);
             var newSurfaceMeta = new Dictionary<string, SurfaceMetaData>();
             foreach (var kv in source.surfaceMetaData)
             {
-                string newName =
-                    EntityNaming.RewriteMeshNameInEntity(kv.Key, source.Name, newMeshName);
+                string newName = source.extendedNameToGroupId.TryGetValue(kv.Key, out int oldId) && oldToNewGroup.TryGetValue(oldId, out int newId)
+                    ? newGroupIdToName[newId] : CopyName(kv.Key);
                 newSurfaceMeta[newName] = kv.Value.Clone();
             }
 
@@ -220,7 +257,9 @@ Deep-copies a solid in place. `newMeshName` is required and must differ from the
                 deferCoplanarPostProcess: false,
                 skipCoplanarFusion: true,
                 isVolume: source.IsVolume,
-                preserveTriangulation: true);
+                preserveTriangulation: true,
+                faceLineages: copiedLineages,
+                ambiguousReferences: new HashSet<string>(source.AmbiguousFaceReferences.Select(CopyName), StringComparer.Ordinal));
             RegisterMesh(result);
             return result;
         }

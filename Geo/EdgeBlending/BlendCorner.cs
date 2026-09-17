@@ -11,13 +11,6 @@ namespace Geo
         {
             SphereFitter.FitSphere(borderLoop, out var sphereCenter, out var cornerRadius);
             
-            double maxSegmentLength = MaxSegmentLengthFromMaxDeviation(cornerRadius, maxDeviation);
-
-            double maxOpeningAngle = FindMaxAngle(borderLoop, sphereCenter);
-            double maxArcLength = maxOpeningAngle * cornerRadius;
-
-            int spiderNetResolution = (int)(maxArcLength / maxSegmentLength) + 1;
-
             // Compute the center point of the patch on the sphere surface
             // Use weighted centroid based on edge segment lengths
             Vec3D centroid = new Vec3D(0);
@@ -47,6 +40,23 @@ namespace Geo
 
             // Project centroid onto sphere surface
             Vec3D directionToCenter = (centroid - sphereCenter).Normalized();
+            return TessellateSphereCap(borderLoop, maxDeviation, exactBoundary, cornerIndices,
+                cc, blendType, sphereCenter, cornerRadius, directionToCenter);
+        }
+
+        // A planar equator cannot determine the sphere pole by fitting.
+        // The collapsed-cylinder construction supplies its center and direction.
+        internal static UVSurface TessellateSphereCap(List<Vec3D> borderLoop, double maxDeviation,
+            List<Rat3Hybrid> exactBoundary, List<int> cornerIndices, CoordinateConverter cc,
+            EdgeBlendType blendType, Vec3D sphereCenter, double cornerRadius, Vec3D directionToCenter)
+        {
+            double maxSegmentLength = MaxSegmentLengthFromMaxDeviation(cornerRadius, maxDeviation);
+
+            double maxOpeningAngle = FindMaxAngle(borderLoop, sphereCenter);
+            double maxArcLength = maxOpeningAngle * cornerRadius;
+
+            int spiderNetResolution = (int)(maxArcLength / maxSegmentLength) + 1;
+
             Vec3D spiderNetCenter = sphereCenter + directionToCenter * cornerRadius;
 
             List<Vec3D> finalPoints = new List<Vec3D>();
@@ -54,13 +64,24 @@ namespace Geo
             List<Vec3D> finalNormals = new List<Vec3D>();
             List<Vec2D> finalUV = new List<Vec2D>();
             
-            // Add center point
-            finalPoints.Add(spiderNetCenter);
-            var centerPrecise = cc.Convert(spiderNetCenter);
-            finalPointsPrecise.Add(new Rat3Hybrid(centerPrecise.X, centerPrecise.Y, centerPrecise.Z));
+            BigRationalHybrid Scalar(double value)
+            {
+                var exact = new BigRational(value);
+                return new BigRationalHybrid(exact.Numerator, exact.Denominator);
+            }
+            Rat3Hybrid FittedPoint(Vec3D point)
+            {
+                var delta = (point - borderLoop[0]) / cc.SmallestUnit();
+                return exactBoundary[0] + new Rat3Hybrid(Scalar(delta.X), Scalar(delta.Y), Scalar(delta.Z));
+            }
+            var sphereOriginExact = FittedPoint(sphereCenter);
+            var centerPrecise = FittedPoint(spiderNetCenter);
+            // The shared pole and each boundary ray define an exact radial plane.
+            // Independently snapping interior XYZ samples can reverse tiny cells.
+            finalPoints.Add(cc.Convert(centerPrecise));
+            finalPointsPrecise.Add(centerPrecise);
             
-            // For concave edges: normals point outward from sphere center
-            // For convex edges: normals point inward toward sphere center
+            // Convex removal uses outward sphere normals; concave filling reverses them.
             Vec3D centerNormal = (spiderNetCenter - sphereCenter).Normalized();
             if (blendType == EdgeBlendType.Concave)
                 centerNormal = -centerNormal;
@@ -75,23 +96,27 @@ namespace Geo
             {
                 double fraction = (double)outwardsId / spiderNetResolution;
 
-                List<Vec3D> ring = new List<Vec3D>();
-                for(int ringId = 0; ringId < borderLoop.Count; ++ringId)
+                var ringPrecise = new List<Rat3Hybrid>(borderLoop.Count);
+                for (int i = 0; i < borderLoop.Count; i++)
                 {
-                    var p = Slerp(spiderNetCenter - sphereCenter, borderLoop[ringId] - sphereCenter, fraction);
-                    // Slerp returns a normalized direction vector, so scale it by cornerRadius
-                    ring.Add(sphereCenter + p * cornerRadius);
+                    if (outwardsId == spiderNetResolution)
+                    {
+                        ringPrecise.Add(exactBoundary[i]);
+                        continue;
+                    }
+                    var poleDirection = (spiderNetCenter - sphereCenter).Normalized();
+                    var boundaryDirection = (borderLoop[i] - sphereCenter).Normalized();
+                    double angle = Math.Acos(Math.Clamp(Vec3DOps.Dot(poleDirection, boundaryDirection), -1, 1));
+                    double sine = Math.Sin(angle);
+                    double poleWeight = sine == 0 ? 1 - fraction : Math.Sin((1 - fraction) * angle) / sine;
+                    double boundaryWeight = sine == 0 ? fraction : Math.Sin(fraction * angle) / sine;
+                    var point = sphereOriginExact + (centerPrecise - sphereOriginExact) * Scalar(poleWeight)
+                        + (exactBoundary[i] - sphereOriginExact) * Scalar(boundaryWeight);
+                    point.Simplify();
+                    ringPrecise.Add(point);
                 }
-
-                if(outwardsId < spiderNetResolution)
-                    ring = Resample(ring, maxSegmentLength, cornerIndices);
-                else
-                {
-                    var ringShifted = new List<Vec3D>(ring.Count);
-                    for(int i=0;i<ring.Count;++i)
-                        ringShifted.Add(ring[(i + cornerIndices[0]) % ring.Count]);
-                    ring = ringShifted;
-                }
+                // Preserve corresponding rays instead of geometric rematching.
+                var ring = cc.Convert(ringPrecise);
 
                 List<int> currentLoop = new List<int>(ring.Count);
                 int offset = finalPoints.Count;
@@ -107,16 +132,9 @@ namespace Geo
                     Vec3D p = ring[i];
                     finalPoints.Add(p);
                     
-                    if (outwardsId == spiderNetResolution)
-                        finalPointsPrecise.Add(exactBoundary[(i + cornerIndices[0]) % ring.Count]); // Outermost points must match exactly
-                    else
-                    {
-                        var p2 = cc.Convert(p);
-                        finalPointsPrecise.Add(new Rat3Hybrid(p2.X, p2.Y, p2.Z));
-                    }
-                    
-                    // For concave edges: normals point outward from sphere center
-                    // For convex edges: normals point inward toward sphere center
+                    finalPointsPrecise.Add(ringPrecise[i]);
+
+                    // Convex removal uses outward sphere normals; concave filling reverses them.
                     Vec3D normal = (p - sphereCenter).Normalized();
                     if (blendType == EdgeBlendType.Concave)
                         normal = -normal;
@@ -132,12 +150,37 @@ namespace Geo
                     currentLoop.Add(i + offset);
                 }
 
-                ConnectRings(finalPoints, prevLoop, currentLoop, finalTriangles);
+                if (prevLoop.Count == 1)
+                    ConnectRings(finalPoints, prevLoop, currentLoop, finalTriangles);
+                else
+                    for (int i = 0; i < currentLoop.Count; i++)
+                    {
+                        int next = (i + 1) % currentLoop.Count;
+                        finalTriangles.Add(new Tri(prevLoop[i], currentLoop[i], currentLoop[next]));
+                        finalTriangles.Add(new Tri(prevLoop[i], currentLoop[next], prevLoop[next]));
+                    }
 
                 prevLoop = currentLoop;
             }
 
-            // For convex edges, flip all triangle winding
+            // The boundary connector may traverse either direction. Orient the
+            // patch from its known sphere center before applying concave polarity.
+            foreach (var triangle in finalTriangles)
+            {
+                var a = finalPointsPrecise[triangle.A];
+                var normal = Rat3Hybrid.Cross(finalPointsPrecise[triangle.B] - a, finalPointsPrecise[triangle.C] - a);
+                var orientation = Rat3Hybrid.Dot(normal, a - sphereOriginExact);
+                if (orientation == BigRationalHybrid.Zero) continue;
+                if (orientation < BigRationalHybrid.Zero)
+                    for (int i = 0; i < finalTriangles.Count; i++)
+                    {
+                        var t = finalTriangles[i];
+                        finalTriangles[i] = new Tri(t.A, t.C, t.B);
+                    }
+                break;
+            }
+
+            // Concave filling reverses the sphere surface orientation.
             if (blendType == EdgeBlendType.Concave)
             {
                 for (int i = 0; i < finalTriangles.Count; i++)
@@ -153,6 +196,48 @@ namespace Geo
         /// <summary>
         /// Tessellate a planar corner cap from a closed boundary loop (symmetric chamfer junction).
         /// </summary>
+        // The connector may traverse a corner loop either way. Shared exact
+        // boundary edges determine winding; fitted plane normals cannot.
+        internal static void OrientToNeighbours(UVSurface patch, IEnumerable<UVSurface> neighbours)
+        {
+            static IEnumerable<(Rat3Hybrid Start, Rat3Hybrid End)> Boundary(UVSurface surface)
+            {
+                foreach (var edge in AdjacencyEx.BuildEdgeToTrianglesMap(surface.Triangles))
+                {
+                    if (edge.Value.Count != 1) continue;
+                    var (a, b) = edge.Key;
+                    var triangle = surface.Triangles[edge.Value[0]];
+                    if (!((triangle.A == a && triangle.B == b) ||
+                          (triangle.B == a && triangle.C == b) ||
+                          (triangle.C == a && triangle.A == b)))
+                        (a, b) = (b, a);
+                    yield return (surface.PointsPrecise[a], surface.PointsPrecise[b]);
+                }
+            }
+
+            var boundary = Boundary(patch).ToHashSet();
+            bool? reverse = null;
+            foreach (var neighbour in neighbours)
+                foreach (var edge in Boundary(neighbour))
+                {
+                    bool same = boundary.Contains(edge);
+                    if (!same && !boundary.Contains((edge.End, edge.Start))) continue;
+                    if (reverse.HasValue && reverse.Value != same)
+                        throw new InvalidOperationException("Corner patch neighbours have inconsistent boundary orientation.");
+                    reverse = same;
+                }
+            if (!reverse.HasValue)
+                throw new InvalidOperationException("Corner patch has no exact shared boundary with its neighbouring strips.");
+            if (!reverse.Value) return;
+            for (int i = 0; i < patch.Triangles.Count; i++)
+            {
+                var triangle = patch.Triangles[i];
+                patch.Triangles[i] = new Tri(triangle.A, triangle.C, triangle.B);
+            }
+            for (int i = 0; i < patch.Normals.Count; i++)
+                patch.Normals[i] = -patch.Normals[i];
+        }
+
         public static UVSurface TessellatePlanarCap(
             List<Vec3D> borderLoop,
             List<Rat3Hybrid> exactBoundary,
@@ -237,63 +322,6 @@ namespace Geo
                 ? (Math.Abs(v.X) < Math.Abs(v.Z) ? new Vec3D(1, 0, 0) : new Vec3D(0, 0, 1))
                 : (Math.Abs(v.Y) < Math.Abs(v.Z) ? new Vec3D(0, 1, 0) : new Vec3D(0, 0, 1));
             return Vec3DOps.Cross(v, axis);
-        }
-
-        /// <summary>
-        /// Resample a ring of points to maintain a maximum arc length between consecutive points.
-        /// The ring is split into segments at cornerIndices, and each segment is resampled independently.
-        /// </summary>
-        private static List<Vec3D> Resample(List<Vec3D> ring, double maxSegmentLength, List<int> cornerIndices)
-        {
-            if (ring.Count == 0 || cornerIndices.Count == 0)
-                return ring;
-
-            List<Vec3D> resampled = new List<Vec3D>();
-
-            // Process each segment between consecutive corner indices
-            for (int segIdx = 0; segIdx < cornerIndices.Count; segIdx++)
-            {
-                int startIdx = cornerIndices[segIdx];
-                int endIdx = cornerIndices[(segIdx + 1) % cornerIndices.Count];
-
-                // Extract segment points
-                List<Vec3D> segment = new List<Vec3D>();
-                
-                if (endIdx > startIdx)
-                {
-                    // Simple case: segment doesn't wrap around
-                    for (int i = startIdx; i <= endIdx; i++)
-                        segment.Add(ring[i]);
-                }
-                else
-                {
-                    // Segment wraps around the ring
-                    for (int i = startIdx; i < ring.Count; i++)
-                        segment.Add(ring[i]);
-                    for (int i = 0; i <= endIdx; i++)
-                        segment.Add(ring[i]);
-                }
-
-                if (segment.Count < 2)
-                    continue;
-
-                // Create line strip for this segment
-                LineStrip3D segmentStrip = new LineStrip3D(segment);
-                double segmentLength = segmentStrip.TotalLength;
-
-                // Calculate number of points needed for this segment
-                int numPoints = Math.Max(2, (int)Math.Ceiling(segmentLength / maxSegmentLength) + 1);
-
-                // Resample the segment
-                // Add all points except the last one (to avoid duplicates at corners)
-                for (int i = 0; i < numPoints - 1; i++)
-                {
-                    double t = (double)i / (numPoints - 1);
-                    resampled.Add(segmentStrip.EvaluateUniform(t));
-                }
-            }
-
-            return resampled;
         }
 
         /// <summary>
@@ -447,37 +475,5 @@ namespace Geo
             return maxAngle;
         }
 
-        /// <summary>
-        /// Spherical linear interpolation between two direction vectors.
-        /// Both inputs should be direction vectors (will be normalized internally).
-        /// </summary>
-        private static Vec3D Slerp(Vec3D start, Vec3D end, double t)
-        {
-            // Normalize inputs
-            Vec3D v0 = start.Normalized();
-            Vec3D v1 = end.Normalized();
-            
-            // Compute the angle between vectors
-            double dot = Vec3DOps.Dot(v0, v1);
-            
-            // Clamp dot product to avoid numerical errors
-            dot = Math.Max(-1.0, Math.Min(1.0, dot));
-            
-            double angle = Math.Acos(dot);
-            
-            // If angle is very small, use linear interpolation
-            if (angle < 1e-6)
-            {
-                return (start * (1.0 - t) + end * t).Normalized();
-            }
-            
-            // Perform spherical interpolation
-            double sinAngle = Math.Sin(angle);
-            double w0 = Math.Sin((1.0 - t) * angle) / sinAngle;
-            double w1 = Math.Sin(t * angle) / sinAngle;
-            
-            return v0 * w0 + v1 * w1;
-        }
     }
 }
-

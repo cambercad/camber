@@ -94,15 +94,15 @@ namespace Curves
 
         public static int NumberOfCirclePoints(double maxDeviation, double radius, int minNumSegments = 6, double angle = 2 * Math.PI)
         {
-            double maxAngleStep = 2 * Math.Acos(1 - maxDeviation / radius);
-            int numSteps = Math.Max(minNumSegments, (int)(angle / maxAngleStep) + 1);
+            double maxAngleStep = 2 * Math.Acos(Math.Clamp(1 - maxDeviation / radius, -1, 1));
+            int numSteps = Math.Max(minNumSegments, (int)Math.Ceiling(angle / maxAngleStep));
+            if (angle == 2 * Math.PI)
+                numSteps = ((numSteps + 3) / 4) * 4;
             return numSteps + 1;
         }
 
         public override List<CurveVertex2D> Tessellate(double maxDeviation)
         {
-            //double maxAngleStep = 2 * Math.Acos(1 - maxDeviation / _radius);
-            //int numSteps = Math.Max(2, (int)(2 * Math.PI / maxAngleStep) + 1);
             int numSteps = NumberOfCirclePoints(maxDeviation, _radius);
 
             return Tessellate(numSteps);
@@ -112,9 +112,31 @@ namespace Curves
             List<CurveVertex2D> points = new List<CurveVertex2D>(numSteps);
             double scaling = 1.0 / (numSteps - 1);
             for (int i = 0; i < numSteps; ++i)
-                points.Add(EvaluateVertex(i * scaling));
+            {
+                Vec2D normal = UnitCircleSample(i, numSteps - 1);
+                points.Add(new CurveVertex2D(_center + normal * _radius, normal, i * scaling));
+            }
 
             return points;
+        }
+
+        /// <summary>
+        /// Shared circle/revolution sampling. Quadrant reduction gives exactly
+        /// matching samples under quarter turns and exact cardinal directions.
+        /// </summary>
+        public static Vec2D UnitCircleSample(int sample, int segments)
+        {
+            long phase = 4L * (sample % segments);
+            int quadrant = (int)(phase / segments);
+            double angle = (phase % segments) * (Math.PI / 2) / segments;
+            double c = Math.Cos(angle), s = Math.Sin(angle);
+            return quadrant switch
+            {
+                0 => new Vec2D(c, s),
+                1 => new Vec2D(-s, c),
+                2 => new Vec2D(-c, -s),
+                _ => new Vec2D(s, -c),
+            };
         }
 
         public override Curve2D GetCopy() { return new Circle2D(this); }

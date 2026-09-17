@@ -45,3 +45,6 @@ Desktop.ini
 
 # IDE
 .idea/
+
+# Generated example renders
+/output/

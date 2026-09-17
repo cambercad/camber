@@ -28,6 +28,12 @@ namespace Geo
             CoordinateConverter cc,
             double maxDiscretizationDeviation,
             ref int groupIdOffset)
+            => BlendEdges(mesh, edgeNamesToBlend, blendRadius, cc, maxDiscretizationDeviation,
+                ref groupIdOffset, null);
+
+        internal AnchorMesh BlendEdges(AnchorMesh mesh, List<string> edgeNamesToBlend, double blendRadius,
+            CoordinateConverter cc, double maxDiscretizationDeviation, ref int groupIdOffset,
+            Func<int, int> allocateGroupIds)
         {
             if (mesh == null)
                 throw new ArgumentNullException(nameof(mesh));
@@ -48,7 +54,7 @@ namespace Geo
                 new FilletProfile(blendRadius),
                 cc,
                 maxDiscretizationDeviation,
-                ref groupIdOffset);
+                ref groupIdOffset, "_blended", allocateGroupIds);
         }
     }
 

@@ -190,24 +190,22 @@ namespace NURBS
 
         public static List<Tri>[] TriangulateDefaultBorder(List<Vec2D> points, IList<List<int>> polygons)
         {
-            int numPoints = points.Count;
-            List<IntPoint> pts = new List<IntPoint>(numPoints);
-            long scaling = long.MaxValue >> 16;
-            double backScaling = 1.0 / scaling;
-            for (int i = 0; i < numPoints; ++i)
+            // Preserve distinct surface parameters, including adjacent floating-point
+            // values near knots. A fixed integer grid can collapse valid UV leaves.
+            var pts = new List<Rat2Hybrid>(points.Count);
+            foreach (var point in points)
             {
-                Vec2D p = points[i];
-                IntPoint ip = new IntPoint((p.X - 0.5) * scaling, (p.Y - 0.5) * scaling, i + 1);
-                //BufferPoint(tree, additionalBorderPointBuffer, p, ip);
-                pts.Add(ip);
+                BigRational x = point.X, y = point.Y;
+                pts.Add(new Rat2Hybrid(
+                    new BigRationalHybrid(x.Numerator, x.Denominator),
+                    new BigRationalHybrid(y.Numerator, y.Denominator)));
             }
-
 
             List<Tri>[] buffer = new List<Tri>[polygons.Count];
             Parallel.For(0, polygons.Count, i =>
             {
                 List<int> polygon = polygons[i];
-                buffer[i] = TriangulatePolygon(pts, polygon);
+                buffer[i] = Triangulator.TriangulatePolygon(pts, polygon);
             });
 
             return buffer;

@@ -1,4 +1,5 @@
 using GeoCore;
+using GeoSolver.Kinematics;
 using System.Collections.Generic;
 
 namespace Geo
@@ -25,6 +26,7 @@ namespace Geo
     public sealed class AssemblyMateRecord
     {
         private readonly List<string> _entities = new List<string>();
+        internal string[] OperandEntities { get; private set; } = Array.Empty<string>();
 
         internal AssemblyMateRecord(
             AssemblyMateKind kind,
@@ -48,6 +50,16 @@ namespace Geo
             Scalar = scalar;
         }
 
+        // Fixed targets belong to the solver body, which may be a whole occurrence.
+        internal Transform? FixedPose { get; private set; }
+        internal AssemblyOccurrence FixedOccurrence { get; private set; }
+        internal AssemblyMateRecord WithFixedTarget(Transform pose, AssemblyOccurrence occurrence = null)
+        {
+            FixedPose = pose;
+            FixedOccurrence = occurrence;
+            return this;
+        }
+
         public AssemblyMateKind Kind { get; }
         public string Label { get; }
         public AssemblyPart PartA { get; }
@@ -63,6 +75,7 @@ namespace Geo
 
         internal AssemblyMateRecord WithEntities(params string[] entities)
         {
+            OperandEntities = entities == null ? Array.Empty<string>() : (string[])entities.Clone();
             _entities.Clear();
             if (entities == null)
                 return this;

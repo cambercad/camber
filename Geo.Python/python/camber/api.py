@@ -1,6 +1,8 @@
 import math
+import json
 import os
 import sys
+from collections import namedtuple
 
 from .vec import _xy, _xyz, vec2, vec3
 
@@ -215,6 +217,9 @@ def _curve_index(sketch, curve):
     parsed = _naming.parse_sketch_curve_address(key)
     if parsed is not None:
         key = parsed["curve"]
+    native_index = getattr(sketch._n, "constraint_curve_index", None)
+    if native_index is not None:
+        return int(native_index(key))
     dumped = []
     try:
         dumped = sketch._solved_actions()
@@ -549,6 +554,27 @@ class Curve(object):
         return Curve(_require(_native_mod()["NativeCurve"], "line")(x0, y0, z0, x1, y1, z1, _name(name)))
 
     @staticmethod
+    def hermite(points, tangent_directions, name=None):
+        """Cubic guide through points, with one nonzero tangent direction per knot.
+
+        Direction magnitudes are ignored; adjacent chord lengths set derivative
+        magnitudes. Repeat the first point and direction to close the curve.
+        The closed seam is C1, including unequal first/last chord lengths.
+        Cubic interpolation does not guarantee C2 acceleration continuity.
+        """
+        from .geom import _pack_points3
+        return Curve(_require(_native_mod()["NativeCurve"], "hermite")(
+            _pack_points3(points), _pack_points3(tangent_directions), _name(name)))
+
+    def point(self, u):
+        """Point at normalized parameter u in [0,1], not normalized arc length."""
+        return vec3(tuple(map(float, _require(self._n, "point")(float(u)).split())))
+
+    def tangent(self, u):
+        """Unit tangent at normalized parameter u in [0,1]."""
+        return vec3(tuple(map(float, _require(self._n, "tangent")(float(u)).split())))
+
+    @staticmethod
     def helix(origin, x_axis, y_axis, radius, pitch, turns, right_handed=True, name=None):
         """Helix in the plane of ``x_axis``/``y_axis``; axis is their cross. ``pitch`` is z per turn."""
         ox, oy, oz = _xyz(origin)
@@ -595,10 +621,28 @@ class Curve(object):
 class LoftOptions(object):
     """GeoAPI LoftOptions. Enum fields are ints (see LOFT_STYLE_*)."""
 
-    def __init__(self, native=None):
+    def __init__(self, native=None, *, correspondence=None):
         """Empty options, or wrap an existing native LoftOptions."""
         NativeLoftOptions = _native_mod()["NativeLoftOptions"]
         self._n = native if native is not None else NativeLoftOptions()
+        if correspondence is not None:
+            self.correspondence = correspondence
+
+    @property
+    def correspondence(self):
+        """Section matching: 'arc_length', 'uniform', 'features', or 'vertices'.
+
+        'vertices' matches ordered polygon corners; all sections must have the
+        same vertex count. Sharp polygon corners retain separate face normals.
+        """
+        return ("arc_length", "uniform", "features", "vertices")[self._n.correspondence_mode]
+
+    @correspondence.setter
+    def correspondence(self, value):
+        choices = ("arc_length", "uniform", "features", "vertices")
+        if value not in choices:
+            raise ValueError("correspondence must be one of " + ", ".join(choices))
+        self._n.correspondence_mode = choices.index(value)
 
     @staticmethod
     def propeller_blade():
@@ -703,18 +747,18 @@ class AssemblyPart(object):
         return AssemblyPlaneDatum(_invoke(self._n, "add_plane_datum", str(reference)), self, str(reference))
 
     def axis_at(self, point, direction):
-        """Axis through ``point`` along ``direction`` (world vec3)."""
+        """Axis through ``point`` along ``direction`` in part-local coordinates."""
         px, py, pz = _xyz(point)
         dx, dy, dz = _xyz(direction)
         return AssemblyAxisDatum(_invoke(self._n, "add_axis_datum_at", px, py, pz, dx, dy, dz), self)
 
     def point_at(self, point):
-        """Point datum at a world location."""
+        """Point datum in part-local coordinates."""
         px, py, pz = _xyz(point)
         return AssemblyPointDatum(_invoke(self._n, "add_point_datum_at", px, py, pz), self)
 
     def plane_at(self, origin, normal):
-        """Plane datum at ``origin`` with world ``normal``."""
+        """Plane datum at ``origin`` with ``normal``, both in part-local coordinates."""
         px, py, pz = _xyz(origin)
         nx, ny, nz = _xyz(normal)
         return AssemblyPlaneDatum(_invoke(self._n, "add_plane_datum_at", px, py, pz, nx, ny, nz), self)
@@ -763,6 +807,62 @@ class AssemblyOccurrence(object):
         return "AssemblyOccurrence({0!r})".format(self.name)
 
 
+class Interference(namedtuple("Interference", "first second volume geometry")):
+    """Overlapping occurrence paths, volume in cubic model units, and a Solid to display."""
+    __slots__ = ()
+
+
+class MateResidual(namedtuple("MateResidual", "index kind label entities residuals max_residual tolerance satisfied")):
+    """One mate's normalized equation errors, captured at the reported pose.
+
+    Residuals are dimensionless solver errors, not distances in model units.
+    An unsatisfied mate locates error; it does not identify a minimal conflict set.
+    """
+    __slots__ = ()
+
+    def __repr__(self):
+        return "MateResidual(index={0}, label={1!r}, max_residual={2:.3g}, satisfied={3})".format(
+            self.index, self.label, self.max_residual, self.satisfied)
+
+
+class AssemblySolveResult(namedtuple("AssemblySolveResult", "converged sum_squared_error num_parameters num_equations message characteristic_length mates")):
+    """Immutable solver outcome and per-mate errors at the resulting pose.
+
+    Parameter/equation counts describe the solver system, not remaining degrees
+    of freedom. Contact mates have their own regularized residual tolerance.
+    ``converged`` is the solver outcome; ``unsatisfied`` separately checks every
+    equality mate at its stricter tolerance, even in a regularized contact solve.
+    """
+    __slots__ = ()
+
+    @property
+    def unsatisfied(self):
+        """Unsatisfied mates, largest normalized error first."""
+        return tuple(sorted((mate for mate in self.mates if not mate.satisfied),
+                            key=lambda mate: (-mate.max_residual, mate.index)))
+
+    @classmethod
+    def _from_json(cls, value):
+        report = json.loads(value)
+        mates = tuple(MateResidual(item['index'], item['kind'], item['label'],
+                      tuple(item['entities']), tuple(float(x) for x in item['residuals']),
+                      float(item['max_residual']), float(item['tolerance']), item['satisfied'])
+                      for item in report['mates'])
+        return cls(report['converged'], float(report['sum_squared_error']),
+                   report['num_parameters'], report['num_equations'], report['message'],
+                   float(report['characteristic_length']), mates)
+
+    def __repr__(self):
+        failures = self.unsatisfied
+        summary = "AssemblySolveResult(converged={0}, parameters={1}, equations={2}, unsatisfied={3}".format(
+            self.converged, self.num_parameters, self.num_equations, len(failures))
+        if failures:
+            summary += ", worst={0!r} ({1:.3g})".format(failures[0].label, failures[0].max_residual)
+        if self.message:
+            summary += ", message={0!r}".format(self.message)
+        return summary + ")"
+
+
 class Assembly(object):
     """Rigid-part assembly solved by C# Geo Assembly constraints.
 
@@ -791,6 +891,26 @@ class Assembly(object):
     def solve_after_every_constraint(self, value):
         self._n.solve_after_every_constraint = 1 if value else 0
 
+    def interferences(self, *, min_volume=0):
+        """Return positive overlaps, largest first, including nested parts.
+
+        Uses current occurrence poses without solving or modifying the model.
+        Each result has ``first`` and ``second`` component paths, ``volume``
+        in cubic model units, and ``geometry`` for show()/render_views().
+        Only volumes strictly greater than ``min_volume`` are returned.
+        Touching surfaces are excluded; failed geometry checks raise an error
+        identifying the pair, rather than being reported as collision-free.
+        This checks the tessellated solids, not analytic minimum clearance.
+        """
+        min_volume = float(min_volume)
+        if not math.isfinite(min_volume) or min_volume < 0:
+            raise ValueError("min_volume must be finite and nonnegative")
+        result = _invoke(self._n, "interferences", min_volume)
+        return [Interference(_invoke(result, "first", i), _invoke(result, "second", i),
+                             float(_invoke(result, "volume", i)),
+                             Solid(_invoke(result, "geometry", i), self._part))
+                for i in range(int(result.count))]
+
     def add_part(self, solid, position=(0, 0, 0), orientation=(0, 0, 0, 1)):
         """Place ``solid`` at ``position`` with quaternion ``orientation`` (x,y,z,w). Returns AssemblyPart."""
         px, py, pz = _xyz(position)
@@ -800,6 +920,60 @@ class Assembly(object):
         return AssemblyPart(_invoke(
             self._n, "add_part",
             solid._n, px, py, pz, float(qx), float(qy), float(qz), float(qw)))
+
+    def pattern_linear(self, seed, count, step):
+        """Return ``count`` instances including seed, spaced by assembly-frame step.
+
+        Copies share the solid definition and are mated rigidly to the seed,
+        so moving the seed moves the pattern. The seed may be a direct part
+        or subassembly; nested hierarchy and internal mates are preserved.
+        """
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            raise ValueError("count must be a positive integer")
+        x, y, z = _xyz(step)
+        nested = isinstance(seed, AssemblyOccurrence)
+        if not nested and not isinstance(seed, AssemblyPart):
+            raise TypeError("seed must be an assembly part or subassembly occurrence")
+        method = "pattern_linear_subassembly" if nested else "pattern_linear"
+        result = _invoke(self._n, method, seed._n, count, x, y, z)
+        return [seed] + [(AssemblyOccurrence(_invoke(result, "get", i), self) if nested
+                         else AssemblyPart(_invoke(result, "get", i)))
+                        for i in range(1, int(result.count))]
+
+    def pattern_circular(self, seed, count, axis=None, angle=2*math.pi):
+        """Pattern around axis.z; a full circle omits the duplicate endpoint.
+
+        A partial sweep includes both endpoints. Count includes the seed.
+        Axis is a Frame in assembly coordinates; defaults to the world Z axis.
+        Copies rotate with the pattern and remain rigidly mated to the seed.
+        """
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            raise ValueError("count must be a positive integer")
+        axis = Frame() if axis is None else _as_frame(axis)
+        nested = isinstance(seed, AssemblyOccurrence)
+        if not nested and not isinstance(seed, AssemblyPart):
+            raise TypeError("seed must be an assembly part or subassembly occurrence")
+        method = "pattern_circular_subassembly" if nested else "pattern_circular"
+        result = _invoke(self._n, method, seed._n, count, axis._native(), float(angle))
+        return [seed] + [(AssemblyOccurrence(_invoke(result, "get", i), self) if nested
+                         else AssemblyPart(_invoke(result, "get", i)))
+                        for i in range(1, int(result.count))]
+
+    def mirror(self, seed, plane=None, name=None):
+        """Mirror a direct part or subassembly in the XY plane of a Frame.
+
+        Creates opposite-handed geometry and retains nested parts and mates.
+        After creation, recorded rigid mates make the result follow its seed;
+        the mirror plane defines the initial placement, not a moving symmetry mate.
+        """
+        if not isinstance(seed, (AssemblyPart, AssemblyOccurrence)):
+            raise TypeError("seed must be an AssemblyPart or AssemblyOccurrence")
+        plane = Frame() if plane is None else _as_frame(plane)
+        if isinstance(seed, AssemblyOccurrence):
+            return AssemblyOccurrence(_invoke(self._n, "mirror_sub_assembly",
+                seed._n, plane._native(), _name(name)), self)
+        return AssemblyPart(_invoke(self._n, "mirror_part",
+            seed._n, plane._native(), _name(name)))
 
     def add_subassembly(self, assembly, position=(0, 0, 0), orientation=(0, 0, 0, 1)):
         """Place ``assembly`` as a rigid child. Returns AssemblyOccurrence.
@@ -932,11 +1106,11 @@ class Assembly(object):
             n for n in [_entity_short(a), _entity_short(b)] if n)), ents)
 
     def solve(self):
-        """Run the assembly constraint solver. Returns a status string (may print it)."""
-        result = _invoke(self._n, "solve_constraints")
-        if result:
-            print(result)
-        return result
+        """Solve assembly mates and return an immutable AssemblySolveResult.
+
+        Inspect ``result.converged`` and ``result.unsatisfied`` for diagnostics.
+        """
+        return AssemblySolveResult._from_json(_invoke(self._n, "solve_constraints"))
 
     def plane_frame(self, reference):
         """World Frame of a named assembly plane, or None."""
@@ -960,12 +1134,11 @@ class Part(object):
     """
 
     def __init__(self, low, high, tolerance=0.01):
-        """Create a part. Clears other GeoAPI instances in this process."""
+        """Create an independent CAD session without resetting other sessions."""
         NativePart, _, _ = _native()
         lx, ly, lz = _xyz(low)
         hx, hy, hz = _xyz(high)
         _log_progress("Part")
-        _require(NativePart, "clear")()
         self._n = NativePart(lx, ly, lz, hx, hy, hz, float(tolerance))
 
     @property
@@ -1154,10 +1327,18 @@ class Part(object):
             return None
         return Frame._from_native(native)
 
-    def extrude_along_curve(self, sketch, curve, name=None, max_deviation=-1, twist=0):
-        """Sweep the sketch along a 3D Curve."""
+    def extrude_along_curve(self, sketch, curve, name=None, max_deviation=-1, twist=0,
+                            reference_direction=None):
+        """Sweep a profile along a 3D Curve.
+
+        Optional reference_direction projects a fixed world direction onto
+        each normal plane to control profile orientation. It must never be
+        parallel to the path tangent. The initial sketch sets profile clocking.
+        """
+        from .geom import _pack_points3
+        reference = "" if reference_direction is None else _pack_points3([reference_direction])
         return Solid(_require(self._n, "extrude_along_curve")(
-            sketch._n, curve._n, float(max_deviation), float(twist), _name(name)), self)
+            sketch._n, curve._n, float(max_deviation), float(twist), _name(name), reference), self)
 
     def extrude_along_curve_strip(self, sketch, curves, name=None, max_deviation=-1, twist=0):
         """Sweep the sketch along a sequence of Curves (G1 strip)."""
@@ -1169,12 +1350,54 @@ class Part(object):
         return Solid(_require(self._n, "extrude_along_sketch")(
             profile._n, guide._n, float(max_deviation), _name(name)), self)
 
-    def loft(self, sketches, options=None, name=None, max_deviation=-1):
-        """Loft through a sequence of Sketches. ``options`` is LoftOptions."""
+    def loft(self, sketches, options=None, name=None, max_deviation=-1, *, first_curves=None):
+        """Loft through Sketches, preserving their authored start points as connectors.
+
+        ``options`` is LoftOptions. Symmetric sections are not automatically
+        rotated according to their proximity to the sketch origin.
+        ``first_curves`` optionally supplies one starting edge name per sketch,
+        in section order. Names must resolve uniquely within their own sketches.
+        Each selected curve's start-to-end direction defines section traversal;
+        clockwise sections are not reversed to counterclockwise.
+        This selects matched correspondence when options are omitted. Sections
+        must have equal curve counts; each curve produces a separate side face.
+        Arc/line and spline sections retain their exact NURBS shapes and require
+        compatible rational weights after degree elevation and knot insertion.
+        """
+        sketches = list(sketches)
+        if first_curves is not None:
+            if isinstance(first_curves, str):
+                raise TypeError("first_curves must be a list of curve names, one per section")
+            first_curves = list(first_curves)
+            if len(first_curves) != len(sketches):
+                raise ValueError("first_curves must contain one curve name per section")
+            if any(not isinstance(n, str) or not n.strip() or "|" in n for n in first_curves):
+                raise ValueError("first_curves entries must be nonempty curve names without '|'")
         if options is None:
-            options = LoftOptions()
+            options = LoftOptions(correspondence="vertices" if first_curves is not None else None)
         return Solid(_require(self._n, "loft")(
-            _sketch_list(sketches), options._n, float(max_deviation), _name(name)), self)
+            _sketch_list(sketches), options._n, float(max_deviation), _name(name),
+            "" if first_curves is None else _join_names(first_curves)), self)
+
+    def loft_surface(self, sections, *, guides=None, start_tangent=None,
+                     end_tangent=None, name=None, max_deviation=-1):
+        """Create an uncapped NURBS sheet through sketch sections.
+
+        Sections retain authored curve order; degrees and knots are matched exactly.
+        Rational sections must share weights after this conversion.
+        Optional ``guides`` control the two side boundaries: use lines or
+        ``Curve.hermite`` curves with one point at each section endpoint, in order.
+        Optional tangents are world-space derivative vectors (direction and magnitude)
+        for the start/end of the loft. Both point in the direction of section order.
+        The loft parameter runs from zero to one with equal intervals per section.
+        Conflicting guides/tangents raise an error; inputs are never fitted or snapped.
+        """
+        from .geom import _pack_points3
+        def tangent(value):
+            return "" if value is None else _pack_points3([value])
+        return Solid(_require(self._n, "loft_surface")(
+            _sketch_list(sections), _curve_list(() if guides is None else guides),
+            tangent(start_tangent), tangent(end_tangent), float(max_deviation), _name(name)), self)
 
     def boolean(self, a, b, operation, name=None):
         """CSG: ``operation`` is BOOLEAN_UNION / DIFFERENCE / INTERSECT."""
@@ -1214,7 +1437,12 @@ class Part(object):
             _pack_points3(positions), _pack_triangles(triangles), _name(name)), self)
 
     def raycast(self, solid, origin, direction):
-        """Nearest mesh hit along ``origin`` + t * ``direction``, or ``None``."""
+        """Nearest mesh hit from ``origin`` along ``direction``, or ``None``.
+
+        ``hit.t`` is the fraction of the kernel's internal cast segment:
+        zero at its origin and one at its far end. Use ``hit.point`` for
+        the world-space intersection.
+        """
         from .geom import _parse_ray_hit
         ox, oy, oz = _xyz(origin)
         dx, dy, dz = _xyz(direction)
@@ -1222,17 +1450,66 @@ class Part(object):
             solid._n, float(ox), float(oy), float(oz), float(dx), float(dy), float(dz))
         return _parse_ray_hit(packed)
 
+    def pattern_linear(self, solid, count, step, name=None):
+        """Return independent solids at equal XYZ steps, including ``solid``.
+
+        ``count`` includes the unchanged seed. ``name`` prefixes the new names.
+        """
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            raise ValueError("count must be a positive integer")
+        x, y, z = _xyz(step)
+        result = _invoke(self._n, "pattern_linear", solid._n, count,
+                         float(x), float(y), float(z), _name(name))
+        return [solid] + [Solid(_invoke(result, "get", i), self) for i in range(1, int(result.count))]
+
+    def pattern_circular(self, solid, count, axis=None, angle=2*math.pi, name=None):
+        """Return copies rotated around ``axis.z``; count includes the seed.
+
+        Axis defaults to Frame(). A full sweep (exactly ±2*pi radians) omits
+        the duplicate endpoint; a partial sweep includes both endpoints.
+        ``name`` prefixes the new names. The source remains unchanged.
+        """
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            raise ValueError("count must be a positive integer")
+        axis = Frame() if axis is None else _as_frame(axis)
+        result = _invoke(self._n, "pattern_circular", solid._n, count,
+                         axis._native(), float(angle), _name(name))
+        return [solid] + [Solid(_invoke(result, "get", i), self) for i in range(1, int(result.count))]
+
+    def mirror(self, solid, plane=None, name=None):
+        """Return a new solid reflected in the XY plane of ``plane`` (a Frame).
+
+        The default is the world XY plane. Source geometry and names stay intact.
+        """
+        plane = Frame() if plane is None else _as_frame(plane)
+        return Solid(_invoke(self._n, "mirror", solid._n, plane._native(), _name(name)), self)
+
     def copy_solid(self, source, name):
-        """Deep-copy a solid. `name` is required and must differ from the source; all entity prefixes are rewritten."""
+        """Deep-copy a solid, rewriting its entity prefixes to the required new name.
+
+        Cross-Part copies require the same coordinate lattice (origin and step).
+        Geometry is copied exactly; this operation does not resample another
+        session's integer coordinates onto a different working lattice.
+        """
         if name is None or str(name).strip() == "":
             raise ValueError("copy_solid requires a new part name")
         name = str(name)
         if source is not None and source.name == name:
             raise ValueError("copy_solid requires a name different from the source ({0!r})".format(name))
+        if source._part is not self:
+            def lattice(part):
+                packed = _require(part._n, "pack_working_volume")().split()
+                return tuple(float(value) for value in packed[1:4]), part.smallest_unit()
+            if lattice(source._part) != lattice(self):
+                raise ValueError("copy_solid requires matching working coordinate lattices; use Parts with the same working volume")
         return Solid(_require(self._n, "copy_solid_as_instance")(source._n, name), self)
 
     def fillet(self, solid, edges, radius, name=None, max_deviation=-1):
-        """Fillet named edges. ``edges`` is a string or list of names (joined with ``|``)."""
+        """Fillet named edges. ``edges`` is a string or list of names.
+
+        Continues across supported planar/cylindrical tangent seams. Surviving
+        original faces keep their names; sharp boundaries are preserved.
+        """
         return Solid(_require(self._n, "fillet")(
             solid._n, _join_names(edges), float(radius), float(max_deviation), _name(name)), self)
 
@@ -1366,6 +1643,28 @@ class Sketch(object):
             self._snap_added_point(curve_name, "line", 1, end_name)
         return SketchCurve(curve_name, "line")
 
+    def add_ellipse(self, center, radii, rotation=0, name=None, construction=False):
+        """Ellipse with two semiaxes; rotation is in radians from sketch X.
+
+        Dimension axes with ``distance(e @ "center", e @ 0, rx)`` and
+        ``distance(e @ "center", e @ .25, ry)``. These points stay live as
+        dimensions change. A construction line joining the center to ``e @ 0``
+        can carry the usual horizontal or angle constraint.
+        """
+        center_xy, center_name = self._resolved_endpoint(center)
+        rx, ry = radii
+        values = (*center_xy, rx, ry, rotation)
+        if not all(math.isfinite(v) for v in values) or rx <= 0 or ry <= 0:
+            raise ValueError("ellipse radii must be positive and all parameters finite")
+        index = self.curve_count
+        _require(self._n, "add_ellipse")(*center_xy, rx, ry, rotation, _name(name))
+        curve_name = self._added_curve_name(name, "ellipse", index)
+        if construction:
+            self.set_construction(curve_name, True)
+        if center_name:
+            self.coincident(curve_name + "@center", center_name)
+        return SketchCurve(curve_name, "ellipse")
+
     def add_circle(self, center, radius, name=None, construction=False):
         """Circle. ``center`` is XY or a named point. Returns SketchCurve."""
         center_xy, center_name = self._resolved_endpoint(center)
@@ -1409,6 +1708,9 @@ class Sketch(object):
     def _added_curve_name(self, given, kind, index):
         if given:
             return given
+        native_name = getattr(self._n, "last_curve_name", None)
+        if native_name is not None:
+            return str(native_name())
         dumped = self._solved_actions()
         from . import pick as _pick
         if 0 <= index < len(dumped):
@@ -1473,6 +1775,7 @@ class Sketch(object):
                     SketchCurve(north, "line"),
                     SketchCurve(west, "line"),
                 )
+            raise RuntimeError("Named rectangles require a rebuilt Camber wheel")
         index = self.curve_count
         _invoke(self._n, "add_rectangle", x0, y0, x1, y1)
         dumped = self._solved_actions()
@@ -1740,7 +2043,7 @@ class Sketch(object):
         return self
 
     def solve(self):
-        """Run the constraint solver. Returns self."""
+        """Solve constraints, raising on nonconvergence. Returns self."""
         _require(self._n, "solve_constraints")()
         return self
 
@@ -2212,6 +2515,17 @@ class Solid(object):
         if flag is None:
             return True
         return bool(flag)
+
+    @property
+    def edge_names(self):
+        """Feature edge references accepted by fillet/chamfer, excluding diagonals.
+
+        Unambiguous provenance names can be authored in scripts. When a face's
+        ancestry is ambiguous, an enumerated name carries ``#current=...`` and
+        selects this solid snapshot only; reacquire it after rebuilding or copying.
+        """
+        count = int(self._n.edge_count)
+        return tuple(_require(self._n, "edge_name_at")(i) for i in range(count))
 
     def __add__(self, other):
         """Boolean union. Result keeps this solid's name."""

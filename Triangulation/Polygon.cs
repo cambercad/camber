@@ -243,98 +243,35 @@ namespace GeoCore
                     return PointInPolygonResult.Outside;
             }
 
-            // TODO: Add bounding box check and simplify
-            var end = points[polygon[0]];
-            arithmetic.Set(ref end, 0, maxX);
-            arithmetic.Set(ref end, 1, maxY);
-
-            // Use ray from point to end and count the intersections
-            if (TestIdentical(end, point))
-                return PointInPolygonResult.OnPolyBorder;
-
-            int counter = 0;
-            for (int i = 0; i < polygon.Count; ++i)
+            // Half-open horizontal crossings count a shared vertex once.
+            // Exact orientation determines the crossing side without constructing
+            // a finite ray endpoint or dividing rational coordinates.
+            int winding = 0;
+            var px = arithmetic.Get(point, 0);
+            var py = arithmetic.Get(point, 1);
+            for (int i = 0; i < polygon.Count; i++)
             {
                 var a = points[polygon[i]];
                 var b = points[polygon[(i + 1) % polygon.Count]];
-                counter += SegmentsIntersect(a, b, point, end, out bool rayStartIsOnSegment);
-                if (rayStartIsOnSegment)
-                    return PointInPolygonResult.OnPolyBorder;
+                int ay = arithmetic.Compare(arithmetic.Get(a, 1), py);
+                int by = arithmetic.Compare(arithmetic.Get(b, 1), py);
+                if ((ay < 0 && by < 0) || (ay > 0 && by > 0))
+                    continue;
+                int side = arithmetic.Orient2D(a, b, point);
+                if (side == 0)
+                {
+                    var ax = arithmetic.Get(a, 0);
+                    var bx = arithmetic.Get(b, 0);
+                    if (arithmetic.Compare(px, arithmetic.Min(ax, bx)) >= 0 &&
+                        arithmetic.Compare(px, arithmetic.Max(ax, bx)) <= 0)
+                        return PointInPolygonResult.OnPolyBorder;
+                }
+                if (ay <= 0 && by > 0 && side > 0)
+                    winding++;
+                else if (ay > 0 && by <= 0 && side < 0)
+                    winding--;
             }
-            if (counter % 2 != 0)
-                throw new Exception();
-
-            counter /= 2;
-
-            return counter % 2 == 0 ? PointInPolygonResult.Outside : PointInPolygonResult.Inside;
-        }
-
-
-        private static bool TestIdentical(Vec a, Vec b)
-        {
-            return arithmetic.Compare(arithmetic.Get(a, 0), arithmetic.Get(b, 0)) == 0 &&
-                arithmetic.Compare(arithmetic.Get(a, 1), arithmetic.Get(b, 1)) == 0;
-        }
-
-
-        private static int SegmentsIntersect(Vec segA, Vec segB, Vec rayStart, Vec rayEnd, out bool rayStartIsOnSegment)
-        {
-            if (TestIdentical(segA, rayStart) || TestIdentical(segB, rayStart))
-            {
-                rayStartIsOnSegment = true;
-                return 0;
-            }
-
-            var x = arithmetic.Orient2D(rayStart, segA, segB);
-            var y = arithmetic.Orient2D(rayEnd, segA, segB);
-
-            if (x == 0 && y == 0)
-            {
-                //Colinear segments...
-                rayStartIsOnSegment = CollinearSegmentsOverlap(segA, segB, rayStart, rayEnd);
-                return 0;
-            }
-
-            var a = arithmetic.Orient2D(segA, rayStart, rayEnd);
-            var b = arithmetic.Orient2D(segB, rayStart, rayEnd);
-
-            if (a == 0 && b == 0)
-                throw new Exception("x == 0 && y == 0 should have evaluated to true");
-
-            var segmentBoundaryPointOnRay = a == 0 || b == 0;
-
-            bool intersect = Math.Sign(x) != Math.Sign(y) && Math.Sign(a) != Math.Sign(b);
-            if (intersect)
-            {
-                rayStartIsOnSegment = x == 0;
-                if (segmentBoundaryPointOnRay)
-                    return 1; // Only segments with an end point on the ray half to avoid double counting
-                return 2;
-            }
-            else
-            {
-                rayStartIsOnSegment = false;
-                return 0;
-            }
-        }
-
-        private static bool CollinearSegmentsOverlap(Vec pa, Vec pb, Vec px, Vec py)
-        {
-            //Choose segment ab as reference and fint the principal direction                
-            int id = -1;
-            if (arithmetic.Compare(arithmetic.Get(pa, 0), arithmetic.Get(pb, 0)) == 0)
-                id = 1; //Take y direction if x value of pa and pb is identical
-            else
-                id = 0;
-
-            return IntervalOverlapNoTouch(arithmetic.Min(arithmetic.Get(pa, id), arithmetic.Get(pb, id)), arithmetic.Max(arithmetic.Get(pa, id), arithmetic.Get(pb, id)),
-                arithmetic.Min(arithmetic.Get(px, id), arithmetic.Get(py, id)), arithmetic.Max(arithmetic.Get(px, id), arithmetic.Get(py, id)));
-        }
-
-        private static bool IntervalOverlapNoTouch(Scalar startA, Scalar endA, Scalar startB, Scalar endB)
-        {
-            return !(arithmetic.Compare(endA, startB) <= 0 || arithmetic.Compare(endB, startA) <= 0);
-            //return !(endA <= startB || endB <= startA);
+            return winding == 0 ? PointInPolygonResult.Outside : PointInPolygonResult.Inside;
         }
     }
 }

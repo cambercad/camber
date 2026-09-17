@@ -6,7 +6,8 @@ namespace GeoTests;
 
 public class BooleanTests : IDisposable
 {
-    public void Dispose() => GeoAPI.Clear();
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
 
     // ── helpers ─────────────────────────────────────────────────────────────
 
@@ -154,7 +155,6 @@ public class BooleanTests : IDisposable
     {
         var (api1, a1, b1) = MakePair(0.3);
         double volAB = MeshVolume(api1.Boolean(a1, b1, BooleanOp.Union, "ab"));
-        GeoAPI.Clear();
 
         var (api2, a2, b2) = MakePair(0.3);
         double volBA = MeshVolume(api2.Boolean(b2, a2, BooleanOp.Union, "ba"));

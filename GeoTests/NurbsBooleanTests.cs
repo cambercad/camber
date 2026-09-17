@@ -5,10 +5,10 @@ using GeoCore;
 
 namespace GeoTests;
 
-[Collection("GeoAPISequential")]
 public class NurbsBooleanTests : IDisposable
 {
-    public void Dispose() => GeoAPI.Clear();
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
 
     [Fact]
     public void Boolean_PreservesNurbsOnResultPatches()

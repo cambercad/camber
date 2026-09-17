@@ -245,7 +245,8 @@ namespace Geo.NurbsConstruction
         }
 
         /// <summary>
-        /// C0 join of same-degree clamped curves. Joint CPs of later segments are dropped.
+        /// C0 join of clamped curves, elevating their degrees without changing geometry.
+        /// Joint CPs of later segments are dropped.
         /// </summary>
         public static BSplineCurve ConcatenateCompatible(IReadOnlyList<BSplineCurve> segments)
         {
@@ -254,7 +255,7 @@ namespace Geo.NurbsConstruction
             if (segments.Count == 1)
                 return segments[0];
 
-            int degree = segments[0].Degree;
+            int degree = segments.Max(segment => segment.Degree);
             var cps = new List<Vec4D>();
             var knots = new List<double>();
             for (int k = 0; k <= degree; k++)
@@ -263,9 +264,7 @@ namespace Geo.NurbsConstruction
             int n = segments.Count;
             for (int s = 0; s < n; s++)
             {
-                var seg = segments[s];
-                if (seg.Degree != degree)
-                    throw new ArgumentException("Concatenated segments must share a degree.");
+                var seg = ElevateDegree(segments[s], degree);
                 int start = s == 0 ? 0 : 1;
                 for (int i = start; i < seg.ControlPoints.Length; i++)
                     cps.Add(seg.ControlPoints[i]);
@@ -292,6 +291,47 @@ namespace Geo.NurbsConstruction
             return new BSplineCurve(degree, cps.ToArray(), knots.ToArray(), false);
         }
 
+        // Split into homogeneous Bezier spans with existing knot insertion, then
+        // use the Bernstein degree-elevation identity. No curve fitting/sampling.
+        internal static BSplineCurve ElevateDegree(BSplineCurve curve, int degree)
+        {
+            if (curve.Degree == degree)
+                return curve;
+            int p = curve.Degree;
+            var breaks = curve.Knots.Distinct().OrderBy(k => k).ToArray();
+            var refined = curve;
+            foreach (double knot in breaks.Skip(1).SkipLast(1))
+            {
+                int multiplicity = curve.Knots.Count(k => k == knot);
+                if (multiplicity > p)
+                    throw new ArgumentException("Cannot concatenate a discontinuous curve.");
+                if (multiplicity < p)
+                    refined = refined.InsertKnot(knot, p - multiplicity);
+            }
+            var points = new List<Vec4D>();
+            var knots = new List<double>();
+            for (int span = 0; span < breaks.Length - 1; span++)
+            {
+                var control = refined.ControlPoints.Skip(span * p).Take(p + 1).ToArray();
+                for (int d = p; d < degree; d++)
+                {
+                    var elevated = new Vec4D[d + 2];
+                    elevated[0] = control[0];
+                    elevated[d + 1] = control[d];
+                    for (int i = 1; i <= d; i++)
+                    {
+                        double alpha = (double)i / (d + 1);
+                        elevated[i] = control[i - 1] * alpha + control[i] * (1 - alpha);
+                    }
+                    control = elevated;
+                }
+                points.AddRange(span == 0 ? control : control.Skip(1));
+                knots.AddRange(Enumerable.Repeat(breaks[span], span == 0 ? degree + 1 : degree));
+            }
+            knots.AddRange(Enumerable.Repeat(breaks[^1], degree + 1));
+            return new BSplineCurve(degree, points.ToArray(), knots.ToArray(), curve.ClosedCurve);
+        }
+
         private static BSplineCurve BuildLoftVCurve(Vec3D[] column, LoftStyle style)
         {
             if (style == LoftStyle.Hermite || style == LoftStyle.SmoothCatmullRom)
@@ -300,10 +340,10 @@ namespace Geo.NurbsConstruction
             return new BSplineCurve(degree, column, BSplineCurve.UniformKnotVector(degree, column.Length), false);
         }
 
-        private static BSplineCurve BuildHermiteVCurve(Vec3D[] points)
+        internal static BSplineCurve BuildHermiteVCurve(Vec3D[] points, Vec3D? startTangent = null, Vec3D? endTangent = null, bool forceCubic = false)
         {
             int pCount = points.Length;
-            if (pCount == 2)
+            if (pCount == 2 && !forceCubic && startTangent == null && endTangent == null)
                 return new BSplineCurve(1, points, new[] { 0.0, 0.0, 1.0, 1.0 }, false);
 
             var segments = new List<BSplineCurve>();
@@ -315,6 +355,8 @@ namespace Geo.NurbsConstruction
                 Vec3D m1 = p == pCount - 2
                     ? points[pCount - 1] - points[pCount - 2]
                     : 0.5 * (points[p + 2] - points[p]);
+                if (p == 0 && startTangent.HasValue) m0 = startTangent.Value / (pCount - 1);
+                if (p == pCount - 2 && endTangent.HasValue) m1 = endTangent.Value / (pCount - 1);
                 segments.Add(CubicHermiteSpanBspline.ToBSplineCurve(points[p], m0, points[p + 1], m1));
             }
 

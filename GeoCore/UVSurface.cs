@@ -112,6 +112,7 @@
                 return false;
 
             TryGetPreciseTriangleFaceNormal(Triangles[refIdx], out Rat3Hybrid referenceNormal);
+            var referencePoint = PointsPrecise[Triangles[refIdx].A];
 
             for (int i = 0; i < Triangles.Count; i++)
             {
@@ -120,6 +121,10 @@
                     continue;
 
                 if (!DirectionsAreCollinear(referenceNormal, normal))
+                    return false;
+                // Parallel triangles may belong to disconnected, displaced
+                // patches. Their normals alone do not establish coplanarity.
+                if (Rat3Hybrid.Dot(referenceNormal, PointsPrecise[tri.A] - referencePoint).Sign() != 0)
                     return false;
             }
 
@@ -320,6 +325,8 @@
             for (int i = 0; i < Points.Count; i++)
             {
                 Vec3D offsetPoint = Points[i] + surfaceNormals[i] * offset;
+                if (!double.IsFinite(offsetPoint.X) || !double.IsFinite(offsetPoint.Y) || !double.IsFinite(offsetPoint.Z))
+                    throw new InvalidOperationException($"Surface offset is nonfinite at vertex {i}: point {Points[i]}, normal {surfaceNormals[i]}.");
                 offsetPoints.Add(offsetPoint);
             }
             
@@ -343,7 +350,47 @@
                 offsetNormals.Add(surfaceNormals[i]);
             }
             
-            return new UVSurface(offsetPoints, offsetNormals, offsetUv, offsetTriangles, cc.Convert(offsetPoints));
+            // A planar offset is a translation. Rounding each translated world
+            // vertex separately destroys exact planarity for rational input vertices.
+            if (IsSurfacePlanar())
+            {
+                int ti = FindFirstNonDegeneratePreciseTriangleIndex();
+                var triangle = Triangles[ti];
+                var a = PointsPrecise[triangle.A];
+                var direction = Rat3Hybrid.Cross(PointsPrecise[triangle.B] - a, PointsPrecise[triangle.C] - a);
+                var components = new[] { direction.X, direction.Y, direction.Z };
+                int dominant = Enumerable.Range(0, 3).MaxBy(i => Math.Abs(components[i].ToDouble()));
+                direction /= components[dominant];
+                direction.Simplify();
+                var vector = new Vec3D(direction.X.ToDouble(), direction.Y.ToDouble(), direction.Z.ToDouble());
+                double sense = Math.Sign(Vec3DOps.Dot(vector, surfaceNormals[triangle.A]));
+                // Scale one exact normal. Independently rounding XYZ destroys
+                // perpendicularity and disconnects subsequent contact curves.
+                const long coefficientScale = 1L << 40;
+                double coefficient = sense * offset / (cc.SmallestUnit() * vector.Length());
+                var scale = new BigRationalHybrid(new System.Numerics.BigInteger(Math.Round(coefficient * coefficientScale)), coefficientScale);
+                var d = direction * scale;
+                var exact = PointsPrecise.Select(p => p + d).ToList();
+                return new UVSurface(cc.Convert(exact), offsetNormals, offsetUv, offsetTriangles, exact);
+            }
+            // Translating must retain exact source vertices. Re-quantizing whole
+            // positions can merge nearby rational vertices and change incidence.
+            BigRationalHybrid Exact(double value)
+            {
+                var rational = new BigRational(value);
+                return new BigRationalHybrid(rational.Numerator, rational.Denominator);
+            }
+            double latticeOffset = offset / cc.SmallestUnit();
+            var precisePoints = PointsPrecise.Select((point, i) =>
+            {
+                var translated = point + new Rat3Hybrid(
+                    Exact(surfaceNormals[i].X * latticeOffset),
+                    Exact(surfaceNormals[i].Y * latticeOffset),
+                    Exact(surfaceNormals[i].Z * latticeOffset));
+                translated.Simplify();
+                return translated;
+            }).ToList();
+            return new UVSurface(cc.Convert(precisePoints), offsetNormals, offsetUv, offsetTriangles, precisePoints);
         }
 
         public static List<Vec3D> ComputeAngleWeightedNormals(List<Vec3D> points, List<Tri> triangles)

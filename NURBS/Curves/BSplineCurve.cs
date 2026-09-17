@@ -186,8 +186,9 @@ namespace NURBS
         {
             InitIfRequired();
 
-            Vec3D d = _firstPseudoDerivative.EvaluateUniform(u);
-            return Math.Sqrt(d.X * d.X + d.Y * d.Y + d.Z * d.Z);
+            // Differentiate the projected rational curve, not the homogeneous
+            // control-point derivative (whose weight is itself a derivative).
+            return EvaluateUniformDU(u).Length();
         }
 
         private void InitIfRequired()
@@ -207,7 +208,9 @@ namespace NURBS
             _samples = new Vec3D[(l - 1) * numSplitsBetweenKnots + 1];
             _sampleParameters = new double[(l - 1) * numSplitsBetweenKnots + 1];
             _arcLength = new double[(l - 1) * numSplitsBetweenKnots + 1];
-            _integrator = GaussIntegrator.GetIntegrator(_degree); // new GaussIntegrator(/*2 **/ _degree);
+            // Arc speed is not a polynomial of the spline degree, especially
+            // for rational weights. Reuse higher-order Gaussian quadrature.
+            _integrator = GaussIntegrator.GetIntegrator(Math.Max(8, _degree));
 
             double left, right;
             int indexer = 0;
@@ -475,8 +478,10 @@ namespace NURBS
         public static void Split(double param, int degree, double[] knots, Vec4D[] controlPoints, bool closedCurve,
             out BSplineCurve lower, out BSplineCurve upper, bool init = true, double eps = 1e-16)
         {
+            // eps remains in the public signature for source compatibility.
+            // Span membership and multiplicity require exact knot comparisons.
             int existingKnotMultiplicity;
-            int k = GetKnotInsertionIndex(param, knots, out existingKnotMultiplicity, eps); //existingKnotMultiplicity = 0;
+            int k = GetKnotInsertionIndex(param, knots, out existingKnotMultiplicity);
             BSplineCurve buffer = InsertKnot(degree, knots, controlPoints, closedCurve, param, k, degree - existingKnotMultiplicity, false);
 
             int order = degree + 1;
@@ -518,7 +523,7 @@ namespace NURBS
             return GetKnotInsertionIndex(knotLocation, knots, out existingKnotMultiplicity);
         }
 
-        private static int GetKnotInsertionIndex(double knotLocation, double[] knots, out int existingKnotMultiplicity, double eps = 1e-16)
+        private static int GetKnotInsertionIndex(double knotLocation, double[] knots, out int existingKnotMultiplicity)
         {
             existingKnotMultiplicity = 0;
             int k = -1;
@@ -526,15 +531,18 @@ namespace NURBS
             for (int i = 1; i < numKnots; ++i)
             //for (int i = numKnots - 1; i > 0; --i)
             {
-                double lower = knots[i - 1] - eps;
-                double upper = knots[i] + eps;
+                // Knot ordering is topological: nearby but distinct doubles must
+                // remain distinct. A tolerance here can insert a larger knot
+                // before a smaller one and corrupt both the span and multiplicity.
+                double lower = knots[i - 1];
+                double upper = knots[i];
                 if (knotLocation >= lower && knotLocation <= upper)
                 {
                     k = i - 1;
 
                     for (int j = 0; j < numKnots; ++j)
                     {
-                        if (Math.Abs(knots[j] - knotLocation) <= eps)
+                        if (knots[j] == knotLocation)
                             ++existingKnotMultiplicity;
                     }
 

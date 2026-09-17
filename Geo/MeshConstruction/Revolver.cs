@@ -1,4 +1,5 @@
 using GeoCore;
+using Curves;
 using GeoMeta;
 using System;
 
@@ -156,14 +157,7 @@ namespace Geo
         private static void TransformRevolveOutputToWorld(CoordinateConverter converter, CoordinateSystem sketchFrame,
             List<Vec3D> vertices, List<Vec3D> normals, List<Rat3Hybrid> precisePositions)
         {
-            for (int i = 0; i < vertices.Count; i++)
-                vertices[i] = sketchFrame.PointFromCoordSysToWorld(vertices[i]);
-            for (int i = 0; i < normals.Count; i++)
-                normals[i] = sketchFrame.DirectionFromCoordSysToWorld(normals[i]);
-
-            precisePositions.Clear();
-            for (int i = 0; i < vertices.Count; i++)
-                precisePositions.Add(MeshConstructionHelpers.ToPrecise(converter, vertices[i]));
+            PreciseFrameTransform.Apply(converter, sketchFrame, vertices, normals, precisePositions);
         }
 
         /// <summary>
@@ -196,18 +190,17 @@ namespace Geo
                     profiles[profiles.Count - 1][profiles[profiles.Count - 1].Count - 1] = profiles[0][0];
             }
 
+            var contourReversals = MeshConstructionHelpers.GetRevolveContourReversalInfo(contours, isOpenContour);
             MeshConstructionHelpers.OrientRevolveContours(ref contours, ref contourNormals, isOpenContour);
 
-            double maxY = MaxY(contours);
-            int numSamples = NumRevolveSamples(maxY, maxError);
             bool isFullRevolution = Math.Abs(angle - 2 * Math.PI) < 1e-10;
 
             int sideGroupCount = 0;
             for (int c = 0; c < contours.Count; c++)
             {
-                EmitRevolveSideWalls(converter, contours[c], contourNormals[c], angle, numSamples, isFullRevolution,
+                EmitRevolveSideWalls(converter, contours[c], contourNormals[c], angle, maxError, isFullRevolution,
                     triangles, vertices, normals, uv, triangleGroups, precisePositions,
-                    baseGroupIndex + sideGroupCount);
+                    baseGroupIndex + sideGroupCount, contourReversals[c]);
                 sideGroupCount += contours[c].Count;
             }
 
@@ -278,152 +271,120 @@ namespace Geo
         private static void EmitRevolveSideWalls(
             CoordinateConverter converter,
             List<List<Vec2D>> profiles, List<List<Vec2D>> profileNormals,
-            double angle, int numSamples, bool isFullRevolution,
+            double angle, double maxError, bool isFullRevolution,
             List<Tri> triangles, List<Vec3D> vertices, List<Vec3D> normals, List<Vec2D> uv,
             List<int> triangleGroups, List<Rat3Hybrid> precisePositions,
-            int baseGroupIndex)
+            int baseGroupIndex, bool reversedContour)
         {
-            int actualSamples = numSamples + 1;
-
-            double totalProfileLength = 0;
-            LineStrip2D[] strips = new LineStrip2D[profiles.Count];
-            for (int profileIdx = 0; profileIdx < profiles.Count; profileIdx++)
+            // Each radius uses the same sampling rule as an extruded circle.
+            // A large shoulder must not change the polygon of a smaller journal.
+            var strips = profiles.Select(p => new LineStrip2D(p)).ToArray();
+            int AddVertex(Vec2D point, Vec2D normal, Vec2D radial, double u, double v)
             {
-                strips[profileIdx] = new LineStrip2D(profiles[profileIdx]);
-                totalProfileLength += strips[profileIdx].TotalLength;
+                var position = new Vec3D(point.X, point.Y*radial.X, point.Y*radial.Y);
+                int index = vertices.Count;
+                vertices.Add(position);
+                normals.Add(new Vec3D(normal.X, normal.Y*radial.X, normal.Y*radial.Y));
+                uv.Add(new Vec2D(u, v));
+                precisePositions.Add(MeshConstructionHelpers.ToPrecise(converter, position));
+                return index;
             }
-
-            int[][,] vertexIndices = new int[profiles.Count][,];
-            bool[][] segIsOnAxis = new bool[profiles.Count][];
-            Vec3D[][] segAxisPos = new Vec3D[profiles.Count][];
-            Vec3D[][] segAxisNrm = new Vec3D[profiles.Count][];
-            double[][] segU = new double[profiles.Count][];
-
-            double cumulativeLength = 0;
-            for (int profileIdx = 0; profileIdx < profiles.Count; profileIdx++)
+            void AddTriangle(int a, int b, int c, int group)
             {
-                var profile = profiles[profileIdx];
-                var normals2D = profileNormals[profileIdx];
-                int ptCount = profile.Count;
-                LineStrip2D strip = strips[profileIdx];
-
-                vertexIndices[profileIdx] = new int[actualSamples, ptCount];
-                segIsOnAxis[profileIdx] = new bool[ptCount];
-                segAxisPos[profileIdx] = new Vec3D[ptCount];
-                segAxisNrm[profileIdx] = new Vec3D[ptCount];
-                segU[profileIdx] = new double[ptCount];
-
-                for (int i = 0; i < ptCount; i++)
+                triangles.Add(new Tri(a, b, c));
+                triangleGroups.Add(group);
+            }
+            for (int profileIndex = 0; profileIndex < profiles.Count; profileIndex++)
+            {
+                var profile = profiles[profileIndex];
+                var normal = profileNormals[profileIndex];
+                var rings = new int[profile.Count][];
+                var u = new double[profile.Count];
+                // Orientation can reverse strip order, but a face keeps the
+                // identity of the original sketch curve and its metadata.
+                int sourceIndex = reversedContour ? profiles.Count-1-profileIndex : profileIndex;
+                int group = baseGroupIndex + sourceIndex;
+                for (int k = 0; k < profile.Count; k++)
                 {
-                    segU[profileIdx][i] = (cumulativeLength + strip.GetDistanceFromBuffer(i)) / totalProfileLength;
-                    segIsOnAxis[profileIdx][i] = profile[i].Y == 0;
-                    if (segIsOnAxis[profileIdx][i])
+                    double fraction = strips[profileIndex].GetDistanceFromBuffer(k) / strips[profileIndex].TotalLength;
+                    u[k] = reversedContour ? 1 - fraction : fraction;
+                    double radius = Math.Abs(profile[k].Y);
+                    if (radius == 0)
+                        continue;
+                    int segments = Circle2D.NumberOfCirclePoints(maxError, radius,
+                        angle: isFullRevolution ? 2*Math.PI : angle) - 1;
+                    rings[k] = new int[segments+1];
+                    for (int i = 0; i <= segments; i++)
                     {
-                        segAxisPos[profileIdx][i] = new Vec3D(profile[i].X, 0, 0);
-                        segAxisNrm[profileIdx][i] = new Vec3D(normals2D[i].X, normals2D[i].Y, 0).Normalized();
+                        double v = (double)i/segments;
+                        Vec2D radial = isFullRevolution
+                            ? Circle2D.UnitCircleSample(i, segments)
+                            : new Vec2D(Math.Cos(v*angle), Math.Sin(v*angle));
+                        rings[k][i] = AddVertex(profile[k], normal[k], radial, u[k], v);
                     }
                 }
-
-                cumulativeLength += strip.TotalLength;
-
-                for (int sample = 0; sample < actualSamples; sample++)
+                for (int k = 0; k < profile.Count-1; k++)
                 {
-                    int angleSample = (isFullRevolution && sample == numSamples) ? 0 : sample;
-                    double currentAngle = (double)angleSample / numSamples * angle;
-                    double cosAngle = Math.Cos(currentAngle);
-                    double sinAngle = Math.Sin(currentAngle);
-                    double v = (double)sample / numSamples;
-
-                    for (int i = 0; i < ptCount; i++)
+                    var a = rings[k];
+                    var b = rings[k+1];
+                    if (a == null && b == null)
+                        continue;
+                    if (a == null || b == null)
                     {
-                        if (segIsOnAxis[profileIdx][i])
+                        var ring = a ?? b;
+                        int poleIndex = a == null ? k : k+1;
+                        for (int i = 0; i < ring.Length-1; i++)
                         {
-                            vertexIndices[profileIdx][sample, i] = -1;
+                            int pole = AddVertex(profile[poleIndex], normal[poleIndex], new Vec2D(1, 0),
+                                u[poleIndex], (i+.5)/(ring.Length-1));
+                            if (a == null) AddTriangle(pole, ring[i], ring[i+1], group);
+                            else AddTriangle(ring[i], pole, ring[i+1], group);
+                        }
+                        continue;
+                    }
+                    // Merge the two ordered angle grids. Integer cross-products
+                    // compare fractions exactly, including coincident sample rays.
+                    int na = a.Length-1, nb = b.Length-1, ia = 0, ib = 0;
+                    while (ia < na || ib < nb)
+                    {
+                        long nextA = (long)(ia+1)*nb;
+                        long nextB = (long)(ib+1)*na;
+                        if (ia < na && ib < nb && nextA == nextB)
+                        {
+                            // Reversing a contour changes winding, not its faceted
+                            // surface. A torus quad is generally non-planar, so its
+                            // diagonal must follow geometric station order rather
+                            // than whichever station happens to be traversed first.
+                            var first = profile[k];
+                            var second = profile[k+1];
+                            bool firstBeforeSecond = first.X < second.X ||
+                                (first.X == second.X && first.Y < second.Y);
+                            if (firstBeforeSecond)
+                            {
+                                AddTriangle(a[ia], b[ib], a[ia+1], group);
+                                AddTriangle(b[ib], b[ib+1], a[ia+1], group);
+                            }
+                            else
+                            {
+                                AddTriangle(a[ia], b[ib], b[ib+1], group);
+                                AddTriangle(a[ia], b[ib+1], a[ia+1], group);
+                            }
+                            ia++;
+                            ib++;
+                        }
+                        else if (ia < na && (ib == nb || nextA < nextB))
+                        {
+                            AddTriangle(a[ia], b[ib], a[ia+1], group);
+                            ia++;
                         }
                         else
                         {
-                            Vec2D point = profile[i];
-                            Vec2D normal2D = normals2D[i];
-                            Vec3D vertex3D = new Vec3D(point.X, point.Y * cosAngle, point.Y * sinAngle);
-                            Vec3D normal3D = new Vec3D(normal2D.X, normal2D.Y * cosAngle, normal2D.Y * sinAngle);
-
-                            vertexIndices[profileIdx][sample, i] = vertices.Count;
-                            vertices.Add(vertex3D);
-                            normals.Add(normal3D);
-                            uv.Add(new Vec2D(segU[profileIdx][i], v));
-                            precisePositions.Add(MeshConstructionHelpers.ToPrecise(converter, vertex3D));
+                            AddTriangle(a[ia], b[ib], b[ib+1], group);
+                            ib++;
                         }
                     }
                 }
             }
-
-            for (int profileIdx = 0; profileIdx < profiles.Count; profileIdx++)
-            {
-                var profile = profiles[profileIdx];
-                int ptCount = profile.Count;
-
-                for (int sample = 0; sample < numSamples; sample++)
-                {
-                    int nextSample = sample + 1;
-
-                    for (int j = 0; j < ptCount - 1; j++)
-                    {
-                        int j1 = j + 1;
-                        bool axis0 = segIsOnAxis[profileIdx][j];
-                        bool axis1 = segIsOnAxis[profileIdx][j1];
-
-                        if (axis0 && axis1)
-                            continue;
-
-                        int v0 = vertexIndices[profileIdx][sample, j];
-                        int v1 = vertexIndices[profileIdx][sample, j1];
-                        int v2 = vertexIndices[profileIdx][nextSample, j];
-                        int v3 = vertexIndices[profileIdx][nextSample, j1];
-
-                        if (axis0)
-                        {
-                            double midV = ((double)sample + 0.5) / numSamples;
-                            int poleVert = vertices.Count;
-                            vertices.Add(segAxisPos[profileIdx][j]);
-                            normals.Add(segAxisNrm[profileIdx][j]);
-                            uv.Add(new Vec2D(segU[profileIdx][j], midV));
-                            precisePositions.Add(MeshConstructionHelpers.ToPrecise(converter, segAxisPos[profileIdx][j]));
-                            triangles.Add(new Tri(poleVert, v1, v3));
-                            triangleGroups.Add(baseGroupIndex + profileIdx);
-                        }
-                        else if (axis1)
-                        {
-                            double midV = ((double)sample + 0.5) / numSamples;
-                            int poleVert = vertices.Count;
-                            vertices.Add(segAxisPos[profileIdx][j1]);
-                            normals.Add(segAxisNrm[profileIdx][j1]);
-                            uv.Add(new Vec2D(segU[profileIdx][j1], midV));
-                            precisePositions.Add(MeshConstructionHelpers.ToPrecise(converter, segAxisPos[profileIdx][j1]));
-                            triangles.Add(new Tri(v0, poleVert, v2));
-                            triangleGroups.Add(baseGroupIndex + profileIdx);
-                        }
-                        else
-                        {
-                            triangles.Add(new Tri(v0, v1, v2));
-                            triangleGroups.Add(baseGroupIndex + profileIdx);
-                            triangles.Add(new Tri(v1, v3, v2));
-                            triangleGroups.Add(baseGroupIndex + profileIdx);
-                        }
-                    }
-                }
-            }
-        }
-
-        private static int NumRevolveSamples(double radius, double maxError)
-        {
-            if (radius <= 0 || maxError <= 0)
-                return 4;
-
-            double theta = 2.0 * Math.Acos(1.0 - maxError / radius);
-            int numSamples = (int)Math.Ceiling(2.0 * Math.PI / theta);
-            numSamples = Math.Max(4, numSamples);
-            // Round up to a multiple of 4 so full-revolve 0/90/180/270 lie on vertices.
-            return ((numSamples + 3) / 4) * 4;
         }
 
         /// <summary>
@@ -554,14 +515,6 @@ namespace Geo
             return new CoordinateConverter(new Box3D(new Vec3D(-extent), new Vec3D(extent)));
         }
 
-        private static double MaxY(List<List<List<Vec2D>>> contours)
-        {
-            double maxY = 0;
-            foreach (var contour in contours)
-                foreach (var profile in contour)
-                    foreach (var point in profile)
-                        maxY = Math.Max(maxY, Math.Abs(point.Y));
-            return maxY;
-        }
+
     }
 }

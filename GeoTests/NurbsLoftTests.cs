@@ -7,7 +7,8 @@ namespace GeoTests;
 
 public class NurbsLoftTests : IDisposable
 {
-    public void Dispose() => GeoAPI.Clear();
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
 
     [Fact]
     public void Loft_RuledSquare_AllPatchesHaveNurbs()

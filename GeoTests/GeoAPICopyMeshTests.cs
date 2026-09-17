@@ -5,13 +5,10 @@ using GeoMeta;
 
 namespace GeoTests;
 
-[CollectionDefinition("GeoAPICopyMesh", DisableParallelization = true)]
-public class GeoAPICopyMeshTestCollection { }
-
-[Collection("GeoAPICopyMesh")]
 public class GeoAPICopyMeshTests : IDisposable
 {
-    public void Dispose() => GeoAPI.Clear();
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
 
     private static double AbsMeshVolume(AnchorMesh anchor)
     {

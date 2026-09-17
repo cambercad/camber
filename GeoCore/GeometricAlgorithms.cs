@@ -334,6 +334,28 @@
             return point.X * normal.X + point.Y * normal.Y + point.Z * normal.Z + planeD;
         }
 
+        /// <summary>Squared distance to the finite segment, including coincident endpoints.</summary>
+        public static double DistancePointSegmentSquared(Vec3D point, Vec3D start, Vec3D end)
+        {
+            var chord = end - start;
+            var delta = point - start;
+            double length2 = chord.Dot(chord);
+            double t = length2 == 0 ? 0 : Math.Clamp(delta.Dot(chord) / length2, 0, 1);
+            var residual = delta - t * chord;
+            return residual.Dot(residual);
+        }
+
+        /// <summary>Squared distance to the finite segment, including coincident endpoints.</summary>
+        public static double DistancePointSegmentSquared(Vec2D point, Vec2D start, Vec2D end)
+        {
+            var chord = end - start;
+            var delta = point - start;
+            double length2 = chord.X * chord.X + chord.Y * chord.Y;
+            double t = length2 == 0 ? 0 : Math.Clamp((delta.X * chord.X + delta.Y * chord.Y) / length2, 0, 1);
+            var residual = delta - t * chord;
+            return residual.X * residual.X + residual.Y * residual.Y;
+        }
+
         public static double DistancePointLineSquared(Vec3D p, Vec3D o, Vec3D d)
         {
             double t;

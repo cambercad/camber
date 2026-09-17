@@ -38,7 +38,25 @@ namespace GeoCore
             return pointMap;
         }
 
-        public static List<Tri> MapTriangles(List<Tri> triangles, Dictionary<int, int> map)
+        /// <summary>Canonical indices from authoritative rational coordinates.</summary>
+        public static Dictionary<int, int> DuplicateMap(IList<Rat3Hybrid> points)
+        {
+            var map = new Dictionary<int, int>(points.Count);
+            var unique = new Dictionary<Rat3Hybrid, int>();
+            for (int i = 0; i < points.Count; i++)
+            {
+                // Normalize a value copy for hashing; never mutate source geometry.
+                var source = points[i];
+                var point = new Rat3Hybrid(in source);
+                point.Simplify();
+                if (!unique.TryGetValue(point, out int canonical))
+                    unique.Add(point, canonical = i);
+                map.Add(i, canonical);
+            }
+            return map;
+        }
+
+        public static List<Tri> MapTriangles(IList<Tri> triangles, Dictionary<int, int> map)
         {
             List<Tri> result = new List<Tri>(triangles.Count);
             foreach (var tri in triangles)
@@ -249,6 +267,30 @@ namespace GeoCore
             return vol6 / 6.0;
         }
 
+        /// <summary>
+        /// Exact signed volume in coordinate units cubed. Canonicalizing each
+        /// term and partial sum prevents redundant denominator factors from
+        /// growing with the number of triangles.
+        /// </summary>
+        public static BigRationalHybrid ComputeSignedMeshVolume(IList<Rat3Hybrid> positions, IList<Tri> triangles)
+        {
+            var sixVolume = new BigRationalHybrid(0);
+            if (positions == null || triangles == null || positions.Count == 0 || triangles.Count == 0)
+                return sixVolume;
+            var origin = positions[0];
+            foreach (var triangle in triangles)
+            {
+                var term = Rat3Hybrid.Dot(positions[triangle.A] - origin,
+                    Rat3Hybrid.Cross(positions[triangle.B] - origin, positions[triangle.C] - origin));
+                term.Simplify();
+                sixVolume += term;
+                sixVolume.Simplify();
+            }
+            var volume = sixVolume / new BigRationalHybrid(6);
+            volume.Simplify();
+            return volume;
+        }
+
         public static bool IsWatertightMesh(IList<Vec3D> points, IList<Tri> triangles, bool allowTouch = false)
         {
             return IsWatertightMesh(points, triangles, out _, allowTouch);
@@ -256,112 +298,51 @@ namespace GeoCore
         public static bool IsWatertightMesh(IList<Vec3D> points, IList<Tri> triangles, out List<Vec3D> problematicEdges, bool allowTouch = false)
         {
             problematicEdges = new List<Vec3D>();
-
             if (points == null || triangles == null || points.Count == 0 || triangles.Count == 0)
                 return false;
-
-            // Step 1: Create a mapping for duplicate points using exact equality
-            var pointMap = DuplicatePointRemover.DuplicateMap(points);
-
-            // Step 2: Count edge usage using hash-based edge dictionary
-            var edgeCount = new Dictionary<(int, int), int>();
-            
-            foreach (var triangle in triangles)
+            var mapped = DuplicatePointRemover.MapTriangles(triangles, DuplicatePointRemover.DuplicateMap(points));
+            foreach (var edge in InvalidIncidenceEdges(mapped, allowTouch))
             {
-                // Map triangle vertices to canonical indices
-                int a = pointMap[triangle.A];
-                int b = pointMap[triangle.B];
-                int c = pointMap[triangle.C];
-                
-                // Skip degenerate triangles (where two or more vertices are the same)
-                if (a == b || b == c || a == c)
-                    continue;
-                
-                // Add the three edges of the triangle
-                // Ensure consistent edge ordering (smaller index first)
-                AddEdge(edgeCount, a, b);
-                AddEdge(edgeCount, b, c);
-                AddEdge(edgeCount, c, a);
+                problematicEdges.Add(points[edge.Item1]);
+                problematicEdges.Add(points[edge.Item2]);
             }
-
-            // Step 3: Check if every edge is used by exactly 2 triangles
-            bool valid = true;
-            int counter = 0;
-            foreach (KeyValuePair<(int, int), int> edgeUsage in edgeCount)
-            {
-                if(allowTouch)
-                {
-                    if (edgeUsage.Value %2 != 0)
-                    {
-                        //return false;
-                        valid = false;
-                        var a = points[edgeUsage.Key.Item1];
-                        var b = points[edgeUsage.Key.Item2];
-                        problematicEdges.Add(a);
-                        problematicEdges.Add(b);
-                        ++counter;
-                    }
-                }
-                else if (edgeUsage.Value != 2)
-                {
-                    //return false;
-                    valid = false;
-                    var a = points[edgeUsage.Key.Item1];
-                    var b = points[edgeUsage.Key.Item2];
-                    problematicEdges.Add(a);
-                    problematicEdges.Add(b);
-                    ++counter;
-                }
-            }
-
-            return valid;
+            return problematicEdges.Count == 0;
         }
-        public static bool IsWatertightMesh(IList<Tri> triangles/*, out List<Vec3D> problematicEdges*/)
+
+        /// <summary>
+        /// Validate authoritative CAD topology without merging distinct rational
+        /// vertices that happen to round to the same display-space double.
+        /// </summary>
+        public static bool IsWatertightMesh(IList<Rat3Hybrid> points, IList<Tri> triangles, bool allowTouch = false)
         {
-            //problematicEdges = new List<Vec3D>();
-
-            if ( triangles == null ||  triangles.Count == 0)
+            if (points == null || triangles == null || points.Count == 0 || triangles.Count == 0)
                 return false;
+            var mapped = DuplicatePointRemover.MapTriangles(triangles, DuplicatePointRemover.DuplicateMap(points));
+            return IsWatertightMesh(mapped, allowTouch);
+        }
 
-            // Step 2: Count edge usage using hash-based edge dictionary
-            var edgeCount = new Dictionary<(int, int), int>();
+        public static bool IsWatertightMesh(IList<Tri> triangles, bool allowTouch = false)
+        {
+            return triangles != null && triangles.Count != 0 && InvalidIncidenceEdges(triangles, allowTouch).Count == 0;
+        }
 
+        private static List<(int, int)> InvalidIncidenceEdges(IList<Tri> triangles, bool allowTouch)
+        {
+            var counts = new Dictionary<(int, int), int>();
             foreach (var triangle in triangles)
             {
-                // Map triangle vertices to canonical indices
-                int a = triangle.A;
-                int b = triangle.B;
-                int c = triangle.C;
-
-                // Skip degenerate triangles (where two or more vertices are the same)
+                int a = triangle.A, b = triangle.B, c = triangle.C;
                 if (a == b || b == c || a == c)
                     continue;
-
-                // Add the three edges of the triangle
-                // Ensure consistent edge ordering (smaller index first)
-                AddEdge(edgeCount, a, b);
-                AddEdge(edgeCount, b, c);
-                AddEdge(edgeCount, c, a);
+                AddEdge(counts, a, b);
+                AddEdge(counts, b, c);
+                AddEdge(counts, c, a);
             }
-
-            // Step 3: Check if every edge is used by exactly 2 triangles
-            bool valid = true;
-            int counter = 0;
-            foreach (KeyValuePair<(int, int), int> edgeUsage in edgeCount)
-            {
-                if (edgeUsage.Value != 2)
-                {
-                    //return false;
-                    valid = false;
-                    //var a = points[edgeUsage.Key.Item1];
-                    //var b = points[edgeUsage.Key.Item2];
-                    //problematicEdges.Add(a);
-                    //problematicEdges.Add(b);
-                    ++counter;
-                }
-            }
-
-            return valid;
+            var invalid = new List<(int, int)>();
+            foreach (var edge in counts)
+                if (allowTouch ? edge.Value % 2 != 0 : edge.Value != 2)
+                    invalid.Add(edge.Key);
+            return invalid;
         }
 
         public static bool ContainsDuplicatePoints(List<Rat3Hybrid> precisionPositions)

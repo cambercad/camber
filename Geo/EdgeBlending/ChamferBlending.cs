@@ -23,6 +23,12 @@ namespace Geo
             CoordinateConverter cc,
             double maxDiscretizationDeviation,
             ref int groupIdOffset)
+            => ChamferEdges(mesh, edgeNamesToChamfer, chamferDistance, cc, maxDiscretizationDeviation,
+                ref groupIdOffset, null);
+
+        internal AnchorMesh ChamferEdges(AnchorMesh mesh, List<string> edgeNamesToChamfer, double chamferDistance,
+            CoordinateConverter cc, double maxDiscretizationDeviation, ref int groupIdOffset,
+            Func<int, int> allocateGroupIds)
         {
             if (mesh == null)
                 throw new ArgumentNullException(nameof(mesh));
@@ -44,7 +50,7 @@ namespace Geo
                 cc,
                 maxDiscretizationDeviation,
                 ref groupIdOffset,
-                resultNameSuffix: "_chamfered");
+                resultNameSuffix: "_chamfered", allocateGroupIds: allocateGroupIds);
         }
     }
 }

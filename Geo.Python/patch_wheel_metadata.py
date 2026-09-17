@@ -11,6 +11,7 @@ is why pip on 3.13 sees no matching wheel. This script:
 """
 from __future__ import annotations
 
+import ast
 import re
 import shutil
 import sys
@@ -28,6 +29,7 @@ Not compiled against a specific CPython version, so one wheel works on 3.10+.
 """
 from __future__ import annotations
 
+import ctypes
 import os
 import sys
 from cffi import FFI
@@ -60,7 +62,14 @@ def _native_lib_path():
 if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
     os.add_dll_directory(_DIR)
 
-lib = ffi.dlopen(_native_lib_path())
+# Native AOT runtimes cannot be unloaded while their runtime threads exist.
+# CDLL owns a process-lifetime OS handle; CFFI borrows it without automatic
+# dlclose/FreeLibrary. Object handles and returned strings are still freed by
+# the generated wrappers normally.
+# https://learn.microsoft.com/en-us/dotnet/core/deploying/native-aot/libraries
+# https://cffi.readthedocs.io/en/stable/cdef.html#ffi-dlopen-loading-libraries-in-abi-mode
+_native_library = ctypes.CDLL(_native_lib_path())
+lib = ffi.dlopen(ffi.cast("void *", _native_library._handle))
 '''
 
 SETUP_TEMPLATE = '''\
@@ -116,7 +125,78 @@ def _strip_unused_numpy(main_py: Path) -> None:
         main_py.write_text(text, encoding="utf-8")
 
 
-def _remove_cpython_extension(gen_dir: Path) -> None:
+def _fix_null_cstrings(main_py: Path) -> None:
+    """DotWrap 0.3 encodes empty native strings as NULL; cffi.string rejects it."""
+    text = main_py.read_text(encoding="utf-8")
+    original = '        return _dotwrap_ffi.string(self._dotwrap_ptr).decode("utf-8")'
+    fixed = ('        if self._dotwrap_ptr == _dotwrap_ffi.NULL:\n'
+             '            return ""\n' + original)
+    if fixed in text:
+        return
+    if text.count(original) != 1:
+        raise RuntimeError("unexpected DotWrap CString implementation; review null-string handling")
+    main_py.write_text(text.replace(original, fixed), encoding="utf-8")
+
+
+
+def _fix_null_objects(main_py: Path) -> None:
+    """Normalize DotWrap 0.3's shared object-pointer conversion contract.
+
+    A zero return pointer represents C# null, not an owned GCHandle. Never
+    construct a Python owner for it: its destructor would free an invalid handle.
+    """
+    text = main_py.read_text(encoding="utf-8")
+    factories = [node for node in ast.walk(ast.parse(text))
+                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                 and node.name == "_dotwrap_from_ptr"]
+    original = ("    def _dotwrap_from_ptr(cls, ptr: int):\n"
+                "        instance = object.__new__(cls)\n"
+                "        instance._dotwrap_ptr = _dotwrap_ffi.cast(\"void *\", ptr)\n"
+                "        return instance")
+    fixed = ("    def _dotwrap_from_ptr(cls, ptr: int):\n"
+             "        return _dotwrap_object_from_ptr(cls, ptr)")
+    helper = ("def _dotwrap_object_from_ptr(cls, ptr):\n"
+              "    pointer = _dotwrap_ffi.cast(\"void *\", ptr)\n"
+              "    if pointer == _dotwrap_ffi.NULL:\n"
+              "        return None\n"
+              "    instance = object.__new__(cls)\n"
+              "    instance._dotwrap_ptr = pointer\n"
+              "    return instance\n\n")
+    if not (factories and text.count(fixed) == len(factories) and text.count(helper) == 1):
+        if not factories or text.count(original) != len(factories) or text.count("class CString:") != 1:
+            raise RuntimeError("unexpected DotWrap object factory implementation; review nullable handle ownership")
+        text = text.replace(original, fixed).replace("class CString:", helper + "class CString:", 1)
+
+    release = ("def _dotwrap_release_object(instance, destroy):\n"
+               "    pointer = _dotwrap_ffi.cast(\"void *\", getattr(instance, \"_dotwrap_ptr\", _dotwrap_ffi.NULL))\n"
+               "    if pointer != _dotwrap_ffi.NULL:\n"
+               "        instance._dotwrap_ptr = _dotwrap_ffi.NULL\n"
+               "        destroy(pointer)\n\n")
+    for cls in (node for node in ast.parse(text).body if isinstance(node, ast.ClassDef)):
+        if not any(isinstance(node, ast.FunctionDef) and node.name == "_dotwrap_from_ptr" for node in cls.body):
+            continue
+        destructor = next((node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == "__del__"), None)
+        if destructor is None or len(destructor.body) != 1 or not isinstance(destructor.body[0], ast.Expr):
+            raise RuntimeError("unexpected DotWrap destructor implementation; review handle ownership")
+        call = destructor.body[0].value
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == "_dotwrap_release_object":
+            continue
+        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                and isinstance(call.func.value, ast.Name) and call.func.value.id == "_dotwrap_lib"
+                and call.func.attr.endswith("___dotwrapDestroy")):
+            raise RuntimeError("unexpected DotWrap destructor implementation; review handle ownership")
+        original_destructor = ("    def __del__(self):\n"
+                               f"        _dotwrap_lib.{call.func.attr}(self._dotwrap_ptr)")
+        fixed_destructor = ("    def __del__(self):\n"
+                            f"        _dotwrap_release_object(self, _dotwrap_lib.{call.func.attr})")
+        if text.count(original_destructor) != 1:
+            raise RuntimeError("unexpected DotWrap destructor implementation; review handle ownership")
+        text = text.replace(original_destructor, fixed_destructor, 1)
+    if release not in text:
+        text = text.replace("class CString:", release + "class CString:", 1)
+    main_py.write_text(text, encoding="utf-8")
+
+def _remove_cpython_extension(pkg: Path, gen_dir: Path) -> None:
     patterns = (
         "__camber_native.c",
         "__camber_native.pyd",
@@ -130,9 +210,17 @@ def _remove_cpython_extension(gen_dir: Path) -> None:
     for pattern in patterns:
         for path in gen_dir.glob(pattern):
             path.unlink()
+        for path in gen_dir.rglob(pattern):
+            if path.is_file():
+                path.unlink()
     release = gen_dir / "Release"
     if release.is_dir():
         shutil.rmtree(release)
+    # Stale setuptools `build/` keeps a previously compiled .pyd; pip wheel
+    # copies it into the package and CPython then prefers it over the ABI loader.
+    for leftover in (pkg / "build", pkg / "camber.egg-info", pkg / "cambercad.egg-info"):
+        if leftover.exists():
+            shutil.rmtree(leftover)
 
 
 def patch(pkg: Path, readme_path: Path, version: str) -> None:
@@ -142,7 +230,9 @@ def patch(pkg: Path, readme_path: Path, version: str) -> None:
 
     _write_abi_loader(gen_dir)
     _strip_unused_numpy(gen_dir / "main.py")
-    _remove_cpython_extension(gen_dir)
+    _fix_null_cstrings(gen_dir / "main.py")
+    _fix_null_objects(gen_dir / "main.py")
+    _remove_cpython_extension(pkg, gen_dir)
 
     readme = readme_path.read_text(encoding="utf-8")
     (pkg / "setup.py").write_text(

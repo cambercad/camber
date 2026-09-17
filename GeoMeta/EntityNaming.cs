@@ -116,6 +116,14 @@ namespace GeoMeta
 
         #region Patch name formatters
 
+        /// <summary>Readable structural face reference; escaped atoms cannot collide with delimiters.</summary>
+        public static string FormatFaceProvenance(IEnumerable<string> roots, IEnumerable<string> boundaries)
+        {
+            string Atoms(IEnumerable<string> values) => string.Join("&", values.Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal).Select(Uri.EscapeDataString));
+            return Atoms(roots) + "{" + Atoms(boundaries) + "}";
+        }
+
         public static string ExtrudeBottom(string meshName) => meshName + "-" + ExtrudeBottomSegment;
         public static string ExtrudeTop(string meshName) => meshName + "-" + ExtrudeTopSegment;
         public static string ExtrudeSide(string meshName, string curveName) => meshName + "-" + curveName;
@@ -127,6 +135,7 @@ namespace GeoMeta
         public static string RevolveEndCap(string meshName) => meshName + "-EndCap";
 
         public static string LoftSide(string meshName) => meshName + "-Side";
+        public static string LoftSide(string meshName, string curveName) => LoftSide(meshName) + "-" + curveName;
         public static string LoftStartCap(string meshName) => meshName + "-StartCap";
         public static string LoftEndCap(string meshName) => meshName + "-EndCap";
 
@@ -209,6 +218,7 @@ namespace GeoMeta
                 "Line2D" or "CLine2D" => SketchCurvePrefixes.Line,
                 "Arc2D" or "CArc2D" => SketchCurvePrefixes.Arc,
                 "Circle2D" or "CCircle2D" => SketchCurvePrefixes.Circle,
+                "Ellipse2D" or "CEllipse2D" => "Ellipse",
                 "Bezier2D" => SketchCurvePrefixes.Bezier,
                 "CubicHermiteSpline2D" => SketchCurvePrefixes.Hermite,
                 "SampledCurve" or "OffsetSampledCurve2D" => SketchCurvePrefixes.Curve,
@@ -433,11 +443,15 @@ namespace GeoMeta
                 return false;
             if (candidateEdgeName == queryName)
                 return true;
-            if (queryName.StartsWith("[", StringComparison.Ordinal) &&
-                !queryName.Contains('@') &&
-                candidateEdgeName.StartsWith(queryName + "_", StringComparison.Ordinal))
-                return true;
-            return false;
+            if (!TryParseGroupEdgeAddress(candidateEdgeName, out var candidate, requireFullMatch: true) ||
+                !TryParseGroupEdgeAddress(queryName, out var query, requireFullMatch: true))
+                return false;
+            bool sameFaces = (candidate.PatchA == query.PatchA && candidate.PatchB == query.PatchB) ||
+                             (candidate.PatchA == query.PatchB && candidate.PatchB == query.PatchA);
+            // The two incident faces define an unordered pair. A suffix still
+            // selects a particular connected edge between that pair.
+            return sameFaces && (queryName.TrimEnd().EndsWith("]", StringComparison.Ordinal) ||
+                                 candidate.EdgeIndex == query.EdgeIndex);
         }
 
         #endregion

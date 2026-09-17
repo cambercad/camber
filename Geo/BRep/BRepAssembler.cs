@@ -43,7 +43,7 @@ namespace Geo.BRep
                 }
 
                 UVSurface uvSurf = null;
-                bool haveSurf = mesh.TryGetSurface(patchName, out uvSurf);
+                bool haveSurf = mesh.TryGetTopologySurface(patchName, out uvSurf);
                 FittedMeshSurface fitted = null;
 
                 if (!face.Exportable || (face.TessellationSurface == null && !HasAnalyticParams(face)))

@@ -105,7 +105,8 @@ def _leave_sketch_mode(ps, session, sketch_session, action_toast, transparent):
     except Exception:
         pass
     if finished:
-        action_toast[:] = ["Sketch Python copied to clipboard", time.monotonic() + 3.5]
+        message = "Sketch Python copied to clipboard" if session.get("clipboard_copied") else "Sketch finished; clipboard copy failed"
+        action_toast[:] = [message, time.monotonic() + 3.5]
     else:
         action_toast[:] = ["Sketch discarded", time.monotonic() + 2.5]
 

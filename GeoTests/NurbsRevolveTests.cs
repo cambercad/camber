@@ -5,7 +5,8 @@ namespace GeoTests;
 
 public class NurbsRevolveTests : IDisposable
 {
-    public void Dispose() => GeoAPI.Clear();
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
 
     [Fact]
     public void Revolve_CylinderRevolve_AllSidePatchesHaveNurbs()

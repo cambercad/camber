@@ -85,6 +85,34 @@ class AssemblyNestingTests(unittest.TestCase):
         self.assertTrue(_near(top.world_pose(nested_p), (0.0, 0.0, 0.0)))
         self.assertTrue(_near(occ.pose, (0.0, 0.0, 0.0)))
 
+    def test_nested_bearing_locates_hub_and_leaves_spin_free(self):
+        import math
+        for spin in (0.0, .65):
+            part = Part(vec3(-80), vec3(80), tolerance=.05)
+            ground_solid = _box(part, "bearing_support")
+            hub_solid = _box(part, "hub")
+            marker_solid = _box(part, "spoke_marker", size=.5)
+            wheel = part.assembly("wheel")
+            wheel.solve_after_every_constraint = False
+            hub = wheel.add_part(hub_solid)
+            marker = wheel.add_part(marker_solid, (5, 0, 0))
+            wheel.fix(hub)
+            wheel.fix(marker)
+            top = part.assembly("bike")
+            top.solve_after_every_constraint = False
+            support = top.add_part(ground_solid)
+            top.fix(support)
+            top.add_subassembly(wheel, (0, 0, 8),
+                                (0, 0, math.sin(spin/2), math.cos(spin/2)))
+            top.concentric(hub.axis_at((0, 0, 0), (0, 0, 1)),
+                           support.axis_at((0, 0, 0), (0, 0, 1)))
+            top.coincident(hub.plane_at((0, 0, 0), (0, 0, 1)),
+                           support.plane_at((0, 0, 0), (0, 0, 1)), opposite_normals=False)
+            self.assertTrue(top.solve().converged)
+            self.assertTrue(_near(top.world_pose(hub), (0, 0, 0), tol=1e-5))
+            self.assertTrue(_near(top.world_pose(marker),
+                (5*math.cos(spin), 5*math.sin(spin), 0), tol=1e-5))
+
     def test_rejects_cycles_and_double_nesting(self):
         part = Part(vec3(-80), vec3(80), tolerance=0.05)
         a_solid = _box(part, "a")

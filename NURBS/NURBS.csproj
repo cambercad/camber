@@ -8,6 +8,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Geo" />
+    <InternalsVisibleTo Include="GeoTests" />
     <ProjectReference Include="..\GeoCore\GeoCore.csproj" />
     <ProjectReference Include="..\Triangulation\Triangulation.csproj" />
   </ItemGroup>

@@ -11,7 +11,8 @@ namespace GeoTests;
 /// </summary>
 public sealed class EntityNamingRetrievalTests : IDisposable
 {
-    public void Dispose() => GeoAPI.Clear();
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
 
     [Fact]
     public void TryGetEdgeFromName_FindsEdgeOnNonTopMesh()

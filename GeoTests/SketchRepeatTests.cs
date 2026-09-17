@@ -8,9 +8,10 @@ namespace GeoTests;
 
 public class SketchRepeatTests : IDisposable
 {
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
     private const double GeomTol = 1e-4;
 
-    public void Dispose() => GeoAPI.Clear();
 
     private static double SumCircleAreas(PlotterSketcher sketch)
     {

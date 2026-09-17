@@ -38,7 +38,6 @@ namespace CSG
     {
         /// <summary>When true, each boolean prints a name line plus resolver timings and pair stats.</summary>
         public static bool LogBooleanOps;
-        internal static ResolvePairStats ActiveStats;
         public static ResolvePairStats LastResolveStats;
         private static void AddIntersectionAvoidDuplicates(
             ref Rat3Hybrid ip0, ref Rat3Hybrid ip1, ref int ipCount, in Rat3Hybrid p)
@@ -101,7 +100,10 @@ namespace CSG
             return false;
         }
 
-        public static void ProcessTrianglePair(NewPointCreator points, ResolverTriangle tri1, ResolverTriangle tri2, int lockId = -1)
+        public static void ProcessTrianglePair(NewPointCreator points, ResolverTriangle tri1, ResolverTriangle tri2, int lockId = -1) =>
+            ProcessTrianglePair(points, tri1, tri2, lockId, null);
+
+        private static void ProcessTrianglePair(NewPointCreator points, ResolverTriangle tri1, ResolverTriangle tri2, int lockId, ResolvePairStats stats)
         {
             bool specialCoplanarTriangleTreatment = true;
 
@@ -120,19 +122,19 @@ namespace CSG
             //The bounds check is already done by the tree traversal
             if (!OverlapOrTouch(tr1, tr2)/*tri1.GetBounds(points).OverlapOrTouch(tri2.GetBounds(points))*/)
             {
-                if (ActiveStats != null)
-                    Interlocked.Increment(ref ActiveStats.AabbRejects);
+                if (stats != null)
+                    Interlocked.Increment(ref stats.AabbRejects);
                 return;
             }
-            if (ActiveStats != null)
-                Interlocked.Increment(ref ActiveStats.PairsProcessed);
+            if (stats != null)
+                Interlocked.Increment(ref stats.PairsProcessed);
 
             Rat3Hybrid ip0 = default;
             Rat3Hybrid ip1 = default;
             int ipCount = 0;
 
-            ProcessEdgesVsTriangle(tr1, tri2, tr2, lockId != 2, specialCoplanarTriangleTreatment, ref ip0, ref ip1, ref ipCount);
-            ProcessEdgesVsTriangle(tr2, tri1, tr1, lockId != 1, specialCoplanarTriangleTreatment, ref ip0, ref ip1, ref ipCount);
+            ProcessEdgesVsTriangle(tr1, tri2, tr2, lockId != 2, specialCoplanarTriangleTreatment, ref ip0, ref ip1, ref ipCount, stats);
+            ProcessEdgesVsTriangle(tr2, tri1, tr1, lockId != 1, specialCoplanarTriangleTreatment, ref ip0, ref ip1, ref ipCount, stats);
 
             if(ipCount == 1)
             {
@@ -181,7 +183,8 @@ namespace CSG
             bool specialCoplanarTriangleTreatment,
             ref Rat3Hybrid ip0,
             ref Rat3Hybrid ip1,
-            ref int ipCount)
+            ref int ipCount,
+            ResolvePairStats stats)
         {
             for (int i = 0; i < 3; ++i)
             {
@@ -190,11 +193,11 @@ namespace CSG
                 SegmentTriangleIntersectionType type = TriangleSegmentIntersector.SegmentIntersectsTriangle(
                     edgeTri[i], edgeTri[(i + 1) % 3],
                     triPointsFixed.A, triPointsFixed.B, triPointsFixed.C,
-                    out intersectionPoint, out onBoundary, out startIsOnTriangle, out endIsOnTriangle);
+                    out intersectionPoint, out onBoundary, out startIsOnTriangle, out endIsOnTriangle, stats);
                 if (type == SegmentTriangleIntersectionType.Coplanar)
                 {
-                    if (ActiveStats != null)
-                        Interlocked.Increment(ref ActiveStats.CoplanarHits);
+                    if (stats != null)
+                        Interlocked.Increment(ref stats.CoplanarHits);
                     if (!write)
                         continue;
                     PlaneConvexPolygon poly2 = resolverTri.CoplanarPlanePolygon;
@@ -224,24 +227,19 @@ namespace CSG
                 }
                 else if (type == SegmentTriangleIntersectionType.Intersect)
                 {
-                    if (ActiveStats != null)
-                        Interlocked.Increment(ref ActiveStats.IntersectHits);
+                    if (stats != null)
+                        Interlocked.Increment(ref stats.IntersectHits);
                     AddIntersectionAvoidDuplicates(ref ip0, ref ip1, ref ipCount, in intersectionPoint);
                 }
             }
         }
 
-        private static void RemoveInvalid(List<Tri> triangles)
+        private static List<Tri> WithoutInvalidTriangles(List<Tri> triangles)
         {
-            int indexer = 0;
-            for (int i = 0; i < triangles.Count; ++i)
-            {
-                var t = triangles[i];
-                if (t.A >= 0)
-                    triangles[indexer++] = t;
-            }
-            if (indexer != triangles.Count)
-                triangles.RemoveRange(indexer, triangles.Count - indexer);
+            // Deferred adjacency queries still address the original source
+            // indices. Compact into a new list only when invalid faces exist.
+            return triangles.Any(t => t.A < 0)
+                ? triangles.Where(t => t.A >= 0).ToList() : triangles;
         }
 
         private static Rat3Hybrid GetNormal(Tri triangle, NewPointCreator newPoints)
@@ -364,7 +362,8 @@ namespace CSG
 
         public static List<ResolverTriangle> Resolve(BooleanOp op, List<Rat3Hybrid> pointsA, List<Tri> trianglesA, List<Rat3Hybrid> pointsB, List<Tri> trianglesB,
             out List<Rat3Hybrid> resultPoints, out List<Tri> resultTriangles, out List<SourceTriangle> sourceTriangleIndex,
-            List<int> map = null, List<List<IntersectionSegmentEx>> intersectionStrips = null)
+            List<int> map = null, List<List<IntersectionSegmentEx>> intersectionStrips = null,
+            Action<BooleanFragments> classifiedFragments = null)
         {
             NewPointCreator newPoints = new NewPointCreator();
             int[] mapA = new int[pointsA.Count];
@@ -393,7 +392,7 @@ namespace CSG
             var mappedTrianglesB = GetMapped(mapB, trianglesB);
 
             var res = Resolve(op, newPoints, mappedTrianglesA, mappedTrianglesB, out resultPoints, out resultTriangles, 
-                out sourceTriangleIndex, intersectionStrips/*, debugData*/);
+                out sourceTriangleIndex, intersectionStrips, classifiedFragments);
 
             return res;
         }
@@ -414,7 +413,7 @@ namespace CSG
 
         private static List<ResolverTriangle> Resolve(BooleanOp op, NewPointCreator newPoints, List<Tri> trianglesA, List<Tri> trianglesB,
             out List<Rat3Hybrid> resultPoints, out List<Tri> resultTrianglesOut, out List<SourceTriangle> sourceTriangleIndexOut,
-            List<List<IntersectionSegmentEx>> intersectionStrips = null /*, ResolveDebugData debugData = null*/)
+            List<List<IntersectionSegmentEx>> intersectionStrips = null, Action<BooleanFragments> classifiedFragments = null)
         {
             Timing timing = new Timing();
 
@@ -454,6 +453,8 @@ namespace CSG
             }
             int numValidTrisB = resolverTris.Count - numValidTrisA;
 
+            var coplanarTrianglesA = trianglesA;
+            var coplanarTrianglesB = trianglesB;
             if (useAdj)
             {
                 ParallelEx.For(0, resolverTris.Count, rId =>
@@ -466,7 +467,7 @@ namespace CSG
                         resolverTris[rId].SetCoplanarEdgeInfo(
                             delegate ()
                             {
-                                return TrianglesAreCoplanarEncoded(i, adj, trianglesA, newPoints);
+                                return TrianglesAreCoplanarEncoded(i, adj, coplanarTrianglesA, newPoints);
                             }
                             //TrianglesAreCoplanar(i, adj.NeighbourAB, trianglesA, newPoints),
                             //TrianglesAreCoplanar(i, adj.NeighbourBC, trianglesA, newPoints),
@@ -479,7 +480,7 @@ namespace CSG
                         resolverTris[rId].SetCoplanarEdgeInfo(
                             delegate()
                             {
-                                return TrianglesAreCoplanarEncoded(i, adj, trianglesB, newPoints);
+                                return TrianglesAreCoplanarEncoded(i, adj, coplanarTrianglesB, newPoints);
                             }
                             //TrianglesAreCoplanar(i, adj.NeighbourAB, trianglesB, newPoints),
                             //TrianglesAreCoplanar(i, adj.NeighbourBC, trianglesB, newPoints),
@@ -493,8 +494,8 @@ namespace CSG
 
             tim = timing.Start("RemoveInvalid");
             //Return the invalid triangles
-            RemoveInvalid(trianglesA);
-            RemoveInvalid(trianglesB);
+            trianglesA = WithoutInvalidTriangles(trianglesA);
+            trianglesB = WithoutInvalidTriangles(trianglesB);
             tim.Stop();
 
             if (resolverTris.Count != trianglesA.Count + trianglesB.Count)
@@ -537,14 +538,6 @@ namespace CSG
 
 
             var pairStats = new ResolvePairStats { TrisA = numValidTrisA, TrisB = numValidTrisB };
-            ActiveStats = pairStats;
-            long orientFast0 = BigRationalHybrid.Orient3DFastCount;
-            long orientSlow0 = BigRationalHybrid.Orient3DSlowCount;
-            long orientFilt0 = BigRationalHybrid.Orient3DFilterHitCount;
-            long orientFiltMiss0 = BigRationalHybrid.Orient3DFilterMissCount;
-            long segCull0 = TriangleSegmentIntersector.AabbCullCount;
-            long segFull0 = TriangleSegmentIntersector.FullTestCount;
-
             // One traversal: test each overlapping pair once and write both sides.
             // A is the outer index so each A triangle is written by only one worker;
             // B writes are serialized inside ResolverTriangle.AddSegment.
@@ -555,21 +548,12 @@ namespace CSG
                 foreach (var j in overlaps)
                 {
                     Interlocked.Increment(ref pairStats.BvhHitsAvB);
-                    ProcessTrianglePair(newPoints, resolverTris[i], resolverTris[j + numValidTrisA], -1);
+                    ProcessTrianglePair(newPoints, resolverTris[i], resolverTris[j + numValidTrisA], -1, pairStats);
                 }
             });
             tim.Stop();
             pairStats.ResolveAvBMs = tim.MillisecondsEnd - tim.MillisecondsStart;
             pairStats.ResolveBvAMs = 0;
-
-            pairStats.Orient3DFast = BigRationalHybrid.Orient3DFastCount - orientFast0;
-            pairStats.Orient3DSlow = BigRationalHybrid.Orient3DSlowCount - orientSlow0;
-            pairStats.Orient3DFilterHit = BigRationalHybrid.Orient3DFilterHitCount - orientFilt0;
-            pairStats.Orient3DFilterMiss = BigRationalHybrid.Orient3DFilterMissCount - orientFiltMiss0;
-            pairStats.SegTriAabbCulls = TriangleSegmentIntersector.AabbCullCount - segCull0;
-            pairStats.SegTriFull = TriangleSegmentIntersector.FullTestCount - segFull0;
-            LastResolveStats = pairStats;
-            ActiveStats = null;
 
             //TODO: Don't just test a against b, test everything against everything - this might handle self-intersections automatically
             /*for (int i = 0; i < numValidTrisA; ++i)
@@ -583,6 +567,7 @@ namespace CSG
             BoolSettings boolSettings = new BoolSettings(op);
 
             tim = timing.Start("PrepareTriangulate");
+            ResolverTriangle.ArrangeTrimSegments(resolverTris, newPoints);
             Dictionary<long, int> insertedSegmentsA = new Dictionary<long, int>();
             for (int i = 0; i < numValidTrisA; ++i)
                 resolverTris[i].PrepareTriangulate(newPoints, insertedSegmentsA);
@@ -745,6 +730,10 @@ namespace CSG
             }
 
 
+            // Preserve transient source topology only for callers requesting provenance.
+            var classificationTriangles = classifiedFragments == null ? null : resultTrianglesJoined.ToArray();
+            var classificationSources = classifiedFragments == null ? null : sourceTriangleIndex.ToArray();
+
             bool isTrimSurfaceOperation = op == BooleanOp.AAsSurfaceBAsTrimSurfaceRemoveInTriNormalDirection || 
                                           op == BooleanOp.AAsSurfaceBAsTrimSurfaceKeepInTriNormalDirection ||
                                           op == BooleanOp.AAsVolumeBAsTrimSurfaceRemoveInTriNormalDirection ||
@@ -852,15 +841,33 @@ namespace CSG
                     
                     // Classify each cluster in meshA
                     bool[] clusterInNormalDirection = new bool[clustersA.Count];
+                    var untouchedCavities = new List<List<int>>();
                     
                     for (int i = 0; i < clustersA.Count; i++)
                     {
                         var cluster = clustersA[i];
                         
+                        // A closed inner shell can remain disconnected from the trim
+                        // boundary. Its material owner is determined after the cut
+                        // outer shell and cap have been selected.
+                        bool touchesCut = cluster.Any(index => {
+                            var t = resultTrianglesJoined[index];
+                            return insertedSegments.Contains(Algorithms.Key(t.A,t.B)) ||
+                                insertedSegments.Contains(Algorithms.Key(t.B,t.C)) ||
+                                insertedSegments.Contains(Algorithms.Key(t.C,t.A));
+                        });
+                        if (!touchesCut)
+                        {
+                            clusterInNormalDirection[i] = keepInNormalDirection;
+                            if (meshAIsVolume && ShellOrientation(cluster,resultTrianglesJoined,newPoints) < 0)
+                                untouchedCavities.Add(cluster);
+                            continue;
+                        }
+
                         // Detect partial cuts if enabled
                         if (detectPartialCuts)
                         {
-                            bool isPartialCut = DetectPartialCut(
+                            bool? isPartialCut = DetectPartialCut(
                                 cluster,
                                 resultTrianglesJoined,
                                 insertedSegments,
@@ -869,10 +876,17 @@ namespace CSG
                                 newPoints,
                                 resolverTris.GetRange(numValidTrisA, numValidTrisB));
                             
-                            if (isPartialCut)
+                            if (isPartialCut == true)
                             {
                                 throw new Exception("Partial cut detected in cluster " + i + 
                                     ". Surface B does not completely cut through surface A.");
+                            }
+                            if (isPartialCut == null)
+                            {
+                                clusterInNormalDirection[i] = ClassifyCoincidentCluster(cluster,
+                                    resultTrianglesJoined,insertedSegments,insertedSegmentsB,newPoints,
+                                    resolverTris.GetRange(numValidTrisA,numValidTrisB));
+                                continue;
                             }
                         }
                         
@@ -928,18 +942,16 @@ namespace CSG
                             {
                                 var clusterB = clustersB[i];
                                 
-                                // Classify cluster B: check if it's in normal direction of adjacent A triangles
-                                bool clusterBInNormalDirOfA = ClassifyClusterInNormalDirection(
-                                    clusterB,
-                                    resultTrianglesJoined,
-                                    insertedSegments,
-                                    insertedSegmentsA,
-                                    newPoints,
-                                    resolverTris.GetRange(0, numValidTrisA));
-                                
-                                // Keep cluster based on keepInNormalDirection parameter (same logic as mesh A)
-                                bool shouldKeepCluster = clusterBInNormalDirOfA == keepInNormalDirection;
-                                
+                                // Classify B against the closed source volume, including exact coincident faces.
+                                var probe=resultTrianglesJoined[clusterB[0]];
+                                var location=PointInMesh.PointInsideMesh(newPoints.GetPoint(probe.A),
+                                    newPoints.GetPoint(probe.B),newPoints.GetPoint(probe.C),
+                                    new Int3Intersector(newPoints,trianglesA),treeA,boundingBoxA);
+                                // Coincident A faces own the boundary once. The A
+                                // normal determines whether its material side is kept.
+                                bool shouldKeepCluster = (location is InsideResult.Inside or InsideResult.Outside) &&
+                                    (location==InsideResult.Outside)==keepInNormalDirection;
+
                                 if (!shouldKeepCluster)
                                 {
                                     // Mark all triangles in this cluster for removal
@@ -967,11 +979,16 @@ namespace CSG
                         }
                     }
                     
+                    if (untouchedCavities.Count > 0)
+                        ClassifyUntouchedCavities(untouchedCavities,resultTrianglesJoined,
+                            sourceTriangleIndex,newPoints);
                     tim.Stop();
                 }
             }
 
 
+            classifiedFragments?.Invoke(new BooleanFragments(classificationTriangles, classificationSources,
+                sourceTriangleIndex.Select(source => source.SourceTriangleIndex >= 0).ToArray()));
             RemoveMarkedTriangles(resultTrianglesJoined, sourceTriangleIndex, 0);
             tim.Stop();
 
@@ -982,11 +999,87 @@ namespace CSG
             if (LogBooleanOps)
             {
                 Console.WriteLine(timing.ToString());
-                if (LastResolveStats != null)
-                    Console.WriteLine(LastResolveStats.ToString());
+                Console.WriteLine(pairStats.ToString());
             }
 
+            LastResolveStats = pairStats;
             return resolverTris;
+        }
+
+        private static int ShellOrientation(List<int> cluster,List<Tri> triangles,NewPointCreator points)
+        {
+            // First crossing from the exterior identifies shell orientation;
+            // summing an exact mass property would accumulate unrelated rational
+            // denominators over the entire mesh merely to obtain this sign.
+            var minX=points.GetPoint(triangles[cluster[0]].A).X;
+            Tri target=default;bool found=false;
+            foreach(var index in cluster)
+            {
+                var t=triangles[index];
+                var a=points.GetPoint(t.A);var b=points.GetPoint(t.B);var c=points.GetPoint(t.C);
+                if(a.X<minX)minX=a.X;if(b.X<minX)minX=b.X;if(c.X<minX)minX=c.X;
+                if(!found && Rat3Hybrid.Cross(b-a,c-a).X.Sign()!=0){target=t;found=true;}
+            }
+            if(!found)throw new InvalidOperationException("A volume shell has no face transverse to the X axis.");
+            var ta=points.GetPoint(target.A);var tb=points.GetPoint(target.B);var tc=points.GetPoint(target.C);
+            for(int sample=1;;sample++)
+            {
+                // This parabola of positive barycentric weights stays strictly
+                // inside the target triangle. Each projected mesh edge can meet
+                // it at most twice, so finite exact degeneracies are exhausted.
+                var k=new BigRationalHybrid(sample);var k2=k*k;
+                var end=(ta+tb*k+tc*k2)/(BigRationalHybrid.One+k+k2);
+                end.Simplify();
+                var start=new Rat3Hybrid(minX-BigRationalHybrid.One,end.Y,end.Z);
+                BigRationalHybrid nearest=default;int orientation=0;bool boundary=false;bool coplanar=false;
+                foreach(var index in cluster)
+                {
+                    var t=triangles[index];var a=points.GetPoint(t.A);var b=points.GetPoint(t.B);var c=points.GetPoint(t.C);
+                    var hit=TriangleSegmentIntersector.SegmentIntersectsTriangle(start,end,a,b,c,
+                        out var point,out bool onBoundary,out _,out _);
+                    if(hit==SegmentTriangleIntersectionType.Coplanar){coplanar=true;continue;}
+                    if(hit!=SegmentTriangleIntersectionType.Intersect)continue;
+                    if(orientation==0 || point.X<nearest)
+                    {nearest=point.X;orientation=-Rat3Hybrid.Cross(b-a,c-a).X.Sign();boundary=onBoundary;}
+                    else if(point.X==nearest)boundary=true;
+                }
+                if(orientation!=0 && !boundary && !coplanar)return orientation;
+            }
+        }
+
+        private static void ClassifyUntouchedCavities(List<List<int>> cavities,List<Tri> triangles,
+            List<SourceTriangle> sources,NewPointCreator points)
+        {
+            var deferred=cavities.SelectMany(c => c).ToHashSet();
+            var retained=triangles.Where((t,i) => sources[i].SourceTriangleIndex >= 0 && !deferred.Contains(i)).ToList();
+            // Disjoint retained solids are separate material regions. Test their
+            // union, not the parity of overlapping outer enclosures with their
+            // still-deferred internal cavity surfaces missing.
+            var components=Clusterize(points.GetPoints(),new HashSet<long>(),retained,0,retained.Count);
+            var regions=new List<(List<Tri> mesh,BVHNode[] tree,Box3I bounds)>();
+            foreach(var component in components)
+            {
+                if(ShellOrientation(component,retained,points) <= 0) continue;
+                var mesh=component.Select(i => retained[i]).ToList();
+                var bounds=Box3I.Empty();
+                var boxes=new Box3F[mesh.Count];
+                for(int i=0;i<mesh.Count;i++)
+                {
+                    var t=mesh[i];var box=points.GetPoint(t.A).GetBox();
+                    box.Extend(points.GetPoint(t.B).GetBox());box.Extend(points.GetPoint(t.C).GetBox());
+                    bounds.Extend(box);boxes[i]=box.GetBoundsF();
+                }
+                regions.Add((mesh,Tree.BuildTreeFast(i => boxes[i],mesh.Count),bounds));
+            }
+            foreach(var cavity in cavities)
+            {
+                var t=triangles[cavity[0]];
+                bool contained=regions.Any(region => PointInMesh.PointInsideMesh(points.GetPoint(t.A),
+                    points.GetPoint(t.B),points.GetPoint(t.C),new Int3Intersector(points,region.mesh),
+                    region.tree,region.bounds)==InsideResult.Inside);
+                if(!contained)
+                    foreach(var i in cavity){var source=sources[i];source.SourceTriangleIndex=-1;sources[i]=source;}
+            }
         }
 
         private static Rat3Hybrid ComputeTriangleCentroid(Tri triangle, NewPointCreator newPoints)
@@ -1077,7 +1170,35 @@ namespace CSG
             throw new Exception("No triangle adjacent to an inserted edge found in cluster");
         }
 
-        private static bool DetectPartialCut(
+        private static bool ClassifyCoincidentCluster(List<int> cluster,List<Tri> triangles,
+            HashSet<long> cuts,Dictionary<long,int> otherCuts,NewPointCreator points,List<ResolverTriangle> others)
+        {
+            foreach(var index in cluster)
+            {
+                var t=triangles[index];
+                foreach(var edge in new[]{Algorithms.Key(t.A,t.B),Algorithms.Key(t.B,t.C),Algorithms.Key(t.C,t.A)})
+                {
+                    if(!cuts.Contains(edge) || !otherCuts.TryGetValue(edge,out var source))continue;
+                    var other=others.FirstOrDefault(r => r.Source==source) ??
+                        throw new InvalidOperationException($"Trim contact source triangle {source} was not found.");
+                    var a=points.GetPoint(other.A);var normal=Rat3Hybrid.Cross(points.GetPoint(other.B)-a,points.GetPoint(other.C)-a);
+                    bool planar=cluster.All(i => {
+                        var q=triangles[i];
+                        return Rat3Hybrid.Dot(points.GetPoint(q.A)-a,normal).Sign()==0 &&
+                            Rat3Hybrid.Dot(points.GetPoint(q.B)-a,normal).Sign()==0 &&
+                            Rat3Hybrid.Dot(points.GetPoint(q.C)-a,normal).Sign()==0;
+                    });
+                    if(!planar)continue;
+                    var own=Rat3Hybrid.Cross(points.GetPoint(t.B)-points.GetPoint(t.A),points.GetPoint(t.C)-points.GetPoint(t.A));
+                    return Rat3Hybrid.Dot(own,normal).Sign()<0;
+                }
+            }
+            throw new InvalidOperationException("Trim contact has no transverse side and is not a coincident planar region.");
+        }
+
+        // null means all boundary evidence is coplanar; the caller must assign
+        // coincident-face ownership, rather than treating this as an uncut region.
+        private static bool? DetectPartialCut(
             List<int> cluster,
             List<Tri> resultTrianglesJoined,
             HashSet<long> insertedSegments,
@@ -1149,7 +1270,7 @@ namespace CSG
             }
 
             if (firstResult == null)
-                throw new Exception();
+                return null;
             
             return false; // No inconsistency found
         }

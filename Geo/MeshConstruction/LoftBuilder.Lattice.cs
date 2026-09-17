@@ -20,7 +20,8 @@ namespace Geo
             double seamU0,
             Vec3D[] worldRow,
             Vec2D[] sketchRow,
-            Vec2D[] tu2dRow)
+            Vec2D[] tu2dRow,
+            bool matchingVertices = false, NURBS.BSplineCurve matchedCurve = null)
         {
             CurveStrip2D strip;
             if (analyticStrip != null)
@@ -40,6 +41,33 @@ namespace Geo
 
             for (int k = 0; k < uColumns.Count; k++)
             {
+                if (matchedCurve != null)
+                {
+                    double u = uColumns[k];
+                    var point = matchedCurve.EvaluateUniform(u);
+                    double sideU = colKinds[k] == UColumnKind.CreaseLeft ? Math.BitDecrement(u == 0 && closed ? 1 : u) :
+                        colKinds[k] == UColumnKind.CreaseRight ? Math.BitIncrement(u == 1 && closed ? 0 : u) : u;
+                    var tangent = matchedCurve.EvaluateUniformDU(Math.Clamp(sideU, 0, 1));
+                    var local = point - cs.Origin;
+                    sketchRow[k] = new Vec2D(Vec3DOps.Dot(local, cs.X), Vec3DOps.Dot(local, cs.Y));
+                    worldRow[k] = point;
+                    tu2dRow[k] = new Vec2D(Vec3DOps.Dot(tangent, cs.X), Vec3DOps.Dot(tangent, cs.Y)).Normalized();
+                    continue;
+                }
+                if (matchingVertices)
+                {
+                    int spans = closed ? poly.Count : poly.Count - 1;
+                    double parameter = uColumns[k] * spans;
+                    int segment = Math.Min((int)Math.Floor(parameter), spans - 1);
+                    double fraction = parameter - segment;
+                    var start = poly[segment];
+                    var end = poly[(segment + 1) % poly.Count];
+                    var point = start * (1 - fraction) + end * fraction;
+                    sketchRow[k] = point;
+                    worldRow[k] = cs.PointTo3D(point);
+                    tu2dRow[k] = (end - start).Normalized();
+                    continue;
+                }
                 double uSeam = uColumns[k];
                 double uAuth = ToAuthoredU(uSeam, seamU0, closed);
                 strip.EvaluatePositionAndNormalAtNormalizedArcLength(uAuth, out Vec2D p2, out _);
@@ -158,6 +186,8 @@ namespace Geo
             Vec3D[][] profileWorld,
             double maxDeviation,
             int s,
+            LoftStyle style,
+            IReadOnlyList<double> surfaceRows,
             out Vec3D[][] grid,
             out double[] rowVUniform)
         {
@@ -172,12 +202,12 @@ namespace Geo
                 splines[k] = new CubicHermiteSpline3D(pts);
             }
 
-            double tolMerge = Math.Max(1e-12, maxDeviation * 1e-9);
-            var merged = new List<double>();
+            double tolMerge = surfaceRows == null ? Math.Max(1e-12, maxDeviation * 1e-9) : 0;
+            var merged = surfaceRows == null ? new List<double>() : new List<double>(surfaceRows);
             for (int j = 0; j < pCount; j++)
                 merged.Add(pCount > 1 ? (double)j / (pCount - 1) : 0);
 
-            for (int k = 0; k < m; k++)
+            for (int k = 0; k < m && style != LoftStyle.Ruled && surfaceRows == null; k++)
             {
                 foreach (var vx in splines[k].Tessellate(maxDeviation))
                     merged.Add(vx.Uniform);
@@ -228,7 +258,15 @@ namespace Geo
                 grid[r] = new Vec3D[m];
                 double vu = rowVUniform[r];
                 for (int k = 0; k < m; k++)
-                    grid[r][k] = splines[k].Evaluate(vu).Origin;
+                    if (style == LoftStyle.Ruled)
+                    {
+                        double spanParameter = vu * (pCount - 1);
+                        int span = Math.Min((int)spanParameter, pCount - 2);
+                        double fraction = spanParameter - span;
+                        grid[r][k] = profileWorld[span][k] * (1 - fraction) + profileWorld[span + 1][k] * fraction;
+                    }
+                    else
+                        grid[r][k] = splines[k].Evaluate(vu).Origin;
             }
         }
 

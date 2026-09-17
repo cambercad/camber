@@ -7,10 +7,8 @@ namespace GeoTests;
 
 public class CircularEdgeAnchorTests : IDisposable
 {
-    public void Dispose()
-    {
-        GeoAPI.Clear();
-    }
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
 
     [Fact]
     public void ExtrudedCircle_ClosedEdgeAnchors_AlignWithSketchAxes()

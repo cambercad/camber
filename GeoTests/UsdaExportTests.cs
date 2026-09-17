@@ -7,7 +7,8 @@ namespace GeoTests;
 
 public class UsdaExportTests : IDisposable
 {
-    public void Dispose() => GeoAPI.Clear();
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
 
     [Fact]
     public void SaveUsdaFile_Cube_WritesNormalsUvSubsetsAndVolume()

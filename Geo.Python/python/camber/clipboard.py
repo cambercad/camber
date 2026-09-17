@@ -1,53 +1,68 @@
+"""System clipboard access through the live viewer's native window backend."""
+
 import sys
+from functools import cache
 
 
-def copy_to_clipboard(text):
-    text = text or ""
+def copy_to_clipboard(text, window=None):
+    """Copy text to the OS clipboard; return whether the backend accepted it.
+
+    The window stays alive to serve selection requests on platforms where the
+    clipboard is owned by its source application. ImGui's private text buffer
+    is not a system clipboard implementation.
+    """
     try:
-        from .imgui_compat import import_imgui
-        imgui = import_imgui()
-        setter = getattr(imgui, "SetClipboardText", None) or getattr(imgui, "set_clipboard_text", None)
-        if setter is not None:
-            setter(text)
-            return
-    except Exception:
-        pass
-    if sys.platform == "win32":
-        try:
-            _copy_win32(text)
-            return
-        except Exception:
-            pass
-    try:
-        import tkinter
-        root = tkinter.Tk()
-        root.withdraw()
-        root.clipboard_clear()
-        root.clipboard_append(text)
-        root.update()
-        root.destroy()
-    except Exception:
-        sys.stderr.write("camber: could not copy to clipboard\n")
+        if window is None:
+            import pyglet
+            window = next(iter(pyglet.app.windows), None)
+        if window is None:
+            raise RuntimeError("no live viewer window")
+        window.set_clipboard_text(text or "")
+        return True
+    except Exception as error:
+        sys.stderr.write(f"camber: could not copy to clipboard: {error}\n")
+        return False
 
 
-def _copy_win32(text):
-    import ctypes
-    CF_UNICODETEXT = 13
-    GMEM_MOVEABLE = 0x0002
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
-    payload = text.encode("utf-16-le") + b"\x00\x00"
-    if not user32.OpenClipboard(None):
-        raise OSError("OpenClipboard failed")
-    try:
-        user32.EmptyClipboard()
-        handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(payload))
-        if not handle:
-            raise OSError("GlobalAlloc failed")
-        locked = kernel32.GlobalLock(handle)
-        ctypes.memmove(locked, payload, len(payload))
-        kernel32.GlobalUnlock(handle)
-        if not user32.SetClipboardData(CF_UNICODETEXT, handle):
-            raise OSError("SetClipboardData failed")
-    finally:
-        user32.CloseClipboard()
+@cache
+def _window_class():
+    import pyglet
+    base = pyglet.window.Window
+    if not base.__module__.startswith("pyglet.window.xlib"):
+        return base
+    from ctypes import byref, c_ubyte
+    from pyglet.libs.x11 import xlib
+    from pyglet.window.xlib import XlibEventHandler
+
+    class ClipboardWindow(base):
+        # The installed X11 backend sends len(text) bytes for UTF-8 requests,
+        # truncating every non-ASCII payload. Handle that protocol branch with
+        # its byte count; retain the backend's other selection handling.
+        @XlibEventHandler(xlib.SelectionRequest)
+        def _event_selection_request(self, event):
+            request = event.xselectionrequest
+            if (request.selection != self._clipboard_atom or request.target != self._utf8_atom
+                    or xlib.XGetSelectionOwner(self._x_display, self._clipboard_atom) != self._window):
+                return super()._event_selection_request(event)
+            payload = (self._clipboard_str or "").encode("utf-8")
+            property_atom = request.property or request.target
+            xlib.XChangeProperty(self._x_display, request.requestor, property_atom,
+                                 request.target, 8, xlib.PropModeReplace,
+                                 (c_ubyte * len(payload)).from_buffer_copy(payload), len(payload))
+            reply = xlib.XEvent()
+            reply.xselection.type = xlib.SelectionNotify
+            reply.xselection.display = request.display
+            reply.xselection.requestor = request.requestor
+            reply.xselection.selection = request.selection
+            reply.xselection.target = request.target
+            reply.xselection.property = property_atom
+            reply.xselection.time = request.time
+            xlib.XSendEvent(self._x_display, request.requestor, 0, 0, byref(reply))
+            xlib.XFlush(self._x_display)
+
+    return ClipboardWindow
+
+
+def create_window(*args, **kwargs):
+    """Create the viewer window with native clipboard protocol corrections."""
+    return _window_class()(*args, **kwargs)

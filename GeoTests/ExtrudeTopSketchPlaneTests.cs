@@ -7,7 +7,8 @@ namespace GeoTests;
 
 public sealed class ExtrudeTopSketchPlaneTests : IDisposable
 {
-    public void Dispose() => GeoAPI.Clear();
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
 
     /// <summary>
     /// Rectangle ExtrudeTop used to fail GetPlotterSketcher: PlaneFitter used triangle

@@ -65,12 +65,16 @@ Live dictionary of all GeoAPI instances by Name. Useful for cross-script lookup.
         public static Dictionary<string, GeoAPI> GetInstances() { return Instances; }
         [APIDescription(@"Clear()
 Static. Removes all GeoAPI instances and resets all auto-name counters. Call once at the start of a script.")]
-        public static void Clear()
+        public static void Clear() => Clear(resetNameCounters: true);
+
+        // Parallel geometry tests can release registry references without
+        // restarting names while another live builder is still using them.
+        internal static void Clear(bool resetNameCounters)
         {
             lock (StaticStateLock)
             {
                 Instances.Clear();
-                EntityNaming.ResetGlobalNameCounters();
+                if (resetNameCounters) EntityNaming.ResetGlobalNameCounters();
                 // Leave GroupIndexer alone so parallel tests that call Clear() between
                 // CreateCube A and CreateCube B cannot reuse the same group IDs.
             }
@@ -120,12 +124,12 @@ Creates a part in the given operating space.
             if (maxDeviation <= 0)
                 throw new ArgumentOutOfRangeException(nameof(maxDeviation), "maxDeviation must be positive.");
             _maxDeviation = maxDeviation;
-            // Use provided name or generate one
-            _name = !string.IsNullOrEmpty(name) ? name : GenerateName("Part");
             converter = new CoordinateConverter(operatingSpace, operatingSpaceSlices);
             debugConverter = converter;
             lock (StaticStateLock)
             {
+                // Name generation and registration form one operation with Clear().
+                _name = !string.IsNullOrEmpty(name) ? name : GenerateName("Part");
                 if (Instances.ContainsKey(Name))
                     throw new NameCollisionException($"GeoAPI instance name already registered: '{Name}'.");
                 Instances[Name] = this;
@@ -138,13 +142,44 @@ Creates a part in the given operating space.
                 return GroupIndexer;
         }
 
-        public static void IncrementBaseGroupIndex(int increment)
+        public static void IncrementBaseGroupIndex(int increment) => ReserveGroupIds(increment);
+
+        // Reserve before publishing geometry: constructing an AnchorMesh can
+        // itself allocate IDs for disconnected face components.
+        internal static int ReserveGroupIds(int count)
         {
+            if (count < 0) throw new ArgumentOutOfRangeException(nameof(count));
             lock (StaticStateLock)
-                GroupIndexer += increment;
+            {
+                int first = GroupIndexer;
+                GroupIndexer = checked(first + count);
+                return first;
+            }
         }
 
 
+
+        // Generators own local IDs until their complete face count is known.
+        // Publish one reserved range before constructing any AnchorMesh, whose
+        // eager/deferred face splitting may itself allocate more IDs.
+        private static int ReserveGeneratedGroupIds(List<int> groups, int count,
+            Dictionary<int, string> names = null)
+        {
+            if (count < 0) throw new ArgumentOutOfRangeException(nameof(count));
+            if (groups.Any(id => (uint)id >= (uint)count) ||
+                (names != null && (names.Keys.Any(id => (uint)id >= (uint)count) ||
+                                   groups.Any(id => !names.ContainsKey(id)))))
+                throw new InvalidOperationException("Generated face IDs must belong to the declared local range and name map.");
+            var localNames = names?.ToArray();
+            int first = ReserveGroupIds(count);
+            for (int i = 0; i < groups.Count; i++) groups[i] += first;
+            if (names != null)
+            {
+                names.Clear();
+                foreach (var pair in localNames) names.Add(first + pair.Key, pair.Value);
+            }
+            return first;
+        }
 
         [APIDescription(@"AddLine(start: Vec3D, end: Vec3D, lineName: str = None) -> Line3D
 Adds a 3D line segment to the API's curve list. lineName auto-generated if null. Returned curve can be used as a sweep guide (ExtrudeAlongCurve).")]
@@ -368,7 +403,7 @@ Loads an OBJ file as an AnchorMesh and registers it.
             if (geo.Count == 0)
                 throw new Exception("OBJ file contains no geometry.");
 
-            int offset = GetBaseGroupIndex();
+            int offset = groupBorderAngleThresholdDegree > 0 ? 0 : ReserveGroupIds(geo.Count);
 
             List<Vec3D> allPoints = new List<Vec3D>();
             List<Vec3D> allNormals = new List<Vec3D>();
@@ -406,8 +441,8 @@ Loads an OBJ file as an AnchorMesh and registers it.
             int numGroups = -1;
             if (groupBorderAngleThresholdDegree > 0)
             {
-                numGroups = AutoGroups.AutoDetectPatches(allPoints, allTriangles, groupBorderAngleThresholdDegree.ToRadians(), out groupPerTriangle, offset);
-                IncrementBaseGroupIndex(numGroups);
+                numGroups = AutoGroups.AutoDetectPatches(allPoints, allTriangles, groupBorderAngleThresholdDegree.ToRadians(), out groupPerTriangle, 0);
+                offset = ReserveGeneratedGroupIds(groupPerTriangle, numGroups);
 
 
                 for (int i = offset; i < offset + numGroups; ++i)
@@ -416,7 +451,6 @@ Loads an OBJ file as an AnchorMesh and registers it.
             else
             {
                 numGroups = geo.Count;
-                IncrementBaseGroupIndex(numGroups);
 
                 for (int i = offset; i < offset + numGroups; ++i)
                 {
@@ -539,15 +573,14 @@ Loads STL (ASCII or binary). groupBorderAngleThresholdDegree: dihedral angle in 
             // Closed manifold → volume solid; open boundary → surface/sheet (trim, visualisation, …).
             bool isVolume = isWatertight;
 
-            int offset = GetBaseGroupIndex();
-            var numGroups = AutoGroups.AutoDetectPatches(points, triangles, groupBorderAngleThresholdDegree.ToRadians(), out var groupPerTriangle, offset);
+            var numGroups = AutoGroups.AutoDetectPatches(points, triangles, groupBorderAngleThresholdDegree.ToRadians(), out var groupPerTriangle, 0);
 
 
             var normals = AutoNormals.ComputeNormals(points, triangles, groupBorderAngleThresholdDegree.ToRadians());
 
             var autoUV = AutoUV.AutoUvPerPatch(points, triangles, groupPerTriangle);
 
-            IncrementBaseGroupIndex(numGroups);
+            int offset = ReserveGeneratedGroupIds(groupPerTriangle, numGroups);
 
             //List<Vec2D> uvZero = new List<Vec2D>(points.Count);
             //for (int i = 0; i < points.Count; ++i)
@@ -643,7 +676,7 @@ Sweeps a closed 2D profile sketch along a single 3D guide curve.
   twistRatePerExtrudeDistance: radians of twist per unit arc length along the guide (0 = no twist).
   name auto-generated if null.
 End caps generated for open guides; closed guides give no caps.")]
-        public AnchorMesh ExtrudeAlongCurve(PlotterSketcherCoordSys sketch, Curve3D curve, double maxDeviation = -1, string name = null, double twistRatePerExtrudeDistance = 0)
+        public AnchorMesh ExtrudeAlongCurve(PlotterSketcherCoordSys sketch, Curve3D curve, double maxDeviation = -1, string name = null, double twistRatePerExtrudeDistance = 0, Vec3D? referenceDirection = null)
         {
             maxDeviation = ResolveMaxDeviation(maxDeviation);
             name = name ?? GenerateName("ExtrudeAlongCurve");
@@ -653,16 +686,16 @@ End caps generated for open guides; closed guides give no caps.")]
             
             // Orient the curve vertex frames to match the profile's coordinate system
             var s = new List<List<CurveVertex3D>> { curvePoints3D };
-            var curveSegments = OrientCurveFramesToProfile(s, sketch.CoordinateSystem, out Vec3D sweepStartTangent);
+            var curveSegments = OrientCurveFramesToProfile(s, sketch.CoordinateSystem, out Vec3D sweepStartTangent, referenceDirection);
 
             var output = new MeshOutput();
             int numGroups = Extruder.GenerateExtrudeAlongCurve(converter, CoordinateSystem.Default, contour, contourN,
                 curveSegments, sketch.CoordinateSystem, sweepStartTangent,
                 output.Triangles, output.Vertices, output.Normals,
                 output.UVs, output.TriangleGroups, output.PrecisePositions, names, name, out var triangleGroupToName,
-                twistRatePerExtrudeDistance: twistRatePerExtrudeDistance, maxDeviation: maxDeviation, baseGroupIndex: GetBaseGroupIndex());
+                twistRatePerExtrudeDistance: twistRatePerExtrudeDistance, maxDeviation: maxDeviation, baseGroupIndex: 0);
 
-            IncrementBaseGroupIndex(numGroups);
+            ReserveGeneratedGroupIds(output.TriangleGroups, numGroups, triangleGroupToName);
 
             MeshNormalUV mesh = new MeshNormalUV(converter, output.Vertices, output.Normals, output.UVs, output.Triangles, output.TriangleGroups, output.PrecisePositions);
 
@@ -690,7 +723,7 @@ End caps generated for open guides; closed guides give no caps.")]
         /// </summary>
         /// <param name="twistRatePerExtrudeDistance">Radians of twist per unit arc length along the flattened guide polyline.</param>
         [APIDescription(@"ExtrudeAlongCurveStrip(sketch: PlotterSketcherCoordSys, guideCurveStrip: List[Curve3D], maxDeviation: float = -1, twistRatePerExtrudeDistance: float = 0, name: str = None) -> AnchorMesh
-Like ExtrudeAlongCurve but the guide is a connected strip of curves. The strip is auto-ordered/auto-reversed via endpoint matching (tolerance 1e-6); throws if the curves cannot form a single connected strip.
+Like ExtrudeAlongCurve but the guide is a tangent-connected strip of curves (unit tangent difference <= 1e-6). Sharp-corner miter sweeps are not supported; a non-tangent join reports the adjacent curve names. The strip is auto-ordered/auto-reversed via endpoint matching (tolerance 1e-6); throws if the curves cannot form a single connected strip.
   maxDeviation: -1 uses the GeoAPI instance default.
 Each per-segment surface patch is named ""<meshName>-<contourSegmentName>-<guideCurveName>"".")]
         public AnchorMesh ExtrudeAlongCurveStrip(PlotterSketcherCoordSys sketch, List<Curve3D> guideCurveStrip, double maxDeviation = -1, double twistRatePerExtrudeDistance = 0, string name = null)
@@ -702,6 +735,7 @@ Each per-segment surface patch is named ""<meshName>-<contourSegmentName>-<guide
 
             // Connect and order the guide curves to form a proper strip
             List<Curve3D> orderedCurves = ConnectAndOrderCurves(guideCurveStrip);
+            ValidateSweepGuideTangency(orderedCurves);
 
             List<List<List<Vec2D>>> contour = sketch.Tessellate(maxDeviation, out var contourN, out var names, out var metaData2D, maxDeviation);
 
@@ -725,9 +759,9 @@ Each per-segment surface patch is named ""<meshName>-<contourSegmentName>-<guide
                 curveSegments, guideCurveNames, sketch.CoordinateSystem, sweepStartTangent,
                 output.Triangles, output.Vertices, output.Normals,
                 output.UVs, output.TriangleGroups, output.PrecisePositions, names, name, out var triangleGroupToName,
-                twistRatePerExtrudeDistance: twistRatePerExtrudeDistance, maxDeviation: maxDeviation, baseGroupIndex: GetBaseGroupIndex());
+                twistRatePerExtrudeDistance: twistRatePerExtrudeDistance, maxDeviation: maxDeviation, baseGroupIndex: 0);
 
-            IncrementBaseGroupIndex(numGroups);
+            ReserveGeneratedGroupIds(output.TriangleGroups, numGroups, triangleGroupToName);
 
             MeshNormalUV mesh = new MeshNormalUV(converter, output.Vertices, output.Normals, output.UVs, output.Triangles, output.TriangleGroups, output.PrecisePositions);
 
@@ -751,7 +785,7 @@ Each per-segment surface patch is named ""<meshName>-<contourSegmentName>-<guide
         /// <param name="name">Optional name for the resulting mesh (auto-generated if not provided)</param>
         /// <returns>The resulting AnchorMesh</returns>
         [APIDescription(@"ExtrudeAlongSketch(profileSketch: PlotterSketcherCoordSys, guideSketch: PlotterSketcherCoordSys, maxDeviation: float = -1, name: str = None) -> AnchorMesh
-Extrudes profileSketch along the curves of guideSketch (lifted to 3D using the guideSketch's coord system). Guide sketch must contain a single connected strip of non-helper curves (Line2D/Arc2D/Circle2D supported); helper geometry is excluded. Throws on empty/multiple guide strips.
+Extrudes profileSketch along the curves of guideSketch (lifted to 3D using the guideSketch's coord system). Guide sketch must contain a single tangent-connected strip of non-helper curves (Line2D/Arc2D/Circle2D/CubicHermiteSpline2D supported); helper geometry is excluded. Throws on empty/multiple guide strips.
   maxDeviation: -1 uses the GeoAPI instance default.")]
         public AnchorMesh ExtrudeAlongSketch(PlotterSketcherCoordSys profileSketch, PlotterSketcherCoordSys guideSketch, double maxDeviation = -1, string name = null)
         {
@@ -852,6 +886,10 @@ Extrudes profileSketch along the curves of guideSketch (lifted to 3D using the g
                 List<Vec3D> points3D = TransformPoints2DTo3D(circle.ToPoints(), cs);
                 return Circle3D.FromPoints(points3D, circle.Name);
             }
+            else if (curve2D is CubicHermiteSpline2D spline)
+            {
+                return new SketchGuideCurve3D(spline, cs);
+            }
             else if (curve2D is OffsetSketchStrip2D offsetStrip)
             {
                 var tess = offsetStrip.Tessellate(0.01);
@@ -863,8 +901,41 @@ Extrudes profileSketch along the curves of guideSketch (lifted to 3D using the g
                 return new CubicHermiteSpline3D(points3D, name: offsetStrip.Name);
             }
             
-            // For unsupported curve types, return null (caller should handle)
-            return null;
+            throw new NotSupportedException($"Cannot sweep along sketch curve of type {curve2D.GetType().Name}");
+        }
+
+        // Lift the original evaluator, rather than fitting a second spline: 2D natural
+        // spline derivatives differ from the 3D spline's cardinal defaults.
+        private sealed class SketchGuideCurve3D : Curve3D
+        {
+            readonly Curve2D curve;
+            readonly CoordinateSystem frame;
+
+            public SketchGuideCurve3D(Curve2D curve, CoordinateSystem frame) : base(curve.Name)
+            {
+                this.curve = curve.GetCopy();
+                this.frame = new CoordinateSystem(frame.Origin, frame.X, frame.Y, frame.Z);
+            }
+
+            CurveVertex3D Lift(CurveVertex2D vertex)
+            {
+                Vec3D position = frame.PointFromCoordSysToWorld(new Vec3D(vertex.Position.X, vertex.Position.Y, 0));
+                Vec2D t = vertex.Tangent;
+                Vec3D tangent = (frame.X * t.X + frame.Y * t.Y).Normalized();
+                return new CurveVertex3D(position, tangent, frame.Z, vertex.Uniform);
+            }
+
+            public override CurveVertex3D Evaluate(double uniform) => Lift(curve.EvaluateVertex(uniform));
+
+            public override List<CurveVertex3D> Tessellate(double maxDeviation)
+            {
+                var result = new List<CurveVertex3D>();
+                foreach (var vertex in curve.Tessellate(maxDeviation))
+                    result.Add(Lift(vertex));
+                return result;
+            }
+
+            public SketchGuideCurve3D Reversed() => new SketchGuideCurve3D(curve.Reverse(), frame);
         }
 
         /// <summary>
@@ -872,6 +943,8 @@ Extrudes profileSketch along the curves of guideSketch (lifted to 3D using the g
         /// </summary>
         private Curve3D ReverseCurve3D(Curve3D curve)
         {
+            if (curve is SketchGuideCurve3D sketchGuide)
+                return sketchGuide.Reversed();
             if (curve is Line3D line)
             {
                 var points = line.ToPoints();
@@ -948,6 +1021,33 @@ Extrudes profileSketch along the curves of guideSketch (lifted to 3D using the g
             return result;
         }
 
+        // Frame transport preserves profile roll between smooth segments. A kink
+        // needs a separate miter construction; copying the incoming frame there
+        // silently tilts all subsequent sections away from the guide tangent.
+        private static void ValidateSweepGuideTangency(IReadOnlyList<Curve3D> curves)
+        {
+            const double directionToleranceSquared = 1e-12;
+            void Check(int before, int after)
+            {
+                Vec3D incoming = curves[before].Evaluate(1).Tangent;
+                Vec3D outgoing = curves[after].Evaluate(0).Tangent;
+                if (incoming.LengthSquared() > 0 && outgoing.LengthSquared() > 0)
+                {
+                    incoming.Normalize();
+                    outgoing.Normalize();
+                    if ((incoming - outgoing).LengthSquared() <= directionToleranceSquared)
+                        return;
+                }
+                string first = curves[before].Name ?? $"segment {before}";
+                string second = curves[after].Name ?? $"segment {after}";
+                throw new ArgumentException($"Sweep guide join between '{first}' and '{second}' is not tangent. " +
+                    "Use tangent-connected guide curves; sharp-corner miter sweeps are not supported.", "guideCurveStrip");
+            }
+            for (int i = 1; i < curves.Count; i++) Check(i - 1, i);
+            if ((curves[0].Start - curves[^1].End).LengthSquared() <= 1e-12)
+                Check(curves.Count - 1, 0);
+        }
+
         private List<List<CurveVertex3D>> CyclicRotate(List<List<CurveVertex3D>> curveSegments, CoordinateSystem profileCS)
         {
             var lastSeg = curveSegments[curveSegments.Count - 1];
@@ -992,10 +1092,28 @@ Extrudes profileSketch along the curves of guideSketch (lifted to 3D using the g
         }
 
 
-        private List<List<CoordinateSystem>> OrientCurveFramesToProfile(List<List<CurveVertex3D>> curveSegments, CoordinateSystem profileCS, out Vec3D sweepStartTangentWorld)
+        private List<List<CoordinateSystem>> OrientCurveFramesToProfile(List<List<CurveVertex3D>> curveSegments, CoordinateSystem profileCS, out Vec3D sweepStartTangentWorld, Vec3D? referenceDirection = null)
         {
             curveSegments = CyclicRotate(curveSegments, profileCS);
             sweepStartTangentWorld = curveSegments[0][0].Tangent;
+            if (referenceDirection.HasValue)
+            {
+                var direction = referenceDirection.Value;
+                double length = direction.Length();
+                if (!double.IsFinite(length) || length == 0)
+                    throw new ArgumentException("Sweep reference direction must be finite and nonzero.", nameof(referenceDirection));
+                direction /= length;
+                foreach (var segment in curveSegments)
+                    for (int i = 0; i < segment.Count; i++)
+                    {
+                        var vertex = segment[i];
+                        var projected = direction - vertex.Tangent * Vec3DOps.Dot(direction, vertex.Tangent);
+                        if (projected.LengthSquared() < 1e-24)
+                            throw new ArgumentException("Sweep reference direction is parallel to the guide tangent.", nameof(referenceDirection));
+                        vertex.Up = projected.Normalized();
+                        segment[i] = vertex;
+                    }
+            }
 
             List<List<CoordinateSystem>> result = new List<List<CoordinateSystem>>(curveSegments.Count);
 
@@ -1075,10 +1193,10 @@ Other parameters identical to Extrude.")]
             var naming = new MeshNaming { ContourNames = names, OperationName = name };
             int numGroups = Extruder.GenerateExtrudedMesh(converter, sketch.CoordinateSystem, contour, contourN,
                 heightPositive, heightNegative, output, naming,
-                twistRatePerExtrudeDistance: twistRatePerExtrudeDistance, maxDeviation: maxDeviation, baseGroupIndex: GetBaseGroupIndex());
+                twistRatePerExtrudeDistance: twistRatePerExtrudeDistance, maxDeviation: maxDeviation, baseGroupIndex: 0);
             var triangleGroupToName = naming.TriangleGroupToName;
 
-            IncrementBaseGroupIndex(numGroups);
+            ReserveGeneratedGroupIds(output.TriangleGroups, numGroups, triangleGroupToName);
 
             MeshNormalUV mesh = new MeshNormalUV(converter, output.Vertices, output.Normals, output.UVs, output.Triangles, output.TriangleGroups, output.PrecisePositions);
 
@@ -1246,8 +1364,8 @@ Requires closed outer contour(s); holes are supported.")]
             var output = new MeshOutput();
             var naming = new MeshNaming { OperationName = name };
             int numGroups = NormalExtruder.Generate(
-                converter, projected, height, output, naming, GetBaseGroupIndex());
-            IncrementBaseGroupIndex(numGroups);
+                converter, projected, height, output, naming, 0);
+            ReserveGeneratedGroupIds(output.TriangleGroups, numGroups, naming.TriangleGroupToName);
 
             MeshNormalUV mesh = new MeshNormalUV(
                 converter, output.Vertices, output.Normals, output.UVs,
@@ -1290,11 +1408,11 @@ Lofts an ordered list of profile sketches into a mesh. Each sketch contains a si
             maxDeviation = ResolveMaxDeviation(maxDeviation);
             name = name ?? GenerateName("Loft");
             var output = new MeshOutput();
-            int numGroups = LoftBuilder.GenerateLoftFromSketches(converter, sketches, maxDeviation, options, output, name, out var triangleGroupToName, GetBaseGroupIndex());
-            IncrementBaseGroupIndex(numGroups);
+            int numGroups = LoftBuilder.GenerateLoftFromSketches(converter, sketches, maxDeviation, options, output, name, out var triangleGroupToName, 0);
+            ReserveGeneratedGroupIds(output.TriangleGroups, numGroups, triangleGroupToName);
 
             var mesh = new MeshNormalUV(converter, output.Vertices, output.Normals, output.UVs, output.Triangles, output.TriangleGroups, output.PrecisePositions);
-            var surfaceMetaData = NurbsPatchMetadataBuilder.BuildLoftMetadata(sketches, maxDeviation, options, name);
+            var surfaceMetaData = NurbsPatchMetadataBuilder.BuildLoftMetadata(sketches, maxDeviation, options, name, output.LoftSideSupportFactory, output.LoftSideDomains);
 
             var result = new AnchorMesh(name, mesh, triangleGroupToName, surfaceMetaData);
             RegisterMesh(result);
@@ -1358,7 +1476,7 @@ Box with side lengths (extents.X, extents.Y, extents.Z) along the pose's local X
             //List<int> triangleGroups = new List<int>();
             //int numGroups = Extruder.GenerateExtrudedMesh(lowerLeftCorner, new List<List<List<Vec2D>>>() { contour }, new() { contourN },
             //    height, triangles, vertices, normals,
-            //    uv, triangleGroups, new () { names }, name, out var triangleGroupToName, GetBaseGroupIndex()); //TODO: Pass group offset int ofunc, should also affect triangleGroups
+            //    uv, triangleGroups, new () { names }, name, out var triangleGroupToName, 0); //TODO: Pass group offset int ofunc, should also affect triangleGroups
 
             //IncrementBaseGroupIndex(numGroups);
 
@@ -1537,9 +1655,9 @@ Side patches are named ""<meshName>-<contourSegmentName>"". Helper geometry is e
                 : null;
 
             int numGroups = Revolver.GenerateRevolvedMesh(converter, profile, contourN, angle,
-                output, maxDeviation, names, name, out var triangleGroupToName, revolveFrame, GetBaseGroupIndex());
+                output, maxDeviation, names, name, out var triangleGroupToName, revolveFrame, 0);
 
-            IncrementBaseGroupIndex(numGroups);
+            ReserveGeneratedGroupIds(output.TriangleGroups, numGroups, triangleGroupToName);
 
             MeshNormalUV mesh = new MeshNormalUV(converter, output.Vertices, output.Normals, output.UVs,
                 output.Triangles, output.TriangleGroups, output.PrecisePositions);
@@ -1741,23 +1859,20 @@ Group/patch names from both inputs are merged (throws on group-id conflict for t
         public AnchorMesh Boolean(AnchorMesh meshA, AnchorMesh meshB, BooleanOp operation, string name = null)
         {
             name = name ?? GenerateName("Boolean");
-            Dictionary<string, int> nameToGroupCombined = new Dictionary<string, int>(meshA.extendedNameToGroupId);
-            EntityNaming.MergePatchNameMaps(nameToGroupCombined, meshB.extendedNameToGroupId);
-
-            Dictionary<string, SurfaceMetaData> metaDataCombined = SurfaceMetaData.CloneDictionary(meshA.surfaceMetaData);
-            if (meshB.surfaceMetaData != null)
-            {
-                foreach (var v in meshB.surfaceMetaData)
-                {
-                    if (metaDataCombined.ContainsKey(v.Key))
-                        throw new NameCollisionException("Group name conflict: " + v.Key);
-                    if (v.Value != null)
-                        metaDataCombined.Add(v.Key, v.Value.Clone());
-                }
-            }
+            var (nameToGroupCombined, metaDataCombined) = MergeBooleanPatchData(meshA, meshB);
             if (Resolver.LogBooleanOps && name != null)
                 Console.WriteLine("BoolOp: " + name);
-            MeshNormalUV combinedMesh = MeshNormalUV.BooleanOperation(meshA.Mesh, meshB.Mesh, operation, converter);
+            var inheritedLineages = new Dictionary<int, FaceLineage>(meshA.FaceLineages);
+            foreach (var (id, lineage) in meshB.FaceLineages)
+                inheritedLineages[id] = inheritedLineages.TryGetValue(id, out var existing)
+                    ? FaceLineage.Merge(new[] { existing, lineage }) : lineage;
+            var obsolete = new HashSet<string>(meshA.AmbiguousFaceReferences, StringComparer.Ordinal);
+            obsolete.UnionWith(meshB.AmbiguousFaceReferences);
+            var provenance = operation == BooleanOp.Difference ? new BooleanFaceLineage(meshA, meshB) : null;
+            MeshNormalUV combinedMesh = MeshNormalUV.BooleanOperation(meshA.Mesh, meshB.Mesh, operation, converter,
+                classifiedFragments: provenance == null ? null : provenance.Classify);
+            var lineages = FaceLineageNaming.Apply(combinedMesh, nameToGroupCombined, metaDataCombined,
+                provenance?.Output, inheritedLineages, obsolete);
 
             //var edges = GroupEdgeExtractor.ExtractGroupEdges(combinedMesh.Triangles, combinedMesh.GetGroupList(), combinedMesh.Positions);
 
@@ -1766,11 +1881,60 @@ Group/patch names from both inputs are merged (throws on group-id conflict for t
             {
                 bool resultIsVolume = BooleanResultIsVolume(operation, meshA, meshB);
                 result = new AnchorMesh(name, combinedMesh, nameToGroupCombined, metaDataCombined,
-                    deferCoplanarPostProcess: true, preferLexClosedLoopStarts: true, isVolume: resultIsVolume);
+                    deferCoplanarPostProcess: true, preferLexClosedLoopStarts: true, isVolume: resultIsVolume,
+                    faceLineages: lineages, ambiguousReferences: obsolete);
                 RegisterMesh(result);
             }
             //nameOfMostRecentMesh = name;
             return result;
+        }
+
+        private static (Dictionary<string, int>, Dictionary<string, SurfaceMetaData>) MergeBooleanPatchData(
+            AnchorMesh first, AnchorMesh second)
+        {
+            // Split descendants can carry the same local label but different
+            // group identities. Scope both labels to their operands; never
+            // merge their IDs or mutate the source anchor/metadata maps.
+            var conflicts = first.extendedNameToGroupId.Where(kv =>
+                second.extendedNameToGroupId.TryGetValue(kv.Key, out int id) && id != kv.Value)
+                .Select(kv => kv.Key).ToHashSet(StringComparer.Ordinal);
+            var reserved = new HashSet<string>(first.extendedNameToGroupId.Keys, StringComparer.Ordinal);
+            reserved.UnionWith(second.extendedNameToGroupId.Keys);
+            if (first.surfaceMetaData != null) reserved.UnionWith(first.surfaceMetaData.Keys);
+            if (second.surfaceMetaData != null) reserved.UnionWith(second.surfaceMetaData.Keys);
+            var names = new Dictionary<string, int>();
+            var metadata = new Dictionary<string, SurfaceMetaData>();
+            Add(first);
+            Add(second);
+            return (names, metadata);
+
+            void Add(AnchorMesh operand)
+            {
+                var renamed = new Dictionary<string, string>();
+                foreach (var (label, id) in operand.extendedNameToGroupId)
+                {
+                    string target = label;
+                    if (conflicts.Contains(label))
+                    {
+                        string scoped = operand.Name + "-" + label;
+                        target = scoped;
+                        int suffix = 1;
+                        while (!reserved.Add(target))
+                            target = EntityNaming.FormatPatchComponentName(scoped, suffix++);
+                        renamed.Add(label, target);
+                    }
+                    if (names.TryGetValue(target, out int existing) && existing != id)
+                        throw new NameCollisionException("Group name conflict: " + target);
+                    names[target] = id;
+                }
+                if (operand.surfaceMetaData == null) return;
+                foreach (var (label, data) in operand.surfaceMetaData)
+                {
+                    string target = renamed.TryGetValue(label, out string scoped) ? scoped : label;
+                    if (data != null && !metadata.ContainsKey(target))
+                        metadata.Add(target, data.Clone());
+                }
+            }
         }
 
         private static bool BooleanResultIsVolume(BooleanOp operation, AnchorMesh meshA, AnchorMesh meshB)
@@ -1800,10 +1964,10 @@ Returned mesh has new patches for each fillet surface (names prefixed ""BlendEdg
         public AnchorMesh Fillet(AnchorMesh mesh, List<string> edgeNamesToFillet, double filletRadius, double maxDeviation = -1, string name = null)
         {
             mesh.EnsureCoplanarPostProcessed();
+            edgeNamesToFillet = FaceLineageEdges.Resolve(mesh, edgeNamesToFillet);
             maxDeviation = ResolveMaxDeviation(maxDeviation);
             name = name ?? mesh.Name;
-            int startingGroupId = GetBaseGroupIndex();
-            int groupIdOffset = startingGroupId;
+            int groupIdOffset = GetBaseGroupIndex();
             
             EdgeBlending edgeBlending = new EdgeBlending();
             AnchorMesh result = edgeBlending.BlendEdges(
@@ -1812,11 +1976,8 @@ Returned mesh has new patches for each fillet surface (names prefixed ""BlendEdg
                 filletRadius, 
                 converter, 
                 maxDeviation,
-                ref groupIdOffset);
+                ref groupIdOffset, ReserveGroupIds);
 
-            // Increment by the number of groups created
-            int numGroupsCreated = groupIdOffset - startingGroupId;
-            IncrementBaseGroupIndex(numGroupsCreated);
 
             result.Name = name;
 
@@ -1833,10 +1994,10 @@ Returned mesh has new patches for each chamfer surface (names prefixed ""Chamfer
         public AnchorMesh Chamfer(AnchorMesh mesh, List<string> edgeNamesToChamfer, double chamferDistance, double maxDeviation = -1, string name = null)
         {
             mesh.EnsureCoplanarPostProcessed();
+            edgeNamesToChamfer = FaceLineageEdges.Resolve(mesh, edgeNamesToChamfer);
             maxDeviation = ResolveMaxDeviation(maxDeviation);
             name = name ?? mesh.Name;
-            int startingGroupId = GetBaseGroupIndex();
-            int groupIdOffset = startingGroupId;
+            int groupIdOffset = GetBaseGroupIndex();
 
             ChamferBlending chamferBlending = new ChamferBlending();
             AnchorMesh result = chamferBlending.ChamferEdges(
@@ -1845,10 +2006,8 @@ Returned mesh has new patches for each chamfer surface (names prefixed ""Chamfer
                 chamferDistance,
                 converter,
                 maxDeviation,
-                ref groupIdOffset);
+                ref groupIdOffset, ReserveGroupIds);
 
-            int numGroupsCreated = groupIdOffset - startingGroupId;
-            IncrementBaseGroupIndex(numGroupsCreated);
 
             result.Name = name;
             RegisterMesh(result);

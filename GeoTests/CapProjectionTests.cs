@@ -1,0 +1,30 @@
+using Geo;
+using GeoCore;
+
+namespace GeoTests;
+
+public class CapProjectionTests
+{
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ThinTiltedCapUsesAreaInsteadOfBoundingBox(bool reverse)
+    {
+        // Narrow Y extent is in the cap plane. Dropping Y projects this
+        // perfectly valid 3D rectangle onto the line X = Z.
+        var positions = new List<Rat3Hybrid> {
+            new(100, -1, 100), new(120, -1, 120),
+            new(120, 1, 120), new(100, 1, 100)
+        };
+        var ring = new List<int> { 0, 1, 2, 3 };
+        if (reverse) ring.Reverse();
+        var rings = new List<List<int>> { ring };
+        MeshConstructionHelpers.DeterminePrincipalPlane(positions, rings, out int a, out int b, out bool flip);
+        Assert.False(a == 0 && b == 2);
+        var triangles = new List<Tri>();
+        var groups = new List<int>();
+        MeshConstructionHelpers.TriangulateAndEmitCap(positions, rings, 0, false, 7, triangles, groups);
+        Assert.Equal(2, triangles.Count);
+        Assert.All(groups, group => Assert.Equal(7, group));
+    }
+}

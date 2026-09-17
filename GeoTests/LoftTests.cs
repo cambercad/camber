@@ -12,6 +12,34 @@ namespace GeoTests;
 public class LoftTests
 {
     [Fact]
+    public void CircularLoft_UvSeamHasIdenticalNormals()
+    {
+        var sections = new List<PlotterSketcherCoordSys>();
+        foreach (double z in new[] { 0.0, 3.0 })
+        {
+            var frame = new CoordinateSystem(new Vec3D(0, 0, z),
+                new Vec3D(1, 0, 0), new Vec3D(0, 1, 0), new Vec3D(0, 0, 1));
+            var sketch = new PlotterSketcherCoordSys("Section" + z, frame);
+            sketch.AddCircle(new Vec2D(0, 0), 1);
+            sections.Add(sketch);
+        }
+        var output = new MeshOutput();
+        LoftBuilder.GenerateLoftFromSketches(MeshTestHelpers.MakeConverter(), sections,
+            .01, new LoftOptions { CapEnds = false }, output, "Cylinder", out _);
+        int compared = 0;
+        for (int i = 0; i < output.Vertices.Count; i++)
+        {
+            if (output.UVs[i].X != 0) continue;
+            int j = Enumerable.Range(0, output.Vertices.Count).Single(k =>
+                output.UVs[k].X == 1 && output.UVs[k].Y == output.UVs[i].Y);
+            Assert.InRange(Vec3DOps.DistanceSquared(output.Vertices[i], output.Vertices[j]), 0, 1e-20);
+            Assert.InRange(Vec3DOps.DistanceSquared(output.Normals[i], output.Normals[j]), 0, 1e-20);
+            compared++;
+        }
+        Assert.True(compared >= 2);
+    }
+
+    [Fact]
     public void RuledLoft_TwoSquareProfiles_WatertightVolumeMatchesBox()
     {
         var converter = MeshTestHelpers.MakeConverter();
@@ -295,7 +323,6 @@ public class LoftTests
     [Fact]
     public void LoftThroughMeshNormalUVCtor_WithGeoApiConverter_WatertightPositiveVolume()
     {
-        GeoAPI.Clear();
         var api = new GeoAPI(new Box3D(new Vec3D(-5), new Vec3D(5)), 1e-4);
         double h = 1.5;
         var cs0 = CoordinateSystem.Default;
@@ -478,8 +505,10 @@ public class LoftTests
         Assert.InRange(vol, expected * 0.94, expected * 1.06);
     }
 
-    [Fact]
-    public void RuledLoft_CreasePolicyFromAllProfiles_IncreasesVertexCountVsFirstOnly()
+    [Theory]
+    [InlineData(.5, false)]
+    [InlineData(.65, true)]
+    public void RuledLoft_CreasePolicyAddsActualCornersButNotCollinearSplits(double topMidpoint, bool addsCrease)
     {
         var converter = MeshTestHelpers.MakeConverter();
         double h = 1.5;
@@ -491,11 +520,12 @@ public class LoftTests
         sk0.AppendLine(sq[2].X, sq[2].Y);
         sk0.AppendLine(sq[3].X, sq[3].Y);
         sk0.AppendLine(sq[4].X, sq[4].Y);
-        // Top edge split at (0, 0.5): extra crease vs a single top segment
+        // A collinear split is smooth; a raised midpoint creates a genuine corner.
+        // Previously origin-foot rolling accidentally changed the seam at the split.
         var sk1 = new PlotterSketcherCoordSys("B", cs1, new Vec2D(-0.5, -0.5));
         sk1.AppendLine(0.5, -0.5);
         sk1.AppendLine(0.5, 0.5);
-        sk1.AppendLine(0, 0.5);
+        sk1.AppendLine(0, topMidpoint);
         sk1.AppendLine(-0.5, 0.5);
         sk1.AppendLine(-0.5, -0.5);
         var sketches = new List<PlotterSketcherCoordSys> { sk0, sk1 };
@@ -509,7 +539,10 @@ public class LoftTests
         }
         int nFirst = CountVerts(LoftCreasePolicy.FromFirstProfileOnly);
         int nAll = CountVerts(LoftCreasePolicy.FromAllProfiles);
-        Assert.True(nAll > nFirst, $"FromAllProfiles should add crease columns (verts {nAll} vs {nFirst}).");
+        if (addsCrease)
+            Assert.True(nAll > nFirst, $"FromAllProfiles should add crease columns (verts {nAll} vs {nFirst}).");
+        else
+            Assert.Equal(nFirst, nAll);
     }
 
     [Fact]
@@ -612,10 +645,9 @@ public class LoftTests
         LoftBuilder.GenerateLoftFromSketches(converter, new List<PlotterSketcherCoordSys> { sk0, sk1 },
             maxDeviation: 1e-4, options, output, "AsAuthored", out _);
 
-        Vec3D expected = cs0.PointTo3D(sq[0]);
-        Vec3D seam = output.Vertices[0];
-        Assert.True(Vec3DOps.DistanceSquared(seam, expected) < 1e-10,
-            $"AsAuthored seam {seam} != authored start {expected}");
+        var expected = new PreciseFrameTransform(converter, cs0).Transform(new Vec3D(sq[0].X, sq[0].Y, 0));
+        Assert.Equal(expected, output.PrecisePositions[0]);
+        Assert.Equal(converter.Convert(expected), output.Vertices[0]);
     }
 
     [Fact]
@@ -801,7 +833,9 @@ public class LoftTests
             maxDeviation: 1e-4, options, output, "OpenEnds", out _);
 
         // Open: u=0 is authored start (0,0); last u column is authored end (1,0.5).
-        Assert.True(Vec3DOps.DistanceSquared(output.Vertices[0], cs0.PointTo3D(new Vec2D(0, 0))) < 1e-10);
+        var startExpected = new PreciseFrameTransform(converter, cs0).Transform(new Vec3D(0, 0, 0));
+        Assert.Equal(startExpected, output.PrecisePositions[0]);
+        Assert.Equal(converter.Convert(startExpected), output.Vertices[0]);
         // Find last vertex of first row: open has m columns, VSubdivisions=0 → 2 rows, first row has m verts.
         // With ProfileSamplesU=8 open: m >= 8. First row length = m.
         // Approximate: among first-row candidates, one near end.

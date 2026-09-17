@@ -69,6 +69,7 @@ namespace GeoSolver.Sparse
                 if (!patternChanged && !FormAAt(false))
                     return false;
                 WrapG(m);
+                AddTraceDamping(m);
                 Array.Copy(b, scratchEq, m);
                 if (!_ldl.Factorize(_g))
                     return false;
@@ -82,6 +83,7 @@ namespace GeoSolver.Sparse
                 if (!patternChanged && !FormAtA(false))
                     return false;
                 WrapG(n);
+                AddTraceDamping(n);
                 _j.TransposeMultiply(b, scratchParam);
                 if (!_ldl.Factorize(_g))
                     return false;
@@ -317,6 +319,14 @@ namespace GeoSolver.Sparse
                             _acc[k] += aij * _atVx[q];
                     }
                 }
+                // A free parameter can have an empty Jacobian column. Keep
+                // its diagonal in the symbolic pattern for regularization.
+                if (_mark[j] != _stamp)
+                {
+                    _mark[j] = _stamp;
+                    _acc[j] = 0;
+                    _pat[colNnz++] = j;
+                }
                 Array.Sort(_pat, 0, colNnz);
                 Buf.I(ref _gRi, nnz + colNnz);
                 Buf.D(ref _gVx, nnz + colNnz);
@@ -333,6 +343,18 @@ namespace GeoSolver.Sparse
             _gN = n;
             _hasPattern = true;
             return true;
+        }
+
+        private void AddTraceDamping(int n)
+        {
+            double trace = 0;
+            for (int column = 0; column < n; column++)
+                for (int p = _gCp[column]; p < _gCp[column + 1]; p++)
+                    if (_gRi[p] == column) trace += _gVx[p];
+            double damping = NewtonSolver.TraceDamping(trace, n);
+            for (int column = 0; column < n; column++)
+                for (int p = _gCp[column]; p < _gCp[column + 1]; p++)
+                    if (_gRi[p] == column) _gVx[p] += damping;
         }
 
         private bool AtANumeric(int n)
@@ -394,6 +416,14 @@ namespace GeoSolver.Sparse
                         else
                             _acc[k] += air * _jVx[p];
                     }
+                }
+                // A satisfied constant equation can have an empty Jacobian
+                // row. Its dual-Gramian diagonal still needs regularization.
+                if (_mark[i] != _stamp)
+                {
+                    _mark[i] = _stamp;
+                    _acc[i] = 0;
+                    _pat[colNnz++] = i;
                 }
                 Array.Sort(_pat, 0, colNnz);
                 Buf.I(ref _gRi, nnz + colNnz);

@@ -6,7 +6,66 @@ namespace GeoTests;
 
 public class CoplanarPipelineTests : IDisposable
 {
-    public void Dispose() => GeoAPI.Clear();
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
+
+    [Fact]
+    public void ParallelHeavyGroupsRetainCompleteOptimizationSetAndCornerData()
+    {
+        const int groups = 24, width = 8;
+        var points = new List<Rat3Hybrid>();
+        var sourceTriangles = new List<Tri>();
+        var sourceCorners = new List<MeshTriangle<TriangleVertexNormalUV>>();
+        var pointData = new List<TriangleVertexNormalUV>();
+        for (int group = 0; group < groups; group++)
+        {
+            int offset = points.Count;
+            for (int y = 0; y <= width; y++)
+                for (int x = 0; x <= width; x++)
+                {
+                    points.Add(new Rat3Hybrid(group * 20 + x, y, 0));
+                    pointData.Add(new TriangleVertexNormalUV { Normal = new Vec3D(0, 0, 1), UV = new Vec2D(x, y) });
+                }
+            void Add(int a, int b, int c)
+            {
+                sourceTriangles.Add(new Tri(a, b, c));
+                sourceCorners.Add(new MeshTriangle<TriangleVertexNormalUV> {
+                    GroupId = group, V0 = pointData[a], V1 = pointData[b], V2 = pointData[c] });
+            }
+            for (int y = 0; y < width; y++)
+                for (int x = 0; x < width; x++)
+                {
+                    int a = offset + y * (width + 1) + x, b = a + 1, c = a + width + 1, d = c + 1;
+                    Add(a, b, d); Add(a, d, c);
+                }
+        }
+        var expectedGroups = Enumerable.Range(0, groups).ToHashSet();
+        List<Tri> firstRun = null;
+        for (int run = 0; run < 8; run++)
+        {
+            var triangles = sourceTriangles.ToList();
+            var corners = sourceCorners.ToList();
+            var optimized = CoplanarGroupRetriangulation.RetriangulateCoplanar(points, triangles, corners, expectedGroups);
+            Assert.True(expectedGroups.SetEquals(optimized));
+            Assert.True(triangles.Count < sourceTriangles.Count);
+            if (firstRun != null)
+                Assert.Equal(firstRun.Select(t => (t.A, t.B, t.C)), triangles.Select(t => (t.A, t.B, t.C)));
+            firstRun = triangles;
+            var twiceArea = new BigRationalHybrid(0);
+            for (int i = 0; i < triangles.Count; i++)
+            {
+                var t = triangles[i];
+                var n = Rat3Hybrid.Cross(points[t.B] - points[t.A], points[t.C] - points[t.A]);
+                Assert.True(n.Z.Sign() > 0);
+                twiceArea += n.Z;
+                Assert.Equal(pointData[t.A].UV, corners[i].V0.UV);
+                Assert.Equal(pointData[t.B].UV, corners[i].V1.UV);
+                Assert.Equal(pointData[t.C].Normal, corners[i].V2.Normal);
+                Assert.Equal(t.A / ((width + 1) * (width + 1)), corners[i].GroupId);
+            }
+            Assert.True(twiceArea == new BigRationalHybrid(2 * groups * width * width));
+        }
+    }
 
     [Fact]
     public void SingleCube_PreservesVolumeAndUvAfterConstruction()

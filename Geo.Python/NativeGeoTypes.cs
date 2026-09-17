@@ -77,6 +77,40 @@ public class NativeCurve
         return new NativeCurve(new Line3D(NativeUtil.V3(x0, y0, z0), NativeUtil.V3(x1, y1, z1), NativeUtil.EmptyToNull(name)));
     }
 
+    public static NativeCurve Hermite(string packedPoints, string packedDirections, string name)
+    {
+        var points = NativePack.ReadPoints3(packedPoints);
+        var directions = NativePack.ReadPoints3(packedDirections);
+        if (points.Count < 2 || directions.Count != points.Count)
+            throw new ArgumentException("Hermite needs at least two points and one tangent direction per point.");
+        static bool Finite(Vec3D p) => double.IsFinite(p.X) && double.IsFinite(p.Y) && double.IsFinite(p.Z);
+        for (int i = 0; i < points.Count; i++)
+        {
+            if (!Finite(points[i]) || !Finite(directions[i]))
+                throw new ArgumentException("Hermite points and tangent directions must be finite.");
+            double magnitude = directions[i].Length();
+            if (!double.IsFinite(magnitude) || magnitude < 1e-18)
+                throw new ArgumentException("Hermite tangent directions must have finite nonzero length.");
+            if (i > 0 && ((points[i] - points[i - 1]).LengthSquared() == 0 ||
+                          !double.IsFinite((points[i] - points[i - 1]).Length())))
+                throw new ArgumentException("Consecutive Hermite points must be distinct with finite separation.");
+        }
+        return new NativeCurve(new CubicHermiteSpline3D(points,
+            directions.Select(v => (Vec3D?)v).ToArray(), NativeUtil.EmptyToNull(name)));
+    }
+
+    private string EvaluateVector(double u, bool tangent)
+    {
+        if (!double.IsFinite(u) || u < 0 || u > 1)
+            throw new ArgumentOutOfRangeException(nameof(u), "Curve parameter must lie in [0, 1].");
+        var sample = Native.Evaluate(u);
+        var value = tangent ? sample.Tangent : sample.Origin;
+        return string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{value.X:R} {value.Y:R} {value.Z:R}");
+    }
+
+    public string Point(double u) => EvaluateVector(u, false);
+    public string Tangent(double u) => EvaluateVector(u, true);
+
     public static NativeCurve Helix(
         double ox, double oy, double oz,
         double xx, double xy, double xz,
@@ -254,6 +288,8 @@ public class NativeSolidList
     {
         Items.Add(solid.Native);
     }
+
+    public NativeSolid Get(int index) => new NativeSolid(Items[index]);
 
     public int Count { get { return Items.Count; } }
 }

@@ -63,6 +63,7 @@ namespace Geo
 
             const int MinTrisForParallelGroup = 64;
             var isHeavyGroup = new bool[groupCount];
+            var wasRetriangulatedByGroup = new bool[groupCount];
             int heavyGroupCount = 0;
             var heavyGroupIndices = new List<int>();
             for (int i = 0; i < groupCount; i++)
@@ -91,8 +92,7 @@ namespace Geo
                     nonManifoldEdges);
                 newTrianglesArr[i] = groupTriangles;
                 newTrianglesExArr[i] = groupTrianglesEx;
-                if (wasRetriangulated)
-                    retriangulatedGroupIds.Add(pairs[i].Key);
+                wasRetriangulatedByGroup[i] = wasRetriangulated;
             }
 
             for (int i = 0; i < groupCount; i++)
@@ -103,6 +103,12 @@ namespace Geo
             }
 
             ParallelEx.ForGroups(0, heavyGroupCount, k => ProcessGroup(heavyGroupIndices[k]));
+
+            // Workers own distinct array entries; collect shared set membership
+            // only after all workers finish, in stable group order.
+            for (int i = 0; i < groupCount; i++)
+                if (wasRetriangulatedByGroup[i])
+                    retriangulatedGroupIds.Add(pairs[i].Key);
 
             // Replace the original lists with retriangulated ones (fixed group order)
             triangles.Clear();

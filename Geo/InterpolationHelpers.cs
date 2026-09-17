@@ -221,6 +221,57 @@ namespace Geo
 
 
 
+        // Boolean geometry is resolved in exact converter coordinates. Compute
+        // its corner weights there too, so boundary points stay on their source
+        // edges even when display coordinates differ after quantization.
+        internal static Vec3D GetBarycentricWeights(Rat3Hybrid point, Tri triangle, List<Rat3Hybrid> positions)
+        {
+            var weights = GetExactBarycentricWeights(point, triangle, positions);
+            return new Vec3D(weights.X.ToDouble(), weights.Y.ToDouble(), weights.Z.ToDouble());
+        }
+
+        internal static Rat3Hybrid GetExactBarycentricWeights(Rat3Hybrid point, Tri triangle, List<Rat3Hybrid> positions)
+        {
+            var a = positions[triangle.A];
+            var b = positions[triangle.B];
+            var c = positions[triangle.C];
+            if (point == a) return new Rat3Hybrid(1, 0, 0);
+            if (point == b) return new Rat3Hybrid(0, 1, 0);
+            if (point == c) return new Rat3Hybrid(0, 0, 1);
+            var ab = b - a;
+            var ac = c - a;
+            var ap = point - a;
+            var normal = Rat3Hybrid.Cross(ab, ac);
+            BigRationalHybrid denominator, numeratorB, numeratorC;
+            if (normal.X.Sign() != 0)
+            {
+                denominator = normal.X;
+                numeratorB = ap.Y * ac.Z - ap.Z * ac.Y;
+                numeratorC = ab.Y * ap.Z - ab.Z * ap.Y;
+            }
+            else if (normal.Y.Sign() != 0)
+            {
+                denominator = normal.Y;
+                numeratorB = ap.Z * ac.X - ap.X * ac.Z;
+                numeratorC = ab.Z * ap.X - ab.X * ap.Z;
+            }
+            else
+            {
+                denominator = normal.Z;
+                numeratorB = ap.X * ac.Y - ap.Y * ac.X;
+                numeratorC = ab.X * ap.Y - ab.Y * ap.X;
+            }
+            if (denominator.Sign() == 0)
+                throw new InvalidOperationException("Cannot interpolate attributes on an exact zero-area source triangle.");
+            BigRationalHybrid Weight(BigRationalHybrid numerator)
+            {
+                var ratio = numerator / denominator;
+                ratio.Simplify();
+                return ratio;
+            }
+            return new Rat3Hybrid(Weight(denominator - numeratorB - numeratorC), Weight(numeratorB), Weight(numeratorC));
+        }
+
         public static Vec3D GetBarycentricWeights(Vec3D point, Tri sourceTriangle, List<Vec3D> sourcePositions)
         {
             // Get the three vertices of the source triangle

@@ -110,7 +110,6 @@ public class OpenMeshPatchDetectionTests
         {
             StlWriter.WriteAscii(path, points, triangles);
 
-            GeoAPI.Clear();
             var api = new GeoAPI(new Box3D(new Vec3D(-1, -1, -1), new Vec3D(2, 2, 2)), 0.01);
             var mesh = api.LoadStlFile(path, 45.0, name: "TrimSheet", requireWatertight: false);
 

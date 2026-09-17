@@ -65,16 +65,36 @@ namespace Geo.NurbsConstruction
 
         public static BSplineCurve EllipseToBSpline(Ellipse2D ellipse, CoordinateSystem frame)
         {
-            int samples = ellipse.IsFullEllipse ? 32 : 24;
-            var points = new Vec3D[samples];
-            for (int i = 0; i < samples; i++)
+            // An ellipse is an affine image of a circle. Each <=90-degree
+            // span has one exact rational quadratic with weight cos(half-span).
+            double sweep = ellipse.EndAngle-ellipse.StartAngle;
+            int spans = Math.Max(1,(int)Math.Ceiling(Math.Abs(sweep)/(Math.PI/2)));
+            var control = new Vec4D[2*spans+1];
+            var knots = new double[2*spans+4];
+            var center = frame.PointTo3D(ellipse.Center);
+            var major = frame.DirectionTo3D(ellipse.MajorAxis);
+            var minor2 = new Vec2D(-ellipse.MajorAxis.Y,ellipse.MajorAxis.X) *
+                         (ellipse.MinorAxisLength/ellipse.MajorAxisLength);
+            var minor = frame.DirectionTo3D(minor2);
+            for (int i = 0; i <= spans; i++)
             {
-                double u = samples == 1 ? 0 : (double)i / (samples - (ellipse.IsFullEllipse ? 0 : 1));
-                if (ellipse.IsFullEllipse && i == samples - 1)
-                    u = 0;
-                points[i] = frame.PointTo3D(ellipse.EvaluateVertex(u).Position);
+                double angle = ellipse.StartAngle + sweep*i/spans;
+                var point = center + major*Math.Cos(angle) + minor*Math.Sin(angle);
+                control[2*i] = new Vec4D(point,1);
+                if (i < spans)
+                {
+                    double middle = ellipse.StartAngle+sweep*(i+.5)/spans;
+                    double weight = Math.Cos(sweep/(2*spans));
+                    var weighted = center*weight+major*Math.Cos(middle)+minor*Math.Sin(middle);
+                    control[2*i+1] = new Vec4D(weighted,weight);
+                }
+                if (i > 0 && i < spans)
+                    knots[2*i+1] = knots[2*i+2] = (double)i/spans;
             }
-            return ChordLengthSpline(points, ellipse.IsFullEllipse);
+            if (ellipse.IsFullEllipse)
+                control[^1] = control[0];
+            knots[^1] = knots[^2] = knots[^3] = 1;
+            return new BSplineCurve(2,control,knots,ellipse.IsFullEllipse);
         }
 
         public static BSplineCurve BSpline2DToBSpline(BSpline2D spline, CoordinateSystem frame)
