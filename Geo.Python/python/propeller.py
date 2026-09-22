@@ -30,7 +30,7 @@ airfoil_samples_per_side = 32
 omega = rpm * (2.0 * math.pi / 60.0)
 alpha_rad = angle_of_attack_deg * (math.pi / 180.0)
 max_geometric_pitch_rad = max_geometric_pitch_deg * (math.pi / 180.0)
-max_dev = max(5e-6, tip_radius_m * 2e-5)
+max_dev = max(5e-5, tip_radius_m * 2e-5)
 
 
 def chord_at_span_fraction(xi):
@@ -123,9 +123,9 @@ print(
     round(advance_j, 3),
     "Vtip=",
     round(tip_speed),
-    "m/s | hub inflow φ=",
+    "m/s | hub inflow phi=",
     round(phi_hub, 1),
-    "deg geometric β hub/tip=",
+    "deg geometric beta hub/tip=",
     round(beta_hub, 1),
     "/",
     round(beta_tip, 1),

@@ -54,6 +54,8 @@ def _native_mod():
     if _TYPES is None:
         from _camber_native.__dotwrap_generated.main import (
             NativeAssembly,
+            NativeAssemblyLeaf,
+            NativeAssemblyLeaves,
             NativeAssemblyAxisDatum,
             NativeAssemblyPart,
             NativeAssemblyPlaneDatum,
@@ -76,6 +78,8 @@ def _native_mod():
             NativeAssemblyOccurrence = None
         _TYPES = {
             "NativeAssembly": NativeAssembly,
+            "NativeAssemblyLeaf": NativeAssemblyLeaf,
+            "NativeAssemblyLeaves": NativeAssemblyLeaves,
             "NativeAssemblyAxisDatum": NativeAssemblyAxisDatum,
             "NativeAssemblyOccurrence": NativeAssemblyOccurrence,
             "NativeAssemblyPart": NativeAssemblyPart,
@@ -694,31 +698,6 @@ def _datum_entity(native, part, reference):
     return ""
 
 
-def _constraint_entities(*datums):
-    names = []
-    for datum in datums:
-        if datum is None:
-            continue
-        name = getattr(datum, "entity", None) or ""
-        if name:
-            names.append(str(name))
-    return names
-
-
-def _entity_short(datum):
-    ent = getattr(datum, "entity", None) or ""
-    if ent.endswith(":"):
-        return ent[:-1]
-    i = ent.find(":")
-    if i >= 0:
-        return ent[i + 1:] or ent
-    ref = getattr(datum, "reference", None) or ""
-    if ref:
-        return str(ref)
-    part = getattr(datum, "_part", None)
-    return getattr(part, "name", "") if part is not None else ""
-
-
 class AssemblyPart(object):
     """An instance of a Solid in an Assembly (pose + named datums)."""
     def __init__(self, native):
@@ -807,6 +786,18 @@ class AssemblyOccurrence(object):
         return "AssemblyOccurrence({0!r})".format(self.name)
 
 
+class PartOperation(namedtuple("PartOperation", "index kind result inputs entities details")):
+    """One successful solid-producing feature in a Part's chronological ledger."""
+    __slots__ = ()
+
+class AssemblyLeaf(namedtuple("AssemblyLeaf", "path part solid frame bounds")):
+    """A recursive assembly leaf in its current world pose.
+
+    ``path`` identifies this occurrence. Prefix a local patch, curve, or point name
+    with ``path + ':'`` when referring to the occurrence in an assembly.
+    """
+    __slots__ = ()
+
 class Interference(namedtuple("Interference", "first second volume geometry")):
     """Overlapping occurrence paths, volume in cubic model units, and a Solid to display."""
     __slots__ = ()
@@ -823,6 +814,16 @@ class MateResidual(namedtuple("MateResidual", "index kind label entities residua
     def __repr__(self):
         return "MateResidual(index={0}, label={1!r}, max_residual={2:.3g}, satisfied={3})".format(
             self.index, self.label, self.max_residual, self.satisfied)
+
+
+class AssemblyConstraintDatum(namedtuple("AssemblyConstraintDatum", "kind part path local_point local_direction world_point world_direction")):
+    """Immutable constraint anchor in body-local and solved assembly coordinates."""
+    __slots__ = ()
+
+
+class AssemblyConstraint(namedtuple("AssemblyConstraint", "index kind label first second value entities")):
+    """One authored assembly constraint, suitable for inspection or physics export."""
+    __slots__ = ()
 
 
 class AssemblySolveResult(namedtuple("AssemblySolveResult", "converged sum_squared_error num_parameters num_equations message characteristic_length mates")):
@@ -875,7 +876,20 @@ class Assembly(object):
     def __init__(self, native, part=None):
         self._n = native
         self._part = part
-        self.constraints = []
+
+    @property
+    def constraints(self):
+        """Immutable authored constraints with local and solved world anchors."""
+        records = json.loads(_require(self._n, "constraint_records")())
+        def datum(value):
+            if value is None:
+                return None
+            return AssemblyConstraintDatum(value["kind"], value["part"], value["path"],
+                vec3(*value["local_point"]), vec3(*value["local_direction"]),
+                vec3(*value["world_point"]), vec3(*value["world_direction"]))
+        return tuple(AssemblyConstraint(item["index"], item["kind"], item["label"],
+            datum(item["first"]), datum(item["second"]), item["value"],
+            tuple(item["entities"])) for item in records)
 
     @property
     def name(self):
@@ -891,6 +905,40 @@ class Assembly(object):
     def solve_after_every_constraint(self, value):
         self._n.solve_after_every_constraint = 1 if value else 0
 
+    def leaves(self):
+        """Return recursive part occurrences with world frames and exact surface bounds.
+
+        The leaf's ``solid`` remains in its own local coordinates; ``frame`` maps
+        that solid into this assembly. ``bounds`` is ``(minimum, maximum)`` in
+        assembly coordinates.
+        """
+        native = _require(self._n, "leaves")()
+        result = []
+        for i in range(int(native.count)):
+            leaf = _invoke(native, "get", i)
+            frame = Frame((leaf.ox, leaf.oy, leaf.oz),
+                          (leaf.xx, leaf.xy, leaf.xz),
+                          (leaf.yx, leaf.yy, leaf.yz),
+                          (leaf.zx, leaf.zy, leaf.zz))
+            bounds = (vec3(leaf.min_x, leaf.min_y, leaf.min_z),
+                      vec3(leaf.max_x, leaf.max_y, leaf.max_z))
+            result.append(AssemblyLeaf(leaf.path,
+                          AssemblyPart(_invoke(leaf, "get_part")),
+                          Solid(_invoke(leaf, "get_solid"), self._part), frame, bounds))
+        return tuple(result)
+
+    def bounds(self):
+        """World-space ``(minimum, maximum)`` over recursive part occurrences, or None when empty."""
+        leaves = self.leaves()
+        if not leaves:
+            return None
+        minimum = vec3(min(leaf.bounds[0].x for leaf in leaves),
+                       min(leaf.bounds[0].y for leaf in leaves),
+                       min(leaf.bounds[0].z for leaf in leaves))
+        maximum = vec3(max(leaf.bounds[1].x for leaf in leaves),
+                       max(leaf.bounds[1].y for leaf in leaves),
+                       max(leaf.bounds[1].z for leaf in leaves))
+        return minimum, maximum
     def interferences(self, *, min_volume=0):
         """Return positive overlaps, largest first, including nested parts.
 
@@ -1012,98 +1060,80 @@ class Assembly(object):
             _invoke(self._n, "get_world_pose_z", part._n),
         )
 
-    def _record(self, kind, label, entities):
-        self.constraints.append({"kind": kind, "label": label, "entities": list(entities or [])})
-
     def fix(self, part):
         """Lock an AssemblyPart or AssemblyOccurrence in world (ground)."""
         if isinstance(part, AssemblyOccurrence):
             _invoke(self._n, "fix_sub_assembly", part._n)
-            self._record("FixPart", "Fix " + part.name, [part.name + ":"])
             return
         _invoke(self._n, "fix_part", part._n)
-        self._record("FixPart", "Fix " + part.name, [part.name + ":"])
 
     def coincident(self, a, b, opposite_normals=None):
         """Coincide two matching datums (point/point, axis/axis, plane/plane)."""
         if isinstance(a, AssemblyPlaneDatum) and isinstance(b, AssemblyPlaneDatum):
             if opposite_normals is None:
                 _invoke(self._n, "set_coincident_planes", a._n, b._n)
-                kind = "CoincidentPlanes"
-                label = "Coincident"
             else:
                 _invoke(self._n, "set_coincident_planes_oriented",
                     a._n, b._n, 1 if opposite_normals else 0)
-                kind = "CoincidentPlanes"
-                label = "Coincident oriented"
         elif isinstance(a, AssemblyAxisDatum) and isinstance(b, AssemblyAxisDatum):
             if opposite_normals is not None:
                 raise TypeError("opposite_normals applies only to plane datums")
             _invoke(self._n, "set_coincident_axes", a._n, b._n)
-            kind = "CoincidentAxes"
-            label = "Coincident"
         elif isinstance(a, AssemblyPointDatum) and isinstance(b, AssemblyPointDatum):
             if opposite_normals is not None:
                 raise TypeError("opposite_normals applies only to plane datums")
             _invoke(self._n, "set_coincident_points", a._n, b._n)
-            kind = "CoincidentPoints"
-            label = "Coincident"
         else:
             raise TypeError("coincident datums must have matching point, axis, or plane types")
-        ents = _constraint_entities(a, b)
-        shown = [_entity_short(a), _entity_short(b)]
-        shown = [n for n in shown if n]
-        self._record(kind, "{0}: {1}".format(label, " <> ".join(shown)), ents)
 
     def parallel(self, a, b):
-        """Keep two axis datums parallel."""
-        if not isinstance(a, AssemblyAxisDatum) or not isinstance(b, AssemblyAxisDatum):
-            raise TypeError("parallel currently expects two axis datums")
-        _invoke(self._n, "set_parallel_axes", a._n, b._n)
-        ents = _constraint_entities(a, b)
-        self._record("ParallelAxes", "Parallel: {0}".format(" <> ".join(
-            n for n in [_entity_short(a), _entity_short(b)] if n)), ents)
+        """Keep two matching axis or plane datums parallel."""
+        if isinstance(a, AssemblyAxisDatum) and isinstance(b, AssemblyAxisDatum):
+            _invoke(self._n, "set_parallel_axes", a._n, b._n)
+        elif isinstance(a, AssemblyPlaneDatum) and isinstance(b, AssemblyPlaneDatum):
+            _invoke(self._n, "set_parallel_planes", a._n, b._n)
+        else:
+            raise TypeError("parallel expects two axis datums or two plane datums")
 
     def concentric(self, a, b):
         """Concentric axes/cylinders (two datums)."""
         _invoke(self._n, "set_concentric", a._n, b._n)
-        ents = _constraint_entities(a, b)
-        self._record("Concentric", "Concentric: {0}".format(" <> ".join(
-            n for n in [_entity_short(a), _entity_short(b)] if n)), ents)
 
     def perpendicular(self, a, b):
-        """Keep two axis datums perpendicular."""
-        if not isinstance(a, AssemblyAxisDatum) or not isinstance(b, AssemblyAxisDatum):
-            raise TypeError("perpendicular currently expects two axis datums")
-        _invoke(self._n, "set_perpendicular_axes", a._n, b._n)
-        ents = _constraint_entities(a, b)
-        self._record("PerpendicularAxes", "Perp: {0}".format(" <> ".join(
-            n for n in [_entity_short(a), _entity_short(b)] if n)), ents)
+        """Keep two matching axis or plane datums perpendicular."""
+        if isinstance(a, AssemblyAxisDatum) and isinstance(b, AssemblyAxisDatum):
+            _invoke(self._n, "set_perpendicular_axes", a._n, b._n)
+        elif isinstance(a, AssemblyPlaneDatum) and isinstance(b, AssemblyPlaneDatum):
+            _invoke(self._n, "set_perpendicular_planes", a._n, b._n)
+        else:
+            raise TypeError("perpendicular expects two axis datums or two plane datums")
 
     def angle(self, a, b, radians):
         """Angle between two axis datums, in radians."""
         if not isinstance(a, AssemblyAxisDatum) or not isinstance(b, AssemblyAxisDatum):
             raise TypeError("angle currently expects two axis datums")
         _invoke(self._n, "set_angle_axes", a._n, b._n, float(radians))
-        ents = _constraint_entities(a, b)
-        self._record("AngleAxes", "Angle: {0}".format(" <> ".join(
-            n for n in [_entity_short(a), _entity_short(b)] if n)), ents)
 
     def distance(self, a, b, value):
         """Distance between two point datums, or a signed plane offset along B's normal."""
         if isinstance(a, AssemblyPointDatum) and isinstance(b, AssemblyPointDatum):
             _invoke(self._n, "set_distance_points", a._n, b._n, float(value))
-            kind = "DistancePoints"
-            label = "Distance"
         elif isinstance(a, AssemblyPlaneDatum) and isinstance(b, AssemblyPlaneDatum):
             _invoke(self._n, "set_distance_planes", a._n, b._n, float(value))
-            kind = "DistancePlanes"
-            label = "Offset"
         else:
             raise TypeError("distance expects two point datums or two plane datums")
-        ents = _constraint_entities(a, b)
-        self._record(kind, "{0}: {1}".format(label, " <> ".join(
-            n for n in [_entity_short(a), _entity_short(b)] if n)), ents)
+
+    def on_plane(self, point, plane):
+        """Constrain a point datum to lie on a plane datum."""
+        if not isinstance(point, AssemblyPointDatum) or not isinstance(plane, AssemblyPlaneDatum):
+            raise TypeError("on_plane expects a point datum and a plane datum")
+        _invoke(self._n, "set_point_on_plane", point._n, plane._n)
+
+    def contact(self, point, plane):
+        """Keep a point on the positive side of a plane datum."""
+        if not isinstance(point, AssemblyPointDatum) or not isinstance(plane, AssemblyPlaneDatum):
+            raise TypeError("contact expects a point datum and a plane datum")
+        _invoke(self._n, "set_contact", point._n, plane._n)
 
     def solve(self):
         """Solve assembly mates and return an immutable AssemblySolveResult.
@@ -1147,9 +1177,46 @@ class Part(object):
         return self._n.name
 
     @property
+    def operations(self):
+        """Successful solid-producing features in chronological order.
+
+        Each record has ``kind``, ``result``, input names, selected entities, and
+        a concise CAD-style parameter summary. It is read-only history, not replay.
+        """
+        result = []
+        for i in range(int(self._n.operation_count)):
+            operation = _require(self._n, "get_operation")(i)
+            result.append(PartOperation(int(operation.index), operation.kind,
+                          operation.result_name,
+                          tuple(_invoke(operation, "input_at", j) for j in range(int(operation.input_count))),
+                          tuple(_invoke(operation, "entity_at", j) for j in range(int(operation.entity_count))),
+                          operation.details))
+        return tuple(result)
+    @property
     def max_deviation(self):
         """Default tessellation tolerance (world units)."""
         return self._n.max_deviation
+
+
+    def _selectable_names(self, kind):
+        count = int(getattr(self._n, kind + "_count"))
+        at = _require(self._n, kind + "_name_at")
+        return tuple(at(i) for i in range(count))
+
+    @property
+    def patch_names(self):
+        """Canonical renderer patch names across all solids in this Part."""
+        return self._selectable_names("patch")
+
+    @property
+    def curve_names(self):
+        """Canonical renderer mesh-edge curve names across all solids in this Part."""
+        return self._selectable_names("curve")
+
+    @property
+    def point_names(self):
+        """Canonical renderer edge-anchor names across all solids in this Part."""
+        return self._selectable_names("point")
 
     def smallest_unit(self):
         """Lattice step: operating-box extent / slices (~1e-6 of the box)."""
@@ -1179,6 +1246,20 @@ class Part(object):
             return Sketch(_require(self._n, "sketch_at")(plane or "xy", origin_name, _name(name)), self)
         return Sketch(_invoke(self._n, "sketch", plane or "xy", _name(name)), self)
 
+
+    def section_sketch(self, solid, plane=None, name=None):
+        """Return the cross-section of ``solid`` as sampled curves in a Sketch.
+
+        ``plane`` is a Frame and defaults to XY. Coplanar face overlap is omitted;
+        each curve is one contiguous intersection with a source surface patch.
+        offset the plane slightly to take a transverse cut at a model boundary.
+        """
+        if not isinstance(solid, Solid) or solid._part is not self:
+            raise TypeError("section_sketch requires a Solid from this Part")
+        plane = Frame() if plane is None else plane
+        if not isinstance(plane, Frame):
+            raise TypeError("plane must be a Frame")
+        return Sketch(_require(self._n, "section_sketch")(solid._n, plane._native(), _name(name)), self)
     def _unregister_sketch(self, sketch):
         """Drop a sketch from the part (does not undo solids already built from it)."""
         _require(self._n, "unregister_sketch")(sketch._n)
@@ -1395,7 +1476,7 @@ class Part(object):
         from .geom import _pack_points3
         def tangent(value):
             return "" if value is None else _pack_points3([value])
-        return Solid(_require(self._n, "loft_surface")(
+        return Surface(_require(self._n, "loft_surface")(
             _sketch_list(sections), _curve_list(() if guides is None else guides),
             tangent(start_tangent), tangent(end_tangent), float(max_deviation), _name(name)), self)
 
@@ -1415,6 +1496,26 @@ class Part(object):
         """Boolean intersection. Same as ``a & b``."""
         return Solid(_invoke(self._n, "intersect", a._n, b._n, _name(name)), self)
 
+    def trim_by_surface(self, solid, surface, *, side="normal", name=None):
+        """Trim a closed ``solid`` by an open ``surface``.
+
+        ``side`` selects the retained half-space relative to the surface's
+        triangle normals: ``"normal"`` keeps the normal side and
+        ``"opposite"`` keeps the other side.
+        """
+        if not isinstance(solid, Solid) or isinstance(solid, Surface) or solid._part is not self:
+            raise TypeError("solid must be a Solid from this Part")
+        if not isinstance(surface, Surface) or surface._part is not self:
+            raise TypeError("surface must be a Surface from this Part")
+        if side == "normal":
+            keep_normal = 1
+        elif side == "opposite":
+            keep_normal = 0
+        else:
+            raise ValueError("side must be 'normal' or 'opposite'")
+        return Solid(_require(self._n, "trim_by_surface")(
+            solid._n, surface._n, keep_normal, _name(name)), self)
+
     def batch_union(self, meshes):
         """Union many solids. Empty list → None; one item returned as-is."""
         if not meshes:
@@ -1431,10 +1532,11 @@ class Part(object):
         return Solid(_require(self._n, "batch_boolean_chain")(mesh_a._n, chain), self)
 
     def solid_from_mesh(self, positions, triangles, name=None):
-        """Build a solid from world-space vertices and ``(i, j, k)`` triangles."""
+        """Build a Solid or open Surface from world-space vertices and triangles."""
         from .geom import _pack_points3, _pack_triangles
-        return Solid(_require(self._n, "solid_from_mesh")(
-            _pack_points3(positions), _pack_triangles(triangles), _name(name)), self)
+        native = _require(self._n, "solid_from_mesh")(
+            _pack_points3(positions), _pack_triangles(triangles), _name(name))
+        return _body(native, self)
 
     def raycast(self, solid, origin, direction):
         """Nearest mesh hit from ``origin`` along ``direction``, or ``None``.
@@ -1519,28 +1621,31 @@ class Part(object):
             solid._n, _join_names(edges), float(distance), float(max_deviation), _name(name)), self)
 
     def solid(self, name):
-        """Look up a Solid already registered on this part by name, or None."""
+        """Look up a Solid or Surface already registered on this part, or None."""
         found = _require(self._n, "get_mesh_from_name")(name)
         if found is None:
             return None
-        return Solid(found, self)
+        return _body(found, self)
 
     def load_stl(self, path, group_border_angle_deg, name=None, require_watertight=True):
-        """Import STL. ``group_border_angle_deg`` splits patches at sharp edges."""
-        return Solid(_require(self._n, "load_stl_file")(
-            path, float(group_border_angle_deg), _name(name), 1 if require_watertight else 0), self)
+        """Import STL as a Solid or, when allowed, an open Surface."""
+        native = _require(self._n, "load_stl_file")(
+            path, float(group_border_angle_deg), _name(name), 1 if require_watertight else 0)
+        return _body(native, self)
 
     def load_off(self, path, group_border_angle_deg, name=None, require_watertight=True):
-        """Import OFF mesh."""
-        return Solid(_require(self._n, "load_off_file")(
-            path, float(group_border_angle_deg), _name(name), 1 if require_watertight else 0), self)
+        """Import OFF as a Solid or, when allowed, an open Surface."""
+        native = _require(self._n, "load_off_file")(
+            path, float(group_border_angle_deg), _name(name), 1 if require_watertight else 0)
+        return _body(native, self)
 
     def load_obj(self, path, group_border_angle_deg=-1, name=None, scale=1.0):
         """Import Wavefront OBJ. ``group_border_angle_deg`` splits patches at sharp edges
         (viewer edges are drawn on patch borders; use e.g. 22 when the OBJ has no ``g`` tags).
         ``scale`` multiplies vertex positions (e.g. 0.01 for cm→m)."""
-        return Solid(_require(self._n, "load_wavefront_obj_file")(
-            path, float(group_border_angle_deg), _name(name), float(scale)), self)
+        native = _require(self._n, "load_wavefront_obj_file")(
+            path, float(group_border_angle_deg), _name(name), float(scale))
+        return _body(native, self)
 
     def show(self, title="Camber"):
         """Open the 3D viewer on all meshes in this part."""
@@ -1826,7 +1931,7 @@ class Sketch(object):
     def surface(self, name=None, max_deviation=-1):
         """Fill closed contours and register an open sheet on the part.
 
-        The result is a Solid with ``is_volume`` False (a planar fill, not a solid).
+        Returns a planar ``Surface`` with ``is_volume`` False, not a solid.
         """
         pts2, tris = self.triangulate(max_deviation)
         if not tris:
@@ -2490,12 +2595,8 @@ class ProjectedSketch(object):
         return "ProjectedSketch(name={0!r}, curves={1})".format(self.name, self.curve_count)
 
 
-class Solid(object):
-    """Triangle mesh owned by a Part. Operators: ``+`` union, ``-`` cut, ``&`` intersect.
-
-    ``Solid.mesh()`` dumps this solid's triangles. ``Part.solid(name)`` looks up a
-    named solid on the part.
-    """
+class _MeshBody(object):
+    """Shared native mesh handle for the public Solid and Surface types."""
 
     def __init__(self, native, part):
         self._n = native
@@ -2503,7 +2604,7 @@ class Solid(object):
 
     @property
     def name(self):
-        """Kernel solid name (also used as the default boolean result name)."""
+        """Kernel mesh name."""
         return self._n.name
 
     @property
@@ -2520,40 +2621,23 @@ class Solid(object):
         return bool(flag)
 
     @property
-    def edge_names(self):
-        """Feature edge references accepted by fillet/chamfer, excluding diagonals.
+    def patch_names(self):
+        """Canonical patch names, identical to the renderer's face names."""
+        return tuple(_require(self._n, "patch_name_at")(i) for i in range(int(self._n.patch_count)))
 
-        Unambiguous provenance names can be authored in scripts. When a face's
-        ancestry is ambiguous, an enumerated name carries ``#current=...`` and
-        selects this solid snapshot only; reacquire it after rebuilding or copying.
-        """
-        count = int(self._n.edge_count)
-        return tuple(_require(self._n, "edge_name_at")(i) for i in range(count))
+    @property
+    def curve_names(self):
+        """Canonical mesh-edge curve names, accepted by fillet and chamfer."""
+        return tuple(_require(self._n, "curve_name_at")(i) for i in range(int(self._n.curve_count)))
 
-    def __add__(self, other):
-        """Boolean union. Result keeps this solid's name."""
-        return self._part.union(self, other, name=self.name)
-
-    def __sub__(self, other):
-        """Boolean difference (this minus other). Result keeps this solid's name."""
-        return self._part.cut(self, other, name=self.name)
-
-    def __and__(self, other):
-        """Boolean intersection. Result keeps this solid's name."""
-        return self._part.intersect(self, other, name=self.name)
-
+    @property
+    def point_names(self):
+        """Canonical displayed edge-anchor names (start, midpoint, end, and closed-loop quarters)."""
+        return tuple(_require(self._n, "point_name_at")(i) for i in range(int(self._n.point_count)))
     def mesh(self):
         """Raw kernel triangles: ``(points, triangles)`` as ``vec3`` and ``(i, j, k)``."""
         from .geom import _unpack_indexed3
         return _unpack_indexed3(_require(self._n, "pack_mesh")())
-
-    def signed_volume(self):
-        """Signed tetrahedron volume. Negative means inward orientation."""
-        return float(_require(self._n, "signed_volume")())
-
-    def volume(self):
-        """Absolute volume of a watertight mesh."""
-        return abs(self.signed_volume())
 
     def is_watertight(self):
         """True if every edge is shared by exactly two triangles."""
@@ -2589,4 +2673,69 @@ class Solid(object):
         _show(self, title=title)
 
     def __repr__(self):
+        return "MeshBody(name={0!r}, triangle_count={1})".format(self.name, self.triangle_count)
+
+
+class Solid(_MeshBody):
+    """Closed triangle volume owned by a Part.
+
+    Operators are ``+`` union, ``-`` cut, and ``&`` intersect.
+    """
+
+    def __init__(self, native, part):
+        super(Solid, self).__init__(native, part)
+        if not self.is_volume:
+            raise ValueError("Solid requires a closed volume mesh")
+
+    def __add__(self, other):
+        """Boolean union. Result keeps this solid's name."""
+        return self._part.union(self, other, name=self.name)
+
+    def __sub__(self, other):
+        """Boolean difference (this minus other). Result keeps this solid's name."""
+        return self._part.cut(self, other, name=self.name)
+
+    def __and__(self, other):
+        """Boolean intersection. Result keeps this solid's name."""
+        return self._part.intersect(self, other, name=self.name)
+
+    def trim(self, surface, *, side="normal", name=None):
+        """Trim this closed solid by an open Surface.
+
+        ``side`` is ``"normal"`` or ``"opposite"`` relative to the surface
+        triangle normals.
+        """
+        return self._part.trim_by_surface(self, surface, side=side,
+                                          name=self.name if name is None else name)
+
+    def signed_volume(self):
+        """Signed tetrahedron volume. Negative means inward orientation."""
+        return float(_require(self._n, "signed_volume")())
+
+    def volume(self):
+        """Absolute volume of this closed solid."""
+        return abs(self.signed_volume())
+
+    def __repr__(self):
         return "Solid(name={0!r}, triangle_count={1})".format(self.name, self.triangle_count)
+
+
+class Surface(_MeshBody):
+    """Open triangle surface owned by a Part.
+
+    Surfaces share mesh inspection, naming, display, and export with solids.
+    Their triangle normals define the retained side when trimming a Solid.
+    """
+
+    def __init__(self, native, part):
+        super(Surface, self).__init__(native, part)
+        if self.is_volume:
+            raise ValueError("Surface requires an open mesh")
+
+    def __repr__(self):
+        return "Surface(name={0!r}, triangle_count={1})".format(self.name, self.triangle_count)
+
+
+def _body(native, part):
+    """Wrap a native mesh in its public volume or surface type."""
+    return Solid(native, part) if bool(native.is_volume) else Surface(native, part)

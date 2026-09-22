@@ -29,10 +29,10 @@ DUNDERS = {
 }
 
 SECTIONS = [
-    ("Core", ["Part", "Sketch", "SketchCurve", "Solid", "ProjectedSketch"]),
+    ("Core", ["Part", "PartOperation", "Sketch", "SketchCurve", "Solid", "Surface", "ProjectedSketch"]),
     ("Pose", ["Frame", "Curve", "LoftOptions", "frame_from_axis"]),
     ("Assembly", [
-        "Assembly", "AssemblyOccurrence", "AssemblyPart", "AssemblyPointDatum",
+        "Assembly", "AssemblyLeaf", "AssemblyOccurrence", "AssemblyPart", "AssemblyPointDatum",
         "AssemblyAxisDatum", "AssemblyPlaneDatum",
     ]),
     ("Vectors", ["vec2", "vec3"]),
@@ -55,6 +55,7 @@ CONST_DOCS = {
 FACTORY_HEAD = {
     "Sketch": "Sketch  # Part.sketch / Part.sketch(..., constrained=True)",
     "Solid": "Solid  # Part.extrude / union / cut / …",
+    "Surface": "Surface  # Part.loft_surface / open mesh import",
     "SketchCurve": "SketchCurve  # Sketch.add_line / add_circle / add_arc",
     "ProjectedSketch": "ProjectedSketch  # Part.project_sketch",
     "Curve": "Curve  # Curve.line / helix / circle / arc / spiral",

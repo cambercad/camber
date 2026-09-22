@@ -555,6 +555,27 @@ def _load_constraints(obj):
     return []
 
 
+def _load_operations(obj):
+    if not callable(getattr(obj, "sketch_interactive", None)):
+        return []
+    try:
+        return list(getattr(obj, "operations", ()) or ())
+    except (AttributeError, UnicodeDecodeError):
+        return []
+
+
+def _operation_row_text(operation):
+    result = getattr(operation, "result", "") or ""
+    kind = getattr(operation, "kind", "Feature") or "Feature"
+    inputs = tuple(getattr(operation, "inputs", ()) or ())
+    details = getattr(operation, "details", "") or ""
+    text = "{0}: {1}".format(kind, result)
+    if inputs:
+        text += "  <- " + ", ".join(inputs)
+    if details:
+        text += "  ({0})".format(details)
+    return text
+
 _CONSTRAINT_KIND_SHORT = {
     "FixPart": "Fix",
     "CoincidentPlanes": "Coincident",
@@ -1129,6 +1150,45 @@ def _draw_constraints_tab(imgui, constraints, selected_index):
         _pop_style_color(imgui, pushed)
     return changed
 
+
+def _draw_operations_panel(imgui, operations, selected_index, menu_open):
+    """Read-only CAD-style feature list for a displayed Part."""
+    if not operations or not menu_open[0]:
+        return False
+    cond = int(getattr(imgui, "ImGuiCond_FirstUseEver", 4) or 4)
+    flags = 0
+    for name in ("ImGuiWindowFlags_NoCollapse", "ImGuiWindowFlags_NoFocusOnAppearing"):
+        flags |= int(getattr(imgui, name, 0) or 0)
+    try:
+        imgui.SetNextWindowPos((12.0, 12.0), cond)
+        imgui.SetNextWindowSize((560.0, 360.0), cond)
+    except (TypeError, AttributeError):
+        pass
+    pushed = _push_constraint_window_colors(imgui)
+    visible, still_open = _begin_closable(imgui, "Features (M hide)", flags, menu_open[0])
+    menu_open[0] = still_open
+    if not visible:
+        _end_overlay(imgui)
+        _pop_style_color(imgui, pushed)
+        return False
+    changed = False
+    try:
+        imgui.TextUnformatted("Feature history")
+        imgui.Separator()
+        for i, operation in enumerate(operations):
+            label = "{0}. {1}##op{2}".format(getattr(operation, "index", i + 1),
+                                               _operation_row_text(operation), i)
+            if _selectable(imgui, label, selected_index[0] == i):
+                selected_index[0] = -1 if selected_index[0] == i else i
+                changed = True
+            if selected_index[0] == i:
+                entities = tuple(getattr(operation, "entities", ()) or ())
+                if entities:
+                    imgui.TextUnformatted("    " + ", ".join(entities))
+    finally:
+        _end_overlay(imgui)
+        _pop_style_color(imgui, pushed)
+    return changed
 
 def _draw_constraints_panel(imgui, constraints, selected_index, menu_open):
     changed, _vis = _draw_assembly_panel(

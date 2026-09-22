@@ -260,7 +260,8 @@ def _top(inst, op):
     return inst.plane(op + "-ExtrudeTop")
 
 
-def mate_gearbox(asm, housing, ring, sun, planets, pins, carrier, cover, brg_in, brg_out, screws):
+def mate_gearbox(asm, housing, ring, sun, planets, pins, carrier, carrier_hub_axis,
+                 cover, brg_in, brg_out, screws):
     """Ground the housing, then mate cylinder walls (Zylindermantel) and their end caps."""
     asm.fix(housing)
 
@@ -278,7 +279,7 @@ def mate_gearbox(asm, housing, ring, sun, planets, pins, carrier, cover, brg_in,
     asm.concentric(_axis(brg_in, "brg_in_or"), _axis(cover, "cover_brg"))
     asm.coincident(_bottom(brg_in, "brg_in_or"), _bottom(cover, "cover"))
 
-    asm.concentric(_axis(carrier, "carrier_hub"), _axis(brg_out, "brg_out_irb"))
+    asm.concentric(carrier_hub_axis, _axis(brg_out, "brg_out_irb"))
     asm.distance(
         _bottom(carrier, "carrier_rear"), _bottom(housing, "housing_od"),
         Z_PLATE_R0 - Z_HOUSING0)
@@ -351,8 +352,15 @@ def build_gearbox():
         x, y = BCD_R * math.cos(a), BCD_R * math.sin(a)
         screw_i.append(asm.add_part(screws[i], (x, y, Z_COVER1), quat_z(a)))
 
+    # Current patch names carry a stable provenance qualifier after the hub
+    # face has been split by the bore. Use that exact selectable name for its
+    # assembly datum instead of the obsolete construction alias.
+    carrier_hub_face = next(
+        face for face in carrier.patch_names
+        if "carrier_hub-Circle1" in face and "#current=" in face)
     mate_gearbox(
-        asm, hsg, rng, sun_i, planet_i, pin_i, car, cvr, bin_i, bout_i, screw_i)
+        asm, hsg, rng, sun_i, planet_i, pin_i, car, car.axis(carrier_hub_face),
+        cvr, bin_i, bout_i, screw_i)
     asm.solve()
 
     print(

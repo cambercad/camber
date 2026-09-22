@@ -1,5 +1,5 @@
 import unittest
-from camber import Part, set_progress_log
+from camber import Part, glview, set_progress_log
 
 
 class SolidEdgeTests(unittest.TestCase):
@@ -9,10 +9,20 @@ class SolidEdgeTests(unittest.TestCase):
         sketch = part.sketch("xy", name="profile")
         sketch.add_rectangle((0, 0), (4, 6), names=("south", "east", "north", "west"))
         solid = part.extrude(sketch, 3, name="block")
-        self.assertEqual(12, len(solid.edge_names))
-        edge = "[block-south,block-east]"
-        reverse = "[block-east,block-south]"
-        self.assertIn(edge, solid.edge_names)
+        self.assertEqual(solid.patch_names, part.patch_names)
+        self.assertEqual(solid.curve_names, part.curve_names)
+        self.assertEqual(solid.point_names, part.point_names)
+        self.assertTrue(all(name.startswith("block:") for name in solid.patch_names))
+        self.assertTrue(all(name.startswith("block:") for name in solid.curve_names))
+        self.assertTrue(all(name.startswith("block:") for name in solid.point_names))
+        packed = glview.pack_scene(glview._as_scene(solid))
+        self.assertEqual(set(solid.patch_names), set(packed["face_names"]))
+        self.assertEqual(set(solid.curve_names), set(packed["line_names"]))
+        self.assertEqual(set(solid.point_names), set(packed["point_names"]))
+        self.assertEqual(12, len(solid.curve_names))
+        edge = "block:[block-south,block-east]"
+        reverse = "block:[block-east,block-south]"
+        self.assertIn(edge, solid.curve_names)
         for operation in (part.fillet, part.chamfer):
             with self.subTest(operation=operation.__name__):
                 a = operation(solid, edge, .3, name=operation.__name__+"_forward")
@@ -21,7 +31,7 @@ class SolidEdgeTests(unittest.TestCase):
                 self.assertTrue(b.is_watertight())
                 self.assertAlmostEqual(a.volume(), b.volume(), places=9)
                 self.assertLess(a.volume(), solid.volume())
-                self.assertGreater(len(a.edge_names), len(solid.edge_names))
+                self.assertGreater(len(a.curve_names), len(solid.curve_names))
 
     def test_disconnected_fillet_groups_get_unique_corner_patch_names(self):
         set_progress_log(False)
@@ -55,7 +65,7 @@ class SolidEdgeTests(unittest.TestCase):
                 sketch.solve()
                 blank=part.extrude(sketch,radius,name="cap_blank")
                 end="ExtrudeBottom" if bottom else "ExtrudeTop"
-                edges=[edge for edge in blank.edge_names if end in edge]
+                edges=[edge for edge in blank.curve_names if end in edge]
                 self.assertEqual(1,len(edges))
                 hemisphere=part.fillet(blank,edges,radius,name="hemisphere",max_deviation=.001)
                 self.assertTrue(hemisphere.is_watertight())
@@ -78,7 +88,7 @@ class SolidEdgeTests(unittest.TestCase):
                 rounded = part.fillet(blank, "[sector_blank-north,sector_blank-west]", .5,
                                       name="vertical_round", max_deviation=.001)
                 end = "ExtrudeBottom" if bottom else "ExtrudeTop"
-                rim = [edge for edge in rounded.edge_names if end in edge
+                rim = [edge for edge in rounded.curve_names if end in edge
                        and "sector_blank-south" not in edge and "sector_blank-east" not in edge]
                 self.assertEqual(3, len(rim))
                 result = part.fillet(rounded, rim, .5, name="spherical_corner", max_deviation=.001)

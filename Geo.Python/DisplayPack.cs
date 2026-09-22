@@ -173,10 +173,7 @@ internal static class DisplayPack
                 int gid = perTriangleGroup[i];
                 if (usedGroups.ContainsKey(gid))
                     continue;
-                string local;
-                if (mesh.groupIdToExtendedName == null || !mesh.groupIdToExtendedName.TryGetValue(gid, out local) || string.IsNullOrEmpty(local))
-                    local = "group_" + gid.ToString();
-                usedGroups[gid] = prefix + ":" + local;
+                usedGroups[gid] = prefix + ":" + MeshSelectableNames.PatchName(mesh, gid);
             }
         }
         w.Write(usedGroups.Count);
@@ -185,10 +182,8 @@ internal static class DisplayPack
             w.Write(kv.Key);
             WriteUtf8(w, kv.Value);
             SurfaceType surfaceType = SurfaceType.Unknown;
-            string localName = kv.Value;
-            int colon = localName.IndexOf(':');
-            if (colon >= 0 && colon + 1 < localName.Length)
-                localName = localName.Substring(colon + 1);
+            string localName = mesh.groupIdToExtendedName.TryGetValue(kv.Key, out var local)
+                ? local : "group_" + kv.Key;
             if (mesh.surfaceMetaData != null
                 && mesh.surfaceMetaData.TryGetValue(localName, out var smd)
                 && smd != null)
@@ -218,10 +213,7 @@ internal static class DisplayPack
                 for (int j = 0; j < g.LineStrips3D.Count; j++)
                 {
                     var strip = g.LineStrips3D[j];
-                    string name = g.Name ?? "edge";
-                    if (g.LineStrips3D.Count > 1)
-                        name = name + "_" + j.ToString();
-                    string pickName = prefix + ":" + name;
+                    string pickName = MeshSelectableNames.CurveName(mesh, i, j);
                     WriteUtf8(w, pickName);
                     EdgeCurveType edgeType = g.MetaData != null ? g.MetaData.CurveType : EdgeCurveType.Unknown;
                     w.Write((int)edgeType);

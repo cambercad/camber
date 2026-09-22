@@ -117,6 +117,22 @@ class GeomTests(unittest.TestCase):
         self.assertGreaterEqual(len(packed["mesh_idx"]), 1)
         self.assertEqual(len(packed["mesh_pos"]), len(packed["mesh_uv"]))
 
+    def test_section_sketch_exposes_one_sampled_curve_per_crossed_patch(self):
+        part = Part(vec3(-5), vec3(5), tolerance=0.01)
+        body = part.cuboid((-2, -3, -1), (2, 3, 1), name="block")
+        before = body.mesh()
+        section = part.section_sketch(body, name="slice")
+
+        self.assertEqual("slice", section.name)
+        strips = section.polylines()
+        # polylines() joins adjacent sampled curves into the closed contour.
+        self.assertEqual(1, len(strips))
+        self.assertGreaterEqual(len(strips[0]), 4)
+        self.assertEqual(before, body.mesh())
+
+        with self.assertRaises(TypeError):
+            part.section_sketch(body, plane="xy")
+
     def test_vec_dot(self):
         self.assertEqual(11.0, vec2(1, 2).dot((3, 4)))
         self.assertEqual(32.0, vec3(1, 2, 3).dot((4, 5, 6)))

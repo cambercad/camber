@@ -362,7 +362,7 @@ _CONSTANTS = (
 )
 
 
-def create_pyglet_renderer(window):
+def create_pyglet_renderer(window, context):
     """Modern pyglet event adapter without pyimgui's removed distutils import.
 
     The actual GUI drawing stays in pyimgui's existing GL renderer. This
@@ -392,35 +392,51 @@ def create_pyglet_renderer(window):
             window.push_handlers(self)
             self.process_inputs()
 
+        def _call_in_context(self, callback, *args):
+            previous = imgui.get_current_context()
+            imgui.set_current_context(context)
+            try:
+                return callback(*args)
+            finally:
+                imgui.set_current_context(previous)
+
         def process_inputs(self):
-            now = time.perf_counter()
-            self.io.delta_time = max(now-self._last_time, 1e-6)
-            self._last_time = now
-            w, h = window.get_size()
-            fw, fh = window.get_framebuffer_size()
-            self.io.display_size = w, h
-            self.io.display_fb_scale = fw/max(w, 1), fh/max(h, 1)
+            def update():
+                now = time.perf_counter()
+                self.io.delta_time = max(now-self._last_time, 1e-6)
+                self._last_time = now
+                w, h = window.get_size()
+                fw, fh = window.get_framebuffer_size()
+                self.io.display_size = w, h
+                self.io.display_fb_scale = fw/max(w, 1), fh/max(h, 1)
+            self._call_in_context(update)
 
         def on_mouse_motion(self, x, y, dx, dy):
-            self.io.mouse_pos = x, window.height-y
+            self._call_in_context(lambda: setattr(self.io, "mouse_pos", (x, window.height-y)))
 
         def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
             self.on_mouse_motion(x, y, dx, dy)
 
         def on_mouse_press(self, x, y, button, modifiers):
-            self.on_mouse_motion(x, y, 0, 0)
-            for flag, index in ((mouse.LEFT, 0), (mouse.RIGHT, 1), (mouse.MIDDLE, 2)):
-                if button & flag:
-                    self.io.mouse_down[index] = True
+            def update():
+                self.on_mouse_motion(x, y, 0, 0)
+                for flag, index in ((mouse.LEFT, 0), (mouse.RIGHT, 1), (mouse.MIDDLE, 2)):
+                    if button & flag:
+                        self.io.mouse_down[index] = True
+            self._call_in_context(update)
 
         def on_mouse_release(self, x, y, button, modifiers):
-            for flag, index in ((mouse.LEFT, 0), (mouse.RIGHT, 1), (mouse.MIDDLE, 2)):
-                if button & flag:
-                    self.io.mouse_down[index] = False
+            def update():
+                for flag, index in ((mouse.LEFT, 0), (mouse.RIGHT, 1), (mouse.MIDDLE, 2)):
+                    if button & flag:
+                        self.io.mouse_down[index] = False
+            self._call_in_context(update)
 
         def on_mouse_scroll(self, x, y, sx, sy):
-            self.io.mouse_wheel += sy
-            self.io.mouse_wheel_horizontal += sx
+            def update():
+                self.io.mouse_wheel += sy
+                self.io.mouse_wheel_horizontal += sx
+            self._call_in_context(update)
 
         def _key(self, symbol, modifiers, down):
             if symbol in self._keys:
@@ -431,14 +447,16 @@ def create_pyglet_renderer(window):
             self.io.key_super = bool(modifiers & key.MOD_COMMAND)
 
         def on_key_press(self, symbol, modifiers):
-            self._key(symbol, modifiers, True)
+            self._call_in_context(self._key, symbol, modifiers, True)
 
         def on_key_release(self, symbol, modifiers):
-            self._key(symbol, modifiers, False)
+            self._call_in_context(self._key, symbol, modifiers, False)
 
         def on_text(self, text):
-            for char in text:
-                self.io.add_input_character(ord(char))
+            def update():
+                for char in text:
+                    self.io.add_input_character(ord(char))
+            self._call_in_context(update)
 
         def shutdown(self):
             window.remove_handlers(self)

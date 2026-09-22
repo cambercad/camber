@@ -139,7 +139,7 @@ def hollow_duct(part, shoe):
 
 def opening_rim(solid, cap):
     """The complete opening boundary, including arcs from previous rounds."""
-    return [name for name in solid.edge_names
+    return [name for name in solid.curve_names
             if cap in name and ("passage-" in name or "BlendStrip" in name)]
 
 

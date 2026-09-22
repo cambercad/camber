@@ -22,6 +22,8 @@ public class NativeAssembly
 
     public NativeSection Section(NativeFrame plane) => new(_inner.Section(plane.Native));
 
+    public NativeAssemblyLeaves Leaves() => new(_inner.GetLeaves());
+
     public NativeInterferences Interferences(double minVolume)
     {
         return new NativeInterferences(_inner.Interferences(minVolume));
@@ -146,12 +148,22 @@ public class NativeAssembly
         _inner.SetParallel(a.Native, b.Native);
     }
 
+    public void SetParallelPlanes(NativeAssemblyPlaneDatum a, NativeAssemblyPlaneDatum b)
+    {
+        _inner.SetParallel(a.Native, b.Native);
+    }
+
     public void SetConcentric(NativeAssemblyAxisDatum a, NativeAssemblyAxisDatum b)
     {
         _inner.SetConcentric(a.Native, b.Native);
     }
 
     public void SetPerpendicularAxes(NativeAssemblyAxisDatum a, NativeAssemblyAxisDatum b)
+    {
+        _inner.SetPerpendicular(a.Native, b.Native);
+    }
+
+    public void SetPerpendicularPlanes(NativeAssemblyPlaneDatum a, NativeAssemblyPlaneDatum b)
     {
         _inner.SetPerpendicular(a.Native, b.Native);
     }
@@ -171,11 +183,23 @@ public class NativeAssembly
         _inner.SetDistance(a.Native, b.Native, distance);
     }
 
+    public void SetPointOnPlane(NativeAssemblyPointDatum point, NativeAssemblyPlaneDatum plane)
+    {
+        _inner.SetPointOnPlane(point.Native, plane.Native);
+    }
+
+    public void SetContact(NativeAssemblyPointDatum point, NativeAssemblyPlaneDatum plane)
+    {
+        _inner.SetContact(point.Native, plane.Native);
+    }
+
     public string SolveConstraints()
     {
         SolveResult result = _inner.SolveConstraintsDetailed();
         return AssemblyDiagnosticsJson.Serialize(result,_inner.CharacteristicLength,_inner.GetMateResiduals());
     }
+
+    public string ConstraintRecords() => AssemblyDiagnosticsJson.SerializeConstraints(_inner);
 
     public string DumpDisplay()
     {
@@ -353,6 +377,84 @@ public class NativeAssembly
     }
 }
 
+[DotWrapExpose]
+public class NativeAssemblyLeaves
+{
+    readonly IReadOnlyList<AssemblyLeaf> _items;
+
+    internal NativeAssemblyLeaves(IReadOnlyList<AssemblyLeaf> items) { _items = items; }
+
+    public int Count => _items.Count;
+
+    public NativeAssemblyLeaf Get(int index)
+    {
+        if ((uint)index >= (uint)_items.Count) throw new ArgumentOutOfRangeException(nameof(index));
+        AssemblyLeaf item = _items[index];
+        return new NativeAssemblyLeaf(item.Part, item.Pose, item.Path);
+    }
+}
+[DotWrapExpose]
+public class NativeAssemblyLeaf
+{
+    readonly AssemblyPart _part;
+    readonly Transform _pose;
+    readonly string _path;
+    readonly Vec3D _min;
+    readonly Vec3D _max;
+
+    internal NativeAssemblyLeaf(AssemblyPart part, Transform pose, string path)
+    {
+        _part = part;
+        _pose = pose;
+        _path = path;
+        (_min, _max) = Bounds(part.Mesh, pose);
+    }
+
+    static (Vec3D Min, Vec3D Max) Bounds(AnchorMesh mesh, Transform pose)
+    {
+        var used = new HashSet<int>();
+        foreach (var triangle in mesh.Mesh.Triangles)
+        {
+            used.Add(triangle.A);
+            used.Add(triangle.B);
+            used.Add(triangle.C);
+        }
+        if (used.Count == 0) return (pose.Position, pose.Position);
+        using var iterator = used.GetEnumerator();
+        iterator.MoveNext();
+        Vec3D min = TransformMath.TransformPoint(in pose, mesh.Mesh.Positions[iterator.Current]);
+        Vec3D max = min;
+        while (iterator.MoveNext())
+        {
+            Vec3D point = TransformMath.TransformPoint(in pose, mesh.Mesh.Positions[iterator.Current]);
+            min.X = Math.Min(min.X, point.X); min.Y = Math.Min(min.Y, point.Y); min.Z = Math.Min(min.Z, point.Z);
+            max.X = Math.Max(max.X, point.X); max.Y = Math.Max(max.Y, point.Y); max.Z = Math.Max(max.Z, point.Z);
+        }
+        return (min, max);
+    }
+
+    public string Path => _path;
+    public NativeAssemblyPart GetPart() => new(_part);
+    public NativeSolid GetSolid() => new(_part.Mesh);
+    public double Ox => _pose.Position.X;
+    public double Oy => _pose.Position.Y;
+    public double Oz => _pose.Position.Z;
+    public double Xx => TransformMath.TransformDirection(in _pose, new Vec3D(1, 0, 0)).X;
+    public double Xy => TransformMath.TransformDirection(in _pose, new Vec3D(1, 0, 0)).Y;
+    public double Xz => TransformMath.TransformDirection(in _pose, new Vec3D(1, 0, 0)).Z;
+    public double Yx => TransformMath.TransformDirection(in _pose, new Vec3D(0, 1, 0)).X;
+    public double Yy => TransformMath.TransformDirection(in _pose, new Vec3D(0, 1, 0)).Y;
+    public double Yz => TransformMath.TransformDirection(in _pose, new Vec3D(0, 1, 0)).Z;
+    public double Zx => TransformMath.TransformDirection(in _pose, new Vec3D(0, 0, 1)).X;
+    public double Zy => TransformMath.TransformDirection(in _pose, new Vec3D(0, 0, 1)).Y;
+    public double Zz => TransformMath.TransformDirection(in _pose, new Vec3D(0, 0, 1)).Z;
+    public double MinX => _min.X;
+    public double MinY => _min.Y;
+    public double MinZ => _min.Z;
+    public double MaxX => _max.X;
+    public double MaxY => _max.Y;
+    public double MaxZ => _max.Z;
+}
 [DotWrapExpose]
 public class NativeAssemblyOccurrence
 {

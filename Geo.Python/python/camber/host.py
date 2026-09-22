@@ -112,7 +112,7 @@ class Viewer(object):
                 imgui.set_current_context(self._imgui_context)
                 from .imgui_compat import apply_viewer_style
                 apply_viewer_style(imgui)
-                self._impl = create_renderer(window)
+                self._impl = create_renderer(window, self._imgui_context)
                 io = imgui.get_io()
                 io.get_clipboard_text_fn = window.get_clipboard_text
                 io.set_clipboard_text_fn = window.set_clipboard_text
@@ -179,7 +179,7 @@ class Viewer(object):
             yield
         finally:
             # close() may destroy the context while this scope is active.
-            imgui.set_current_context(None if previous == context and self._imgui_context is None else previous)
+            imgui.set_current_context(None if previous is context and self._imgui_context is None else previous)
             imgui._camber_letters = previous_letters
 
     def _compile(self, vert, frag):
@@ -226,17 +226,10 @@ class Viewer(object):
         vl.draw(self._gl.GL_TRIANGLES)
 
     def _make_wire(self, verts, faces):
-        if not verts or not faces:
-            return None
-        positions, barycentrics = _g.expand_wireframe(verts, faces)
-        if not positions:
-            return None
-        return self._array(
-            self._wire_prog,
-            len(positions),
-            in_pos=positions,
-            in_barycentric=barycentrics,
-        )
+        # Wireframe reuses the indexed surface mesh at draw time. Expanding
+        # every triangle into a second VBO triples large scenes and can exhaust
+        # the graphics driver when wireframe is first drawn.
+        return None
 
     def _ignore_default_escape(self, symbol, modifiers):
         return None
@@ -285,17 +278,27 @@ class Viewer(object):
         self._sync_size()
 
     def on_close(self):
-        self.close()
+        # Pyglet dispatches ``on_close`` from Window.close().  Do not enter
+        # close() again while it is releasing GL resources.
+        if not self._closed:
+            self._close_resources(close_window=False)
         return self._pyglet.event.EVENT_HANDLED
 
     def close(self):
         """Release owned GL resources while their context is still current."""
         if self._closed:
             return
+        context = self._imgui_context
+        previous = self._imgui.get_current_context() if context is not None else None
         with self._ui_context():
-            self._close_resources()
+            self._close_resources(close_window=True)
+        if context is not None:
+            self._imgui.set_current_context(None if previous is context else previous)
 
-    def _close_resources(self):
+    def _close_resources(self, *, close_window):
+        # Set this before invoking any native cleanup.  A driver/context loss
+        # or Window.close() may dispatch on_close synchronously.
+        self._closed = True
         try:
             self.window.switch_to()
             self._release_solid()
@@ -327,8 +330,8 @@ class Viewer(object):
                     self._imgui.destroy_context(self._imgui_context)
                     self._imgui_context = None
             finally:
-                self._closed = True
-                self.window.close()
+                if close_window:
+                    self.window.close()
 
     def on_draw(self):
         if self._closed:
@@ -775,6 +778,7 @@ class Viewer(object):
         self._mesh_prog["u_view"] = view
         self._mesh_prog["u_proj"] = proj
         self._mesh_prog["u_checker"] = bool(self.checker)
+        self._mesh_prog["u_wireframe"] = False
         if "u_eye" in names:
             self._mesh_prog["u_eye"] = tuple(float(x) for x in cam.eye)
         if "u_light_dir" in names:
@@ -792,6 +796,30 @@ class Viewer(object):
         self._wire_prog["u_color"] = _g._WIRE_COLOR
         ssaa = max(float(getattr(self, "_draw_ssaa", _g._SSAA)), 1.0)
         self._wire_prog["u_width_px"] = _g._WIRE_WIDTH_PX * ssaa
+
+    def _draw_wireframe(self, parts):
+        """Draw triangle edges from the existing indexed mesh without a second VBO."""
+        gl = self._gl
+        if not hasattr(gl, "glPolygonMode"):
+            return
+        try:
+            gl.glEnable(gl.GL_DEPTH_TEST)
+            gl.glDepthFunc(gl.GL_LEQUAL)
+            gl.glDepthMask(gl.GL_FALSE)
+            gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
+            self._mesh_prog.use()
+            self._mesh_prog["u_wireframe"] = True
+            self._mesh_prog["u_checker"] = False
+            self._mesh_prog["u_alpha"] = 1.0
+            for part in parts:
+                self._draw(self._mesh_prog, part.get("mesh"))
+        finally:
+            self._mesh_prog.use()
+            self._mesh_prog["u_wireframe"] = False
+            self._mesh_prog["u_checker"] = bool(self.checker)
+            gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
+            gl.glDepthMask(gl.GL_TRUE)
+            gl.glDepthFunc(gl.GL_LESS)
 
     def _set_impostor(
             self, prog, view, proj, radius, cam, depth_pull_px):
@@ -1476,17 +1504,7 @@ class Viewer(object):
         self._draw_transparents(translucent)
 
         if self._wireframe:
-            self._begin_impostors()
-            self._set_wire(view, proj)
-            for part in parts:
-                self._draw(self._wire_prog, part.get("wire"))
-            for rec in self._overlays.values():
-                if not rec.get("enabled"):
-                    continue
-                gpu = rec.get("gpu")
-                if gpu is not None:
-                    self._draw(self._wire_prog, gpu.get("wire"))
-            self._end_impostors()
+            self._draw_wireframe(parts)
 
         if parts:
             draw_line_strip = any(part.get("line") is not None for part in parts)
@@ -1497,7 +1515,8 @@ class Viewer(object):
                 else:
                     self._begin_impostors()
                 self._set_impostor(
-                    self._line_prog, view, proj, edge_r, cam,
+                    self._line_prog, view, proj,
+                    edge_r, cam,
                     depth_pull_px=_g._CURVE_DEPTH_PULL_PX)
                 for part in parts:
                     self._draw(self._line_prog, part.get("line"))
@@ -1543,6 +1562,8 @@ def run_solid(obj, title="Camber", colors=None, checker=None):
         _enter_sketch_mode,
         _leave_sketch_mode,
         _load_constraints,
+        _load_operations,
+        _draw_operations_panel,
         _orient_view_to_frame,
         _selected_plane_context,
     )
@@ -1567,10 +1588,13 @@ def run_solid(obj, title="Camber", colors=None, checker=None):
     action_toast = ["", 0.0]
     transparent = [False]
     constraints = _load_constraints(obj)
+    is_part = callable(getattr(obj, "sketch_interactive", None))
+    operations = _load_operations(obj) if is_part else []
     is_assembly = callable(getattr(obj, "add_part", None))
     part_names = _g.packed_part_names(packed) if is_assembly else []
     hidden_parts = set()
     mate_sel = [-1]
+    operation_sel = [-1]
     mate_refs = [[]]
     menu_open = [True]
 
@@ -1682,19 +1706,22 @@ def run_solid(obj, title="Camber", colors=None, checker=None):
             if viewer.key_down("ESCAPE"):
                 measuring[0] = False
                 measure_start[0] = None
-        if constraints or part_names:
+        if constraints or part_names or operations:
             if viewer.key_down("M"):
                 if not latch["m"]:
                     menu_open[0] = not menu_open[0]
                     latch["m"] = True
             else:
                 latch["m"] = False
-            mate_changed, vis_changed = _draw_assembly_panel(
-                imgui, constraints, mate_sel, menu_open, part_names, hidden_parts)
-            if mate_changed:
-                apply_mate_highlights()
-            if vis_changed:
-                apply_visibility()
+            if is_assembly:
+                mate_changed, vis_changed = _draw_assembly_panel(
+                    imgui, constraints, mate_sel, menu_open, part_names, hidden_parts)
+                if mate_changed:
+                    apply_mate_highlights()
+                if vis_changed:
+                    apply_visibility()
+            elif operations:
+                _draw_operations_panel(imgui, operations, operation_sel, menu_open)
         if viewer.key_down("V"):
             if not latch["v"]:
                 plane = _selected_plane_context(obj, selected)

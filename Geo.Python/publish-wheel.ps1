@@ -1,7 +1,7 @@
 param(
     [string]$Runtime = "win-x64",
     [string]$Configuration = "Release",
-    [string]$WheelVersion = "0.1.3"
+    [string]$WheelVersion = "0.1.4"
 )
 
 $ErrorActionPreference = "Stop"

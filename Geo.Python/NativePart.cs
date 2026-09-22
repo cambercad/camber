@@ -38,6 +38,42 @@ public class NativePart
 
     public double MaxDeviation { get { return _inner.MaxDeviation; } }
 
+    NativeSolid Track(AnchorMesh result, string kind, IEnumerable<string> inputs = null,
+        IEnumerable<string> entities = null, string details = null)
+    {
+        _inner.RecordOperation(result, kind, inputs, entities, details);
+        return new NativeSolid(result);
+    }
+
+    void TrackPattern(IReadOnlyList<AnchorMesh> results, string kind, AnchorMesh seed, string details)
+    {
+        for (int i = 1; i < results.Count; i++)
+            _inner.RecordOperation(results[i], kind, new[] { seed.Name }, details: details);
+    }
+    public int OperationCount => _inner.GetOperations().Count;
+    public NativePartOperation GetOperation(int index) => new(_inner.GetOperations()[index]);
+
+    public int PatchCount => SelectableNames(MeshSelectableNames.Patches).Count;
+    public string PatchNameAt(int index) => NameAt(SelectableNames(MeshSelectableNames.Patches), index);
+    public int CurveCount => SelectableNames(MeshSelectableNames.Curves).Count;
+    public string CurveNameAt(int index) => NameAt(SelectableNames(MeshSelectableNames.Curves), index);
+    public int PointCount => SelectableNames(MeshSelectableNames.Points).Count;
+    public string PointNameAt(int index) => NameAt(SelectableNames(MeshSelectableNames.Points), index);
+
+    List<string> SelectableNames(Func<AnchorMesh, List<string>> select)
+    {
+        var result = new List<string>();
+        foreach (var mesh in _inner.GetMeshes()) result.AddRange(select(mesh));
+        return result;
+    }
+
+    static string NameAt(List<string> names, int index)
+    {
+        if ((uint)index >= (uint)names.Count)
+            throw new ArgumentOutOfRangeException(nameof(index));
+        return names[index];
+    }
+
     public double SmallestUnit()
     {
         return _inner.Converter.SmallestUnit();
@@ -70,6 +106,11 @@ public class NativePart
         return new NativeSketch(_inner.GetPlotterSketcher(frame.Native, NativeUtil.EmptyToNull(name)));
     }
 
+
+    public NativeSketch SectionSketch(NativeSolid solid, NativeFrame plane, string name)
+    {
+        return new NativeSketch(_inner.SectionSketch(solid.Native, plane.Native, NativeUtil.EmptyToNull(name)));
+    }
     public NativeFrame GetPlaneFrame(string plane)
     {
         string planeName = NativeUtil.ResolvePlane(plane);
@@ -99,12 +140,12 @@ public class NativePart
 
     public NativeSolid Extrude(NativeSketch sketch, double height, double maxDeviation, double twistRatePerExtrudeDistance, string name)
     {
-        return new NativeSolid(_inner.Extrude(sketch.Native, height, maxDeviation, NativeUtil.EmptyToNull(name), twistRatePerExtrudeDistance));
+        return Track(_inner.Extrude(sketch.Native, height, maxDeviation, NativeUtil.EmptyToNull(name), twistRatePerExtrudeDistance), "Extrude", new[] { sketch.Native.Name }, details: $"height={height:G6}");
     }
 
     public NativeSolid ExtrudeTwoSides(NativeSketch sketch, double heightPositive, double heightNegative, double maxDeviation, double twistRatePerExtrudeDistance, string name)
     {
-        return new NativeSolid(_inner.ExtrudeTwoSides(sketch.Native, heightPositive, heightNegative, maxDeviation, NativeUtil.EmptyToNull(name), twistRatePerExtrudeDistance));
+        return Track(_inner.ExtrudeTwoSides(sketch.Native, heightPositive, heightNegative, maxDeviation, NativeUtil.EmptyToNull(name), twistRatePerExtrudeDistance), "Extrude", new[] { sketch.Native.Name }, details: $"+Z={heightPositive:G6}, -Z={heightNegative:G6}");
     }
 
     public NativeProjectedSketch ProjectSketchOntoMesh(NativeSketch sketch, NativeSolid target, double maxDeviation, string name)
@@ -115,43 +156,43 @@ public class NativePart
 
     public NativeSolid ExtrudeProjectedSketch(NativeProjectedSketch projected, double height, string name)
     {
-        return new NativeSolid(_inner.ExtrudeProjectedSketch(
-            projected.Native, height, NativeUtil.EmptyToNull(name)));
+        return Track(_inner.ExtrudeProjectedSketch(
+            projected.Native, height, NativeUtil.EmptyToNull(name)), "Extrude", details: $"projected, height={height:G6}");
     }
 
     public NativeSolid Revolve(NativeSketch sketch, double angle, double maxDeviation, string name)
     {
-        return new NativeSolid(_inner.Revolve(sketch.Native, angle, maxDeviation, NativeUtil.EmptyToNull(name)));
+        return Track(_inner.Revolve(sketch.Native, angle, maxDeviation, NativeUtil.EmptyToNull(name)), "Revolve", new[] { sketch.Native.Name }, details: $"angle={angle:G6}");
     }
 
     public NativeSolid CreateCylinder(NativeFrame pose, double radius, double heightAlongZ, double maxDeviation, string name)
     {
-        return new NativeSolid(_inner.CreateCylinder(pose.Native, radius, heightAlongZ, maxDeviation, NativeUtil.EmptyToNull(name)));
+        return Track(_inner.CreateCylinder(pose.Native, radius, heightAlongZ, maxDeviation, NativeUtil.EmptyToNull(name)), "Cylinder", details: $"radius={radius:G6}, height={heightAlongZ:G6}");
     }
 
     public NativeSolid CreateCylinderRevolve(NativeFrame pose, double radius, double height, double maxDeviation, string name)
     {
-        return new NativeSolid(_inner.CreateCylinderRevolve(pose.Native, radius, height, maxDeviation, NativeUtil.EmptyToNull(name)));
+        return Track(_inner.CreateCylinderRevolve(pose.Native, radius, height, maxDeviation, NativeUtil.EmptyToNull(name)), "Cylinder", details: $"radius={radius:G6}, height={height:G6}");
     }
 
     public NativeSolid CreateSphere(NativeFrame pose, double radius, double maxDeviation, string name)
     {
-        return new NativeSolid(_inner.CreateSphere(pose.Native, radius, maxDeviation, NativeUtil.EmptyToNull(name)));
+        return Track(_inner.CreateSphere(pose.Native, radius, maxDeviation, NativeUtil.EmptyToNull(name)), "Sphere", details: $"radius={radius:G6}");
     }
 
     public NativeSolid CreateCube(NativeFrame pose, double extent, string name)
     {
-        return new NativeSolid(_inner.CreateCube(pose.Native, extent, NativeUtil.EmptyToNull(name)));
+        return Track(_inner.CreateCube(pose.Native, extent, NativeUtil.EmptyToNull(name)), "Cube", details: $"size={extent:G6}");
     }
 
     public NativeSolid CreateCuboidAabb(double minX, double minY, double minZ, double maxX, double maxY, double maxZ, string name)
     {
-        return new NativeSolid(_inner.CreateCuboid(NativeUtil.V3(minX, minY, minZ), NativeUtil.V3(maxX, maxY, maxZ), NativeUtil.EmptyToNull(name)));
+        return Track(_inner.CreateCuboid(NativeUtil.V3(minX, minY, minZ), NativeUtil.V3(maxX, maxY, maxZ), NativeUtil.EmptyToNull(name)), "Cuboid", details: $"min=({minX:G6}, {minY:G6}, {minZ:G6}), max=({maxX:G6}, {maxY:G6}, {maxZ:G6})");
     }
 
     public NativeSolid CreateCuboid(NativeFrame pose, double extentX, double extentY, double extentZ, string name)
     {
-        return new NativeSolid(_inner.CreateCuboid(pose.Native, NativeUtil.V3(extentX, extentY, extentZ), NativeUtil.EmptyToNull(name)));
+        return Track(_inner.CreateCuboid(pose.Native, NativeUtil.V3(extentX, extentY, extentZ), NativeUtil.EmptyToNull(name)), "Cuboid", details: $"size=({extentX:G6}, {extentY:G6}, {extentZ:G6})");
     }
 
     public NativeSolid CreateMetricThreadForBoltNegative(
@@ -234,25 +275,25 @@ public class NativePart
 
     public NativeSolid ExtrudeAlongCurve(NativeSketch sketch, NativeCurve curve, double maxDeviation, double twistRatePerExtrudeDistance, string name, string referenceDirection)
     {
-        return new NativeSolid(_inner.ExtrudeAlongCurve(sketch.Native, curve.Native, maxDeviation, NativeUtil.EmptyToNull(name), twistRatePerExtrudeDistance,
-            string.IsNullOrEmpty(referenceDirection) ? null : NativePack.ReadPoints3(referenceDirection)[0]));
+        return Track(_inner.ExtrudeAlongCurve(sketch.Native, curve.Native, maxDeviation, NativeUtil.EmptyToNull(name), twistRatePerExtrudeDistance,
+            string.IsNullOrEmpty(referenceDirection) ? null : NativePack.ReadPoints3(referenceDirection)[0]), "Sweep", new[] { sketch.Native.Name, curve.Native.Name });
     }
 
     public NativeSolid ExtrudeAlongCurveStrip(NativeSketch sketch, NativeCurveList guide, double maxDeviation, double twistRatePerExtrudeDistance, string name)
     {
-        return new NativeSolid(_inner.ExtrudeAlongCurveStrip(sketch.Native, guide.Items, maxDeviation, twistRatePerExtrudeDistance, NativeUtil.EmptyToNull(name)));
+        return Track(_inner.ExtrudeAlongCurveStrip(sketch.Native, guide.Items, maxDeviation, twistRatePerExtrudeDistance, NativeUtil.EmptyToNull(name)), "Sweep", new[] { sketch.Native.Name });
     }
 
     public NativeSolid ExtrudeAlongSketch(NativeSketch profile, NativeSketch guide, double maxDeviation, string name)
     {
-        return new NativeSolid(_inner.ExtrudeAlongSketch(profile.Native, guide.Native, maxDeviation, NativeUtil.EmptyToNull(name)));
+        return Track(_inner.ExtrudeAlongSketch(profile.Native, guide.Native, maxDeviation, NativeUtil.EmptyToNull(name)), "Sweep", new[] { profile.Native.Name, guide.Native.Name });
     }
 
     public NativeSolid Loft(NativeSketchList sketches, NativeLoftOptions options, double maxDeviation, string name, string firstCurves)
     {
         LoftOptions loftOptions = options == null ? LoftOptions.Default : options.ToLoftOptions();
         if (!string.IsNullOrEmpty(firstCurves)) loftOptions.FirstCurves = firstCurves.Split('|');
-        return new NativeSolid(_inner.Loft(sketches.Items, loftOptions, NativeUtil.EmptyToNull(name), maxDeviation));
+        return Track(_inner.Loft(sketches.Items, loftOptions, NativeUtil.EmptyToNull(name), maxDeviation), "Loft", sketches.Items.Select(sketch => sketch.Name));
     }
 
     public NativeSolid LoftSurface(NativeSketchList sections, NativeCurveList guides,
@@ -260,13 +301,14 @@ public class NativePart
     {
         static Vec3D? Tangent(string packed) => string.IsNullOrEmpty(packed)
             ? null : NativePack.ReadPoints3(packed)[0];
-        return new NativeSolid(_inner.LoftSurface(sections.Items, guides?.Items,
-            Tangent(startTangent), Tangent(endTangent), NativeUtil.EmptyToNull(name), maxDeviation));
+        return Track(_inner.LoftSurface(sections.Items, guides?.Items,
+            Tangent(startTangent), Tangent(endTangent), NativeUtil.EmptyToNull(name), maxDeviation), "Surface loft", sections.Items.Select(sketch => sketch.Name));
     }
 
     public NativeSolid Boolean(NativeSolid a, NativeSolid b, int operation, string name)
     {
-        return new NativeSolid(_inner.Boolean(a.Native, b.Native, NativeUtil.ToBooleanOp(operation), NativeUtil.EmptyToNull(name)));
+        string kind = operation == (int)BooleanOp.Union ? "Union" : operation == (int)BooleanOp.Difference ? "Cut" : "Intersect";
+        return Track(_inner.Boolean(a.Native, b.Native, NativeUtil.ToBooleanOp(operation), NativeUtil.EmptyToNull(name)), kind, new[] { a.Native.Name, b.Native.Name });
     }
 
     public NativeSolid Union(NativeSolid a, NativeSolid b, string name)
@@ -284,28 +326,48 @@ public class NativePart
         return Boolean(a, b, (int)BooleanOp.Intersect, name);
     }
 
+    public NativeSolid TrimBySurface(NativeSolid volume, NativeSolid surface, int keepNormalSide, string name)
+    {
+        if (volume == null)
+            throw new ArgumentNullException(nameof(volume));
+        if (surface == null)
+            throw new ArgumentNullException(nameof(surface));
+        if (!volume.Native.IsVolume)
+            throw new ArgumentException("The body to trim must be a closed volume.", nameof(volume));
+        if (surface.Native.IsVolume)
+            throw new ArgumentException("The trimming body must be an open surface.", nameof(surface));
+
+        var operation = keepNormalSide != 0
+            ? BooleanOp.AAsVolumeBAsTrimSurfaceKeepInTriNormalDirection
+            : BooleanOp.AAsVolumeBAsTrimSurfaceRemoveInTriNormalDirection;
+        return Track(_inner.Boolean(volume.Native, surface.Native, operation, NativeUtil.EmptyToNull(name)),
+            "Trim", new[] { volume.Native.Name, surface.Native.Name },
+            details: keepNormalSide != 0 ? "side=normal" : "side=opposite");
+    }
+
     public NativeSolid BatchUnion(NativeSolidList meshes)
     {
         AnchorMesh result = _inner.BatchUnion(meshes.Items);
         if (result == null)
             return null;
-        return new NativeSolid(result);
+        return Track(result, "Union", meshes.Items.Select(mesh => mesh.Name));
     }
 
     public NativeSolid BatchBooleanChain(NativeSolid meshA, NativeBooleanChain chain)
     {
-        return new NativeSolid(_inner.BatchBooleanChain(meshA.Native, chain.Items));
+        return Track(_inner.BatchBooleanChain(meshA.Native, chain.Items), "Boolean chain", new[] { meshA.Native.Name });
     }
 
     public NativeSolid CopySolidAsInstance(NativeSolid source, string name)
     {
-        return new NativeSolid(_inner.CopyMeshAsInstance(source.Native, name));
+        return Track(_inner.CopyMeshAsInstance(source.Native, name), "Copy", new[] { source.Native.Name });
     }
 
     public NativeSolidList PatternLinear(NativeSolid seed, int count, double x, double y, double z, string name)
     {
         var result = new NativeSolidList();
         result.Items.AddRange(_inner.PatternLinear(seed.Native, count, new Vec3D(x, y, z), NativeUtil.EmptyToNull(name)));
+        TrackPattern(result.Items, "Linear pattern", seed.Native, $"count={count}, step=({x:G6}, {y:G6}, {z:G6})");
         return result;
     }
 
@@ -313,20 +375,23 @@ public class NativePart
     {
         var result = new NativeSolidList();
         result.Items.AddRange(_inner.PatternCircular(seed.Native, count, axis.Native, angle, NativeUtil.EmptyToNull(name)));
+        TrackPattern(result.Items, "Circular pattern", seed.Native, $"count={count}, angle={angle:G6}");
         return result;
     }
 
     public NativeSolid Mirror(NativeSolid source, NativeFrame plane, string name)
-        => new NativeSolid(_inner.Mirror(source.Native, plane.Native, NativeUtil.EmptyToNull(name)));
+        => Track(_inner.Mirror(source.Native, plane.Native, NativeUtil.EmptyToNull(name)), "Mirror", new[] { source.Native.Name });
 
     public NativeSolid Fillet(NativeSolid mesh, string edgeNames, double radius, double maxDeviation, string name)
     {
-        return new NativeSolid(_inner.Fillet(mesh.Native, NativeUtil.SplitNames(edgeNames), radius, maxDeviation, NativeUtil.EmptyToNull(name)));
+        var entities = MeshSelectableNames.FeatureReferences(mesh.Native, NativeUtil.SplitNames(edgeNames));
+        return Track(_inner.Fillet(mesh.Native, entities, radius, maxDeviation, NativeUtil.EmptyToNull(name)), "Fillet", new[] { mesh.Native.Name }, entities, $"radius={radius:G6}");
     }
 
     public NativeSolid Chamfer(NativeSolid mesh, string edgeNames, double distance, double maxDeviation, string name)
     {
-        return new NativeSolid(_inner.Chamfer(mesh.Native, NativeUtil.SplitNames(edgeNames), distance, maxDeviation, NativeUtil.EmptyToNull(name)));
+        var entities = MeshSelectableNames.FeatureReferences(mesh.Native, NativeUtil.SplitNames(edgeNames));
+        return Track(_inner.Chamfer(mesh.Native, entities, distance, maxDeviation, NativeUtil.EmptyToNull(name)), "Chamfer", new[] { mesh.Native.Name }, entities, $"distance={distance:G6}");
     }
 
     public NativeSolid GetMeshFromName(string meshName)
@@ -339,17 +404,17 @@ public class NativePart
 
     public NativeSolid LoadStlFile(string filePath, double groupBorderAngleThresholdDegree, string name, int requireWatertight)
     {
-        return new NativeSolid(_inner.LoadStlFile(filePath, groupBorderAngleThresholdDegree, NativeUtil.EmptyToNull(name), requireWatertight != 0));
+        return Track(_inner.LoadStlFile(filePath, groupBorderAngleThresholdDegree, NativeUtil.EmptyToNull(name), requireWatertight != 0), "Mesh import", details: filePath);
     }
 
     public NativeSolid LoadOffFile(string filePath, double groupBorderAngleThresholdDegree, string name, int requireWatertight)
     {
-        return new NativeSolid(_inner.LoadOffFile(filePath, groupBorderAngleThresholdDegree, NativeUtil.EmptyToNull(name), requireWatertight != 0));
+        return Track(_inner.LoadOffFile(filePath, groupBorderAngleThresholdDegree, NativeUtil.EmptyToNull(name), requireWatertight != 0), "Mesh import", details: filePath);
     }
 
     public NativeSolid LoadWavefrontObjFile(string filePath, double groupBorderAngleThresholdDegree, string name, double scale)
     {
-        return new NativeSolid(_inner.LoadWavefrontObjFile(filePath, groupBorderAngleThresholdDegree, NativeUtil.EmptyToNull(name), scale));
+        return Track(_inner.LoadWavefrontObjFile(filePath, groupBorderAngleThresholdDegree, NativeUtil.EmptyToNull(name), scale), "Mesh import", details: filePath);
     }
 
     public void SaveStl(NativeSolid mesh, string filePath, int binary)
@@ -399,7 +464,7 @@ public class NativePart
     {
         var positions = NativePack.ReadPoints3(packedPositions);
         var triangles = NativePack.ReadTriangles(packedTriangles);
-        return new NativeSolid(_inner.CreateFromTriangles(positions, triangles, NativeUtil.EmptyToNull(name)));
+        return Track(_inner.CreateFromTriangles(positions, triangles, NativeUtil.EmptyToNull(name)), "Mesh import", details: $"triangles={triangles.Count}");
     }
 
     public string Raycast(NativeSolid mesh, double ox, double oy, double oz, double dx, double dy, double dz)
@@ -1472,6 +1537,20 @@ public class NativeSketch
 }
 
 [DotWrapExpose]
+public class NativePartOperation
+{
+    readonly PartOperation _inner;
+    internal NativePartOperation(PartOperation inner) { _inner = inner; }
+    public int Index => _inner.Index;
+    public string Kind => _inner.Kind;
+    public string ResultName => _inner.Result.Name;
+    public string Details => _inner.Details;
+    public int InputCount => _inner.Inputs.Count;
+    public string InputAt(int index) => _inner.Inputs[index];
+    public int EntityCount => _inner.Entities.Count;
+    public string EntityAt(int index) => _inner.Entities[index];
+}
+[DotWrapExpose]
 public class NativeSolid
 {
     internal readonly AnchorMesh Native;
@@ -1487,14 +1566,18 @@ public class NativeSolid
 
     public int IsVolume { get { return Native.IsVolume ? 1 : 0; } }
 
-    public int EdgeCount
-    {
-        get { Native.EnsureCoplanarPostProcessed(); return Native.GroupEdges.Count; }
-    }
+    public int PatchCount => MeshSelectableNames.Patches(Native).Count;
+    public string PatchNameAt(int index) => NameAt(MeshSelectableNames.Patches(Native), index);
+    public int CurveCount => MeshSelectableNames.Curves(Native).Count;
+    public string CurveNameAt(int index) => NameAt(MeshSelectableNames.Curves(Native), index);
+    public int PointCount => MeshSelectableNames.Points(Native).Count;
+    public string PointNameAt(int index) => NameAt(MeshSelectableNames.Points(Native), index);
 
-    public string EdgeNameAt(int index)
+    static string NameAt(List<string> names, int index)
     {
-        return Native.GetEdgeReference(index);
+        if ((uint)index >= (uint)names.Count)
+            throw new ArgumentOutOfRangeException(nameof(index));
+        return names[index];
     }
 
     public string DumpDisplay()

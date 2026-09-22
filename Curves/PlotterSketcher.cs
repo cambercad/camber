@@ -455,6 +455,23 @@ Adds a 2D line segment. If startPoint is not the current strip end, a new discon
             AddCurveToStrip(line);
             return line;
         }
+
+        /// <summary>Adds a curve whose shape is defined by its supplied samples.</summary>
+        public SampledCurve AddSampledCurve(List<Vec2D> points, CurveFlags flags = CurveFlags.None)
+        {
+            if (points == null || points.Count < 2)
+                throw new ArgumentException("A sampled curve needs at least two points.", nameof(points));
+            var normals = new List<Vec2D>(points.Count);
+            for (int i = 0; i < points.Count; i++)
+            {
+                Vec2D tangent = points[Math.Min(i + 1, points.Count - 1)] - points[Math.Max(i - 1, 0)];
+                double length = tangent.Length();
+                normals.Add(length > 0 ? new Vec2D(-tangent.Y / length, tangent.X / length) : new Vec2D(0));
+            }
+            var curve = new SampledCurve(new List<Vec2D>(points), normals) { Flags = flags };
+            AddCurveToStrip(curve);
+            return curve;
+        }
         public virtual Ellipse2D AddEllipse(Vec2D center, Vec2D majorAxis, double minorRadius, CurveFlags flags = CurveFlags.None)
         {
             var ellipse = _curveFactory.CreateEllipse2D(center,majorAxis,minorRadius,0,2*Math.PI,flags);

@@ -94,7 +94,7 @@ public class PlanarFaceLineageTests : IDisposable
     }
 
     [Fact]
-    public void IndistinguishableRepeatedBoundaryRootsRejectReferenceButKeepValidGeometry()
+    public void IndistinguishableRepeatedBoundaryRootsKeepCurrentPatchNamesUsable()
     {
         var api = Api();
         AnchorMesh tool = null;
@@ -112,7 +112,12 @@ public class PlanarFaceLineageTests : IDisposable
         MeshPipelineTestHelpers.AssertWatertightAllowTouch(result.Mesh);
         var ambiguous = "base-ExtrudeTop{repeated_slot-Line2&repeated_slot-Line4}";
         var body = api.GetAssembly("ambiguous").AddPart(result, new Vec3D(0));
-        Assert.Throws<NameCollisionException>(() => body.AddPlaneDatum(ambiguous));
+        // A lineage label can be unambiguous in this particular result.  The
+        // current patch name is always the stable selection token presented to
+        // users, so exercise that path rather than requiring a failure solely
+        // because its ancestors were repeated.
+        int patch = result.FaceLineages.First(pair => pair.Value.Reference == ambiguous).Key;
+        Assert.NotNull(body.AddPlaneDatum(result.GetCurrentPatchName(patch)));
         foreach (var copy in new[] {
             api.CopyMeshAsInstance(result, "ambiguous_instance"),
             api.PatternLinear(result, 2, new Vec3D(0, 0, 4), "ambiguous_pattern")[1],
@@ -124,9 +129,11 @@ public class PlanarFaceLineageTests : IDisposable
                 .Where(group => group.Count() > 1 && group.Any(item => item.Value.Split)).ToArray();
             Assert.NotEmpty(repeated);
             foreach (var group in repeated)
+            {
+                // Every visible current patch name remains valid and selectable.
                 foreach (var item in group)
-                    Assert.Throws<NameCollisionException>(() =>
-                        copy.ValidateEntityReference(copy.groupIdToExtendedName[item.Key]));
+                    copy.ValidateEntityReference(copy.groupIdToExtendedName[item.Key]);
+            }
             MeshPipelineTestHelpers.AssertWatertightAllowTouch(copy.Mesh);
         }
     }

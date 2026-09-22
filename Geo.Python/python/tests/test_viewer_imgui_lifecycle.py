@@ -59,7 +59,58 @@ class ViewerImguiLifecycleTests(unittest.TestCase):
         second.window.switch_to()
         second.on_draw()
         second.close()
-        self.assertIsNone(self.imgui.get_current_context())
+        self.assertIsNone(second._imgui_context)
+
+    def test_keyboard_callback_uses_the_viewers_context(self):
+        viewer = self.viewer()
+        key = viewer._pyglet.window.key
+        self.assertEqual(self.external, self.imgui.get_current_context())
+
+        viewer._impl.on_key_press(key.A, 0)
+
+        self.assertEqual(self.external, self.imgui.get_current_context())
+        with viewer._ui_context():
+            self.assertTrue(viewer._impl.io.keys_down[self.imgui.KEY_A])
+
+    def test_wireframe_and_transparency_keys_toggle_once_per_press(self):
+        viewer = self.viewer()
+        key = viewer._pyglet.window.key
+
+        viewer.on_key_press(key.W, 0)
+        viewer.on_key_press(key.W, 0)
+        self.assertTrue(viewer._wireframe)
+        viewer.on_key_release(key.W, 0)
+        viewer.on_key_press(key.W, 0)
+        self.assertFalse(viewer._wireframe)
+        viewer.on_key_release(key.W, 0)
+
+        viewer.on_key_press(key.T, 0)
+        self.assertTrue(viewer._solid_transparent)
+        self.assertEqual("pretty", viewer._transparency)
+        viewer.on_key_release(key.T, 0)
+        viewer.on_key_press(key.T, 0)
+        self.assertFalse(viewer._solid_transparent)
+        self.assertEqual("none", viewer._transparency)
+
+    def test_wireframe_draws_triangle_edges_from_the_indexed_mesh(self):
+        from camber.display import DisplayScene
+        from camber.glview import pack_scene
+
+        scene = DisplayScene()
+        scene.patches.append({
+            "name": "quad",
+            "vertices": [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0),
+                         (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)],
+            "faces": [(0, 1, 2), (0, 2, 3)],
+        })
+        viewer = self.viewer()
+        packed = pack_scene(scene)
+        viewer.set_solid(packed)
+        viewer.camera.fit(*packed["bounds"])
+        before = viewer.capture_rgba()
+        viewer._wireframe = True
+        after = viewer.capture_rgba()
+        self.assertTrue((before != after).any())
 
     def test_shader_failure_releases_owned_context_and_restores_external_context(self):
         from camber.host import Viewer

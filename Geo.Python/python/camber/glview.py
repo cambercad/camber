@@ -917,6 +917,7 @@ _MESH_FRAG = """
 #version 330
 uniform vec3 u_light_dir;
 uniform bool u_checker;
+uniform bool u_wireframe;
 uniform float u_alpha;
 """ + _PEEL_GLSL + """
 in vec3 v_n;
@@ -926,6 +927,10 @@ in vec2 v_uv;
 out vec4 frag;
 void main() {
     peel_discard(gl_FragCoord.z);
+    if (u_wireframe) {
+        frag = vec4(0.02, 0.02, 0.03, 1.0);
+        return;
+    }
     vec3 N = normalize(v_n);
     vec3 L = normalize(-u_light_dir);
     vec3 V = normalize(-v_view);
@@ -1237,14 +1242,12 @@ def _import_gl(ui=True):
 
         if not ui:
             return pyglet, np, None, None
-        from .imgui_compat import import_imgui
+        from .imgui_compat import import_imgui, create_pyglet_renderer
         imgui = import_imgui()
-        try:
-            from imgui.integrations.pyglet import create_renderer
-        except ModuleNotFoundError as exc:
-            if exc.name not in ("distutils", "distutils.version"):
-                raise
-            from .imgui_compat import create_pyglet_renderer as create_renderer
+        # pyimgui's pyglet adapter dispatches input against whichever ImGui
+        # context happens to be current. Camber owns one context per viewer,
+        # so input must be routed through the context-aware adapter below.
+        create_renderer = create_pyglet_renderer
     except ImportError:
         raise ImportError(
             "The OpenGL viewer needs pyglet, imgui, and numpy. Install with:\n"

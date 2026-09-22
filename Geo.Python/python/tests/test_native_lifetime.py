@@ -19,7 +19,7 @@ for optional in (False, True):
     if optional:
         notch = part.cuboid((1, -1, -1), (2, 5, 3), name="optional_slot")
         base = part.cut(base, notch, name="before_main")
-        assert base.edge_names
+        assert base.curve_names
     cutter = part.cuboid((4, -1, -1), (5, 5, 3), name="main_slot")
     final = part.cut(base, cutter, name="finished")
     packed = glview.pack_scene(glview._as_scene(final))

@@ -2,12 +2,60 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Geo;
+using GeoCore;
 using GeoSolver;
 namespace GeoPy;
 
 // Explicit writer keeps the small diagnostic schema compatible with Native AOT.
 internal static class AssemblyDiagnosticsJson
 {
+    public static string SerializeConstraints(Assembly assembly)
+    {
+        using var stream=new System.IO.MemoryStream();
+        using(var writer=new Utf8JsonWriter(stream))
+        {
+            var leaves=assembly.GetLeaves();
+            writer.WriteStartArray();
+            for(int index=0;index<assembly.GetMateRecords().Count;index++)
+            {
+                AssemblyMateRecord mate=assembly.GetMateRecords()[index];
+                writer.WriteStartObject();
+                writer.WriteNumber("index",index);writer.WriteString("kind",mate.Kind.ToString());writer.WriteString("label",mate.Label);
+                writer.WritePropertyName("value");if(double.IsFinite(mate.Scalar))writer.WriteNumberValue(mate.Scalar);else writer.WriteNullValue();
+                writer.WriteStartArray("entities");foreach(string entity in mate.Entities)writer.WriteStringValue(entity);writer.WriteEndArray();
+                Datum(writer,"first",assembly,leaves,mate.PartA,mate.LocalA,mate.DirA,DatumKind(mate.Kind,true));
+                Datum(writer,"second",assembly,leaves,mate.PartB,mate.LocalB,mate.DirB,DatumKind(mate.Kind,false));
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+        }
+        return Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    private static string DatumKind(AssemblyMateKind kind,bool first) => kind switch {
+        AssemblyMateKind.FixPart=>"body",
+        AssemblyMateKind.CoincidentPoints or AssemblyMateKind.DistancePoints=>"point",
+        AssemblyMateKind.CoincidentAxes or AssemblyMateKind.ParallelAxes or AssemblyMateKind.PerpendicularAxes or AssemblyMateKind.Concentric or AssemblyMateKind.AngleAxes=>"axis",
+        AssemblyMateKind.CoincidentPlanes or AssemblyMateKind.ParallelPlanes or AssemblyMateKind.PerpendicularPlanes or AssemblyMateKind.DistancePlanes=>"plane",
+        AssemblyMateKind.PointOnPlane or AssemblyMateKind.Contact=>first?"point":"plane",
+        _=>"point"};
+
+    private static void Datum(Utf8JsonWriter writer,string name,Assembly assembly,IReadOnlyList<AssemblyLeaf> leaves,AssemblyPart part,Vec3D local,Vec3D direction,string kind)
+    {
+        writer.WritePropertyName(name);
+        if(part==null){writer.WriteNullValue();return;}
+        AssemblyLeaf leaf=leaves.FirstOrDefault(item=>item.Part==part);
+        Transform pose=assembly.WorldPoseOf(part);
+        writer.WriteStartObject();writer.WriteString("kind",kind);writer.WriteString("part",part.Mesh.Name);
+        writer.WriteString("path",leaf?.Path??"");
+        Vector(writer,"local_point",local);Vector(writer,"local_direction",direction);
+        Vector(writer,"world_point",TransformMath.TransformPoint(in pose,local));
+        Vector(writer,"world_direction",TransformMath.TransformDirection(in pose,direction));
+        writer.WriteEndObject();
+    }
+
+    private static void Vector(Utf8JsonWriter writer,string name,Vec3D value)
+    {writer.WriteStartArray(name);writer.WriteNumberValue(value.X);writer.WriteNumberValue(value.Y);writer.WriteNumberValue(value.Z);writer.WriteEndArray();}
     public static string Serialize(SolveResult result,double characteristicLength,IReadOnlyList<AssemblyMateResidual> mates)
     {
         using var stream=new System.IO.MemoryStream();

@@ -12,7 +12,7 @@ set -euo pipefail
 
 RUNTIME="linux-x64"
 CONFIGURATION="Release"
-WHEEL_VERSION="0.1.3"
+WHEEL_VERSION="0.1.4"
 BOOTSTRAP=0
 
 while [[ $# -gt 0 ]]; do

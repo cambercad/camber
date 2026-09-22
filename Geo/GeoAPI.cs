@@ -92,6 +92,7 @@ Static. Returns the next unique name with this prefix (""<prefix>1"", ""<prefix>
         internal static string ResolveSketchName(string name) => name ?? GenerateName("Sketch");
 
         private List<AnchorMesh> meshes = new List<AnchorMesh>();
+        private readonly List<PartOperation> operations = new List<PartOperation>();
         private List<PlotterSketcherCoordSys> sketches = new List<PlotterSketcherCoordSys>();
         private List<Assembly> assemblies = new List<Assembly>();
         private GeoVisualOutputKind visualOutputKind = GeoVisualOutputKind.Mesh;

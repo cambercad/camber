@@ -4,7 +4,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from camber import Part, vec3, set_progress_log
+from camber import AssemblyLeaf, Part, vec3, set_progress_log
 
 set_progress_log(False)
 
@@ -63,6 +63,25 @@ class AssemblyNestingTests(unittest.TestCase):
         self.assertTrue(_near(top.world_pose(mid_p), (0.0, 20.0, 0.0)))
         self.assertTrue(_near(top.world_pose(top_p), (0.0, 0.0, 0.0)))
 
+    def test_leaves_are_recursive_and_report_world_frames_and_bounds(self):
+        part = Part(vec3(-80), vec3(80), tolerance=0.05)
+        direct_solid = _box(part, "direct", size=2)
+        nested_solid = _box(part, "nested", size=4)
+        child = part.assembly("child")
+        child.add_part(nested_solid, (3, 0, 0))
+        top = part.assembly("top")
+        top.add_part(direct_solid, (-2, 0, 0))
+        top.add_subassembly(child, (0, 10, 0))
+
+        leaves = top.leaves()
+        self.assertIsInstance(leaves[0], AssemblyLeaf)
+        self.assertEqual(["top/direct[1]", "top/child[1]/nested[1]"], [leaf.path for leaf in leaves])
+        self.assertTrue(_near(leaves[0].frame.origin, (-2, 0, 0), tol=1e-8))
+        self.assertTrue(_near(leaves[1].frame.origin, (3, 10, 0), tol=1e-8))
+        self.assertEqual(leaves[1].solid.name, "nested")
+        self.assertTrue(leaves[1].solid.patch_names)
+        self.assertTrue(_near(top.bounds()[0], (-3, -1, 0), tol=1e-8))
+        self.assertTrue(_near(top.bounds()[1], (5, 12, 4), tol=1e-8))
     def test_parent_can_mate_to_nested_part(self):
         part = Part(vec3(-80), vec3(80), tolerance=0.05)
         nested_solid = _box(part, "nested")
@@ -84,6 +103,9 @@ class AssemblyNestingTests(unittest.TestCase):
 
         self.assertTrue(_near(top.world_pose(nested_p), (0.0, 0.0, 0.0)))
         self.assertTrue(_near(occ.pose, (0.0, 0.0, 0.0)))
+        mate = top.constraints[1]
+        self.assertEqual("top_asm/nested_asm[1]/nested[1]", mate.second.path)
+        self.assertTrue(_near(mate.first.world_point, mate.second.world_point, tol=1e-5))
 
     def test_nested_bearing_locates_hub_and_leaves_spin_free(self):
         import math

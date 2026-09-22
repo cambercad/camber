@@ -26,7 +26,7 @@ class PartConcurrencyTests(unittest.TestCase):
         tool = owner.cuboid((4+index*.1, -1, -1), (5+index*.1, 5, 3), name='slot')
         body = owner.cut(blank, tool, name='finished')
         # Materialize on the owning worker; no mutable body is shared by workers.
-        edges = tuple(sorted(body.edge_names))
+        edges = tuple(sorted(name.partition(':')[2] for name in body.curve_names))
         points, triangles = body.mesh()
         geometry = tuple(sorted(tuple(sorted(tuple(points[i]) for i in triangle)) for triangle in triangles))
         return owner, body, (geometry, edges), sketch.name
@@ -47,7 +47,8 @@ class PartConcurrencyTests(unittest.TestCase):
             points, triangles = copied.mesh()
             geometry = tuple(sorted(tuple(sorted(tuple(points[j]) for j in triangle)) for triangle in triangles))
             self.assertEqual(signature[0], geometry)
-            self.assertEqual(signature[1], tuple(sorted(copied.edge_names)))
+            self.assertEqual(signature[1], tuple(sorted(
+                name.partition(':')[2] for name in copied.curve_names)))
             assembly.add_part(copied, (0, 0, i*4))
         self.assertEqual(4, len(assembly.parts))
 

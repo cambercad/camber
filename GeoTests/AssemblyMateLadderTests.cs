@@ -248,6 +248,22 @@ public sealed class AssemblyMateLadderTests : IDisposable
     }
 
     [Fact]
+    public void NamedCylinderAxis_RemainsBodyLocalAfterAssemblyMove()
+    {
+        var api = new GeoAPI(new Box3D(new Vec3D(-800), new Vec3D(800)), 0.4);
+        AnchorMesh pipe = BuildFlangedElbow(api, "pipe1");
+        var assembly = api.GetAssembly("axis_space");
+        AssemblyPart part = assembly.AddPart(pipe, new Vec3D(0));
+
+        AssemblyAxisDatum before = part.AddAxisDatum("pipe1-inner-v_line");
+        pipe.Update(new Transform(new Vec3D(120, -75, 30), RotZ(Math.PI / 2.0)));
+        AssemblyAxisDatum after = part.AddAxisDatum("pipe1-inner-v_line");
+
+        Assert.True((after.LocalPoint - before.LocalPoint).Length() < 1e-9);
+        Assert.True((after.LocalDirection - before.LocalDirection).Length() < 1e-9);
+    }
+
+    [Fact]
     public void TwoPipes_TranslationOnly_NamedFlanges()
     {
         var api = new GeoAPI(new Box3D(new Vec3D(-800), new Vec3D(800)), 0.4);

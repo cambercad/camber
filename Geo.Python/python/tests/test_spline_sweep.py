@@ -31,7 +31,7 @@ class SplineSweepTests(unittest.TestCase):
         sketch.add_line((20,0),(0,0))
         solid=part.extrude(sketch,2,name='named_spline')
         self.assertTrue(solid.is_watertight())
-        self.assertIn(f'[named_spline-{curve.name},named_spline-ExtrudeTop]',solid.edge_names)
+        self.assertIn(f'named_spline:[named_spline-{curve.name},named_spline-ExtrudeTop]',solid.curve_names)
 
     def test_thin_tilted_sweep_cap_keeps_its_area(self):
         part = Part((-50, -50, -50), (100, 100, 100), tolerance=.05)

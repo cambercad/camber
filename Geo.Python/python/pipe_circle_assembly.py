@@ -35,7 +35,7 @@ def mate_flanged_ends(top_index, bottom_index):
     assembly.coincident(
         top.plane(top_name + "-ExtrudeTop"),
         bottom.plane(bottom_name + "-ExtrudeBottom"),
-        opposite_normals=False,
+        opposite_normals=True,
     )
     assembly.coincident(
         top.plane(top_name + "-top_flange-north"),

@@ -91,6 +91,29 @@ Read-only snapshot of registered mesh references (geometry is not copied).")]
             lock (_meshRegistryLock) return new ReadOnlyCollection<AnchorMesh>(meshes.ToArray());
         }
 
+        [APIDescription(@"GetOperations() -> IReadOnlyList[PartOperation]
+Successful solid-producing operations in chronological order. Each record retains the exact result mesh reference plus display-ready inputs, selected entities, and details.")]
+        public IReadOnlyList<PartOperation> GetOperations()
+        {
+            lock (_meshRegistryLock) return new ReadOnlyCollection<PartOperation>(operations.ToArray());
+        }
+
+        /// <summary>Records a completed feature. Builders call this only after their result is registered.</summary>
+        public void RecordOperation(AnchorMesh result, string kind,
+            IEnumerable<string> inputs = null, IEnumerable<string> entities = null, string details = null)
+        {
+            if (result == null) throw new ArgumentNullException(nameof(result));
+            if (string.IsNullOrWhiteSpace(kind)) throw new ArgumentException("Operation kind is required.", nameof(kind));
+            lock (_meshRegistryLock)
+            {
+                if (!meshes.Contains(result))
+                    throw new ArgumentException("Operation result must be registered on this part.", nameof(result));
+                operations.Add(new PartOperation(operations.Count + 1, kind, result,
+                    (inputs ?? Array.Empty<string>()).Where(value => !string.IsNullOrWhiteSpace(value)).ToArray(),
+                    (entities ?? Array.Empty<string>()).Where(value => !string.IsNullOrWhiteSpace(value)).ToArray(),
+                    details ?? ""));
+            }
+        }
         [APIDescription(@"GetCurves() -> List[Curve3D]
 All 3D curves added via AddLine and similar (snapshot of references).")]
         public List<Curve3D> GetCurves()

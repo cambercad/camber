@@ -23,6 +23,7 @@ from .api import (
     BOOLEAN_INTERSECT,
     BOOLEAN_UNION,
     Assembly,
+    AssemblyLeaf,
     AssemblySolveResult,
     MateResidual,
     Interference,
@@ -35,10 +36,12 @@ from .api import (
     Frame,
     LoftOptions,
     Part,
+    PartOperation, AssemblyConstraint, AssemblyConstraintDatum,
     ProjectedSketch,
     Sketch,
     SketchCurve,
     Solid,
+    Surface,
     frame_from_axis,
     progress_log_enabled,
     set_progress_log,
@@ -56,8 +59,8 @@ from .render import render_views
 from .inspection import section, Section, Measurement
 
 __all__ = [
-    "Part", "Sketch", "SketchCurve", "Solid", "ProjectedSketch", "Frame", "Curve", "LoftOptions",
-    "AssemblySolveResult", "MateResidual", "Interference", "Assembly", "AssemblyOccurrence", "AssemblyPart", "AssemblyPointDatum", "AssemblyAxisDatum", "AssemblyPlaneDatum",
+    "Part", "PartOperation", "AssemblyConstraint", "AssemblyConstraintDatum", "Sketch", "SketchCurve", "Solid", "Surface", "ProjectedSketch", "Frame", "Curve", "LoftOptions",
+    "AssemblySolveResult", "MateResidual", "Interference", "Assembly", "AssemblyLeaf", "AssemblyOccurrence", "AssemblyPart", "AssemblyPointDatum", "AssemblyAxisDatum", "AssemblyPlaneDatum",
     "vec2", "vec3", "show", "render_views", "frame_from_axis",
     "section", "Section", "Measurement",
     "BOOLEAN_UNION", "BOOLEAN_DIFFERENCE", "BOOLEAN_INTERSECT",

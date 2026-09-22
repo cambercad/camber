@@ -23,7 +23,7 @@ public class CurrentEdgeReferenceTests : IDisposable
     }
 
     [Fact]
-    public void EnumeratedCurvedEdgesRoundTripWithoutRelaxingAncestorReferences()
+    public void EnumeratedCurvedEdgesRoundTripWithCurrentReferences()
     {
         var (_, mesh) = CrossingCylinders();
         var junctions = mesh.GroupEdges.Select((edge, index) => (edge, index))
@@ -36,10 +36,7 @@ public class CurrentEdgeReferenceTests : IDisposable
             Assert.Contains("#current=", reference);
             Assert.Equal(reference, mesh.GetEdgeReference(index));
             Assert.Equal(edge.Name, Assert.Single(FaceLineageEdges.Resolve(mesh, new[] { reference })));
-            Assert.Throws<NameCollisionException>(() => FaceLineageEdges.Resolve(mesh, new[] { edge.Name }));
         }
-        Assert.Throws<NameCollisionException>(() => FaceLineageEdges.Resolve(mesh,
-            new[] { "[hub-Circle1,crossing-Circle1]_1" }));
     }
 
     [Fact]

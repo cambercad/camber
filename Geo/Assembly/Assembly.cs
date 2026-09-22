@@ -619,6 +619,16 @@ Pose of a direct or nested part in this assembly's frame.")]
             return TransformMath.Compose(occ.EvaluatePose(), PoseInAssembly(part, occ.Child));
         }
 
+        [APIDescription(@"GetLeaves() -> IReadOnlyList[AssemblyLeaf]
+Recursive leaf parts with occurrence paths and current world poses.")]
+        public IReadOnlyList<AssemblyLeaf> GetLeaves()
+        {
+            var parts = new List<AssemblyPart>();
+            var poses = new List<Transform>();
+            var paths = new List<string>();
+            CollectLeafWorldPoses(parts, poses, paths);
+            return parts.Select((part, index) => new AssemblyLeaf(paths[index], part, poses[index])).ToList();
+        }
         public void CollectLeafWorldPoses(List<AssemblyPart> parts, List<Transform> worldPoses, List<string> paths = null)
         {
             CollectLeafWorldPoses(

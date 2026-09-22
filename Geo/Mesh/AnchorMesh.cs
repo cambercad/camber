@@ -1241,12 +1241,25 @@ namespace Geo
         }
 
         public bool TryGetCylinderFromPatch(string patchName, out CylinderSurfaceParams cylinder)
+            => TryGetCylinderFromPatchCore(patchName, localGeometry: false, out cylinder);
+
+        // Assembly datums are body-local. Rendering updates surfaceMetaData to
+        // the current world pose, so datum resolution must use the captured rest
+        // metadata instead of feeding world coordinates back into the solver.
+        internal bool TryGetLocalCylinderFromPatch(string patchName, out CylinderSurfaceParams cylinder)
+            => TryGetCylinderFromPatchCore(patchName, localGeometry: true, out cylinder);
+
+        private bool TryGetCylinderFromPatchCore(
+            string patchName,
+            bool localGeometry,
+            out CylinderSurfaceParams cylinder)
         {
             cylinder = null;
             string localName = ResolveLocalPatchName(patchName);
             if (localName == null)
                 return false;
-            if (!surfaceMetaData.TryGetValue(localName, out SurfaceMetaData meta))
+            var metadata = localGeometry && _rigidBodyActive ? _rigidRestMeta : surfaceMetaData;
+            if (metadata == null || !metadata.TryGetValue(localName, out SurfaceMetaData meta))
                 return false;
             if (meta.SurfaceType != SurfaceType.Cylindrical || meta.CylinderParams == null)
                 return false;
@@ -1300,8 +1313,16 @@ namespace Geo
         internal void ValidateEntityReference(string reference)
         {
             if (string.IsNullOrWhiteSpace(reference)) return;
+            reference = reference.Trim();
+            // Renderer and public name queries expose current patch identities
+            // as ``mesh:patch``. A Boolean result may itself have the same mesh
+            // name as the first operand, so do not mistake an exact current
+            // patch key for a mesh qualification and strip its leading scope.
+            if (extendedNameToGroupId.ContainsKey(reference)) return;
+            if (TryResolveCurrentFaceReference(reference, out _)) return;
             if (reference.StartsWith(Name + ":", StringComparison.Ordinal))
                 reference = reference.Substring(Name.Length + 1);
+            if (TryResolveCurrentFaceReference(reference, out _)) return;
             if (EntityNaming.TryParseSurfacePointAddress(reference, out var surface))
                 Check(surface.PatchName);
             else if (EntityNaming.TryParseGroupEdgeAddress(reference, out var edge))
@@ -1360,16 +1381,30 @@ namespace Geo
 
         internal string ResolveLocalPatchNamePublic(string reference) => ResolveLocalPatchName(reference);
 
+        /// <summary>Current, selectable name for a surface patch group.</summary>
+        public string GetCurrentPatchName(int groupId)
+        {
+            string name = groupIdToExtendedName != null && groupIdToExtendedName.TryGetValue(groupId, out var local) && !string.IsNullOrEmpty(local)
+                ? local : "group_" + groupId;
+            return AmbiguousFaceReferences.Contains(name) && FaceLineages.TryGetValue(groupId, out var lineage)
+                ? lineage.Reference + "#current=" + groupId : name;
+        }
+
         private string ResolveLocalPatchName(string reference)
         {
             if (string.IsNullOrWhiteSpace(reference))
                 return null;
 
             reference = reference.Trim();
-            ValidateEntityReference(reference);
-
+            // Exact current names take precedence over the convenient
+            // ``mesh:local-name`` form. This matters when the mesh itself is
+            // named after an operand and a descendant patch carries that same
+            // prefix as part of its authoritative lineage.
             if (extendedNameToGroupId.ContainsKey(reference))
                 return reference;
+            if (TryResolveCurrentFaceReference(reference, out string current))
+                return current;
+            ValidateEntityReference(reference);
 
             string qualified = $"{Name}-{reference}";
             if (extendedNameToGroupId.ContainsKey(qualified))
@@ -1397,6 +1432,29 @@ namespace Geo
             }
 
             return null;
+        }
+
+        private bool TryResolveCurrentFaceReference(string reference, out string patchName)
+        {
+            patchName = null;
+            if (FaceLineages == null || string.IsNullOrWhiteSpace(reference))
+                return false;
+            const string marker = "#current=";
+            int markerIndex = reference.LastIndexOf(marker, StringComparison.Ordinal);
+            if (markerIndex >= 0 && int.TryParse(reference.Substring(markerIndex + marker.Length), out int id)
+                && FaceLineages.TryGetValue(id, out var marked)
+                && string.Equals(marked.Reference, reference.Substring(0, markerIndex), StringComparison.Ordinal))
+                return groupIdToExtendedName.TryGetValue(id, out patchName);
+            int match = -1;
+            foreach (var pair in FaceLineages)
+            {
+                if (!string.Equals(pair.Value.Reference, reference, StringComparison.Ordinal))
+                    continue;
+                if (match >= 0)
+                    return false;
+                match = pair.Key;
+            }
+            return match >= 0 && groupIdToExtendedName.TryGetValue(match, out patchName);
         }
 
         private string TryUniquePatchSuffixMatch(string curveName)

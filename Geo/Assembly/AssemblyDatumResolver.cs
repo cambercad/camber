@@ -52,13 +52,13 @@ namespace Geo
             if (patchName == null)
                 throw new ArgumentException($"Cannot resolve axis datum '{reference}' on mesh '{mesh.Name}'.");
 
-        if (mesh.TryGetCylinderFromPatch(patchName, out CylinderSurfaceParams cylinder))
-        {
-            Vec3D axis = cylinder.Axis;
-            axis.Normalize();
-            Vec3D axisPoint = cylinder.Origin + axis * (cylinder.Height * 0.5);
-            return new AxisDatumLocal(axisPoint, axis);
-        }
+            if (mesh.TryGetLocalCylinderFromPatch(patchName, out CylinderSurfaceParams cylinder))
+            {
+                Vec3D axis = cylinder.Axis;
+                axis.Normalize();
+                Vec3D axisPoint = cylinder.Origin + axis * (cylinder.Height * 0.5);
+                return new AxisDatumLocal(axisPoint, axis);
+            }
 
             if (mesh.TryGetPlaneFromPatch(patchName, out PlaneSurfaceParams plane))
             {
@@ -83,7 +83,7 @@ namespace Geo
             string patchName = mesh.ResolveLocalPatchNamePublic(reference);
             if (patchName != null)
             {
-                if (mesh.TryGetCylinderFromPatch(patchName, out CylinderSurfaceParams cylinder))
+                if (mesh.TryGetLocalCylinderFromPatch(patchName, out CylinderSurfaceParams cylinder))
                 {
                     Vec3D axis = cylinder.Axis;
                     axis.Normalize();
