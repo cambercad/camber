@@ -1620,6 +1620,18 @@ class Part(object):
         return Solid(_require(self._n, "chamfer")(
             solid._n, _join_names(edges), float(distance), float(max_deviation), _name(name)), self)
 
+    def shell(self, solid, faces, thickness, name=None, max_deviation=-1):
+        """Hollow a planar-patch solid inward through one or more named faces.
+
+        The exterior dimensions and opening boundary remain fixed. Planar,
+        cylindrical, and spherical patches use exact analytic offsets; other
+        or metadata-free patches use a welded triangle-normal offset. Collapsed,
+        inverted, or topology-changing offsets fail explicitly. Cavity faces
+        are selectable as ``ShellInner_<source-patch>``.
+        """
+        return Solid(_require(self._n, "shell")(
+            solid._n, _join_names(faces), float(thickness), float(max_deviation), _name(name)), self)
+
     def solid(self, name):
         """Look up a Solid or Surface already registered on this part, or None."""
         found = _require(self._n, "get_mesh_from_name")(name)

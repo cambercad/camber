@@ -155,6 +155,13 @@ python python\v_gear.py
 python python\planetary_gearbox.py
 ```
 
+Shell gallery (analytic cylinder and sphere offsets, CSG trimming, a filleted
+shell rim, and the generic triangle-mesh fallback on a twisted loft):
+
+```powershell
+python python\shell_showcase.py
+```
+
 ---
 
 ## 6. Interactive sketch (optional)
@@ -196,6 +203,7 @@ python -m pip install --force-reinstall (Get-ChildItem dist\camber*.whl | Select
 | `python/v_gear.py` | Citroën-style herringbone involute gear |
 | `python/gears.py` | Involute spur / internal ring / herringbone helpers |
 | `python/planetary_gearbox.py` | 3:1 planetary assembly (sun, planets, ring, carrier, housing) |
+| `python/shell_showcase.py` | Analytic, CSG, rim-fillet, and mesh-fallback shell gallery |
 | `NativePart.cs` | Thin C# FFI for the wheel |
 | `publish-wheel.ps1` | Publish AOT + build `dist\*.whl` |
 | `dist/` | Output wheels (generated) |

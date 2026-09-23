@@ -40,6 +40,8 @@ namespace GeoMeta
         public const string BlendCornerPrefix = "BlendCorner_";
         public const string ChamferEdgePrefix = "ChamferEdge_";
         public const string ChamferCornerPrefix = "ChamferCorner_";
+        public const string ShellInnerPrefix = "ShellInner_";
+        public const string ShellRimPrefix = "ShellRim_";
 
         public const string SketchCurveCenterParam = "center";
         public const string SketchCurveControlVertexPrefix = "cv";
@@ -143,6 +145,8 @@ namespace GeoMeta
         public static string BlendCorner(int index) => BlendCornerPrefix + index;
         public static string ChamferEdge(string sourceEdgeName) => ChamferEdgePrefix + sourceEdgeName;
         public static string ChamferCorner(int index) => ChamferCornerPrefix + index;
+        public static string ShellInner(string sourcePatch) => ShellInnerPrefix + sourcePatch;
+        public static string ShellRim(string sourceEdge) => ShellRimPrefix + sourceEdge;
 
         public static string ImportAutoGroup(string prefix, int groupIndex) => prefix + groupIndex;
 

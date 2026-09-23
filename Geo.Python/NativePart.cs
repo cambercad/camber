@@ -394,6 +394,13 @@ public class NativePart
         return Track(_inner.Chamfer(mesh.Native, entities, distance, maxDeviation, NativeUtil.EmptyToNull(name)), "Chamfer", new[] { mesh.Native.Name }, entities, $"distance={distance:G6}");
     }
 
+    public NativeSolid Shell(NativeSolid mesh, string faceNames, double thickness, double maxDeviation, string name)
+    {
+        var entities = NativeUtil.SplitNames(faceNames);
+        return Track(_inner.Shell(mesh.Native, entities, thickness, maxDeviation, NativeUtil.EmptyToNull(name)),
+            "Shell", new[] { mesh.Native.Name }, entities, $"thickness={thickness:G6}");
+    }
+
     public NativeSolid GetMeshFromName(string meshName)
     {
         AnchorMesh mesh = _inner.GetMeshFromName(meshName);

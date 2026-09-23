@@ -1,0 +1,132 @@
+using Geo;
+using GeoCore;
+
+namespace GeoTests;
+
+[Collection("GlobalCadState")]
+public sealed class ShellTests : IDisposable
+{
+    public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
+    [Fact]
+    public void PlanarCuboid_ShellsThroughNamedTopFace()
+    {
+        var api = new GeoAPI(new Box3D(new Vec3D(-20), new Vec3D(20)), .001);
+        var block = api.CreateCuboid(new Vec3D(0, 0, 0), new Vec3D(10, 8, 6), "block");
+        var result = api.Shell(block, new List<string> { "block-ExtrudeTop" }, 1, name: "shell");
+
+        Assert.True(result.IsVolume);
+        Assert.True(MeshAnalysis.IsWatertightMesh(result.Mesh.PrecisionPositions, result.Mesh.Triangles));
+        Assert.InRange(Math.Abs(MeshAnalysis.ComputeSignedMeshVolume(result.Mesh.Positions, result.Mesh.Triangles)),
+            239.9, 240.1); // 10*8*6 - 8*6*5
+        Assert.Contains("ShellInner_block-ExtrudeBottom", result.extendedNameToGroupId.Keys);
+        Assert.Contains("ShellRim_block-ExtrudeTop", result.extendedNameToGroupId.Keys);
+    }
+
+    [Fact]
+    public void AnalyticCylinder_OffsetsWallRadiusAndPreservesMetadata()
+    {
+        const double radius = 5, height = 8, thickness = 0.75;
+        var api = new GeoAPI(new Box3D(new Vec3D(-20), new Vec3D(20)), .005);
+        var cylinder = api.CreateCylinder(CoordinateSystem.Default, radius, height, .005, "cyl");
+        double sourceVolume = MeshAnalysis.ComputeSignedMeshVolume(cylinder.Mesh.Positions, cylinder.Mesh.Triangles);
+
+        var result = api.Shell(cylinder, new List<string> { "cyl-ExtrudeTop" }, thickness, name: "cup");
+
+        Assert.True(MeshAnalysis.IsWatertightMesh(result.Mesh.PrecisionPositions, result.Mesh.Triangles));
+        var innerWall = Assert.Single(result.surfaceMetaData.Where(pair =>
+            pair.Key.StartsWith("ShellInner_", StringComparison.Ordinal) && pair.Value.CylinderParams != null));
+        Assert.Equal(radius - thickness, innerWall.Value.CylinderParams.Radius, 10);
+        Assert.InRange(innerWall.Value.CylinderParams.Height, height - thickness, height - thickness + .01);
+        double expected = sourceVolume * (1 - Math.Pow((radius - thickness) / radius, 2) * ((height - thickness) / height));
+        Assert.InRange(MeshAnalysis.ComputeSignedMeshVolume(result.Mesh.Positions, result.Mesh.Triangles),
+            expected - .02, expected + .02);
+    }
+
+    [Fact]
+    public void BooleanAnnulus_OffsetsConvexAndConcaveCylindersInOppositeDirections()
+    {
+        const double outerRadius = 5, boreRadius = 2, height = 6, thickness = .5;
+        var api = new GeoAPI(new Box3D(new Vec3D(-20), new Vec3D(20)), .01);
+        var outer = api.CreateCylinder(CoordinateSystem.Default, outerRadius, height, .01, "outer");
+        var bore = api.CreateCylinder(new CoordinateSystem(new Vec3D(0, 0, -1)), boreRadius, height + 2, .01, "bore");
+        var annulus = api.Boolean(outer, bore, CSG.BooleanOp.Difference, "annulus");
+        annulus.EnsureCoplanarPostProcessed();
+        int topTriangle = Enumerable.Range(0, annulus.Mesh.Triangles.Count)
+            .OrderByDescending(i => {
+                var triangle = annulus.Mesh.Triangles[i];
+                return annulus.Mesh.Positions[triangle.A].Z + annulus.Mesh.Positions[triangle.B].Z + annulus.Mesh.Positions[triangle.C].Z;
+            }).First();
+        string top = annulus.groupIdToExtendedName[annulus.Mesh.TrianglesEx[topTriangle].GroupId];
+
+        var result = api.Shell(annulus, new List<string> { top }, thickness, name: "shelledAnnulus");
+
+        Assert.True(MeshAnalysis.IsWatertightMesh(result.Mesh.PrecisionPositions, result.Mesh.Triangles));
+        var radii = result.surfaceMetaData
+            .Where(pair => pair.Key.StartsWith("ShellInner_", StringComparison.Ordinal) && pair.Value.CylinderParams != null)
+            .Select(pair => pair.Value.CylinderParams.Radius).OrderBy(value => value).ToArray();
+        Assert.Equal(new[] { boreRadius + thickness, outerRadius - thickness }, radii);
+        double expected = Math.PI * ((outerRadius * outerRadius - boreRadius * boreRadius) * height -
+            (Math.Pow(outerRadius - thickness, 2) - Math.Pow(boreRadius + thickness, 2)) * (height - thickness));
+        Assert.InRange(MeshAnalysis.ComputeSignedMeshVolume(result.Mesh.Positions, result.Mesh.Triangles),
+            expected - .75, expected + .75);
+    }
+
+    [Fact]
+    public void BooleanHemisphere_UsesExactSpherePlaneJunction()
+    {
+        const double radius = 5, thickness = .5;
+        var api = new GeoAPI(new Box3D(new Vec3D(-20), new Vec3D(20)), .01);
+        var sphere = api.CreateSphere(CoordinateSystem.Default, radius, .01, "sphere");
+        var upperHalfSpace = api.CreateCuboid(new Vec3D(-10, -10, 0), new Vec3D(10, 10, 10), "clip");
+        var hemisphere = api.Boolean(sphere, upperHalfSpace, CSG.BooleanOp.Intersect, "hemisphere");
+        hemisphere.EnsureCoplanarPostProcessed();
+        int capTriangle = Enumerable.Range(0, hemisphere.Mesh.Triangles.Count)
+            .OrderBy(i => {
+                var triangle = hemisphere.Mesh.Triangles[i];
+                return hemisphere.Mesh.Positions[triangle.A].Z + hemisphere.Mesh.Positions[triangle.B].Z + hemisphere.Mesh.Positions[triangle.C].Z;
+            }).First();
+        string cap = hemisphere.groupIdToExtendedName[hemisphere.Mesh.TrianglesEx[capTriangle].GroupId];
+
+        var result = api.Shell(hemisphere, new List<string> { cap }, thickness, name: "sphereBowl");
+
+        Assert.True(MeshAnalysis.IsWatertightMesh(result.Mesh.PrecisionPositions, result.Mesh.Triangles));
+        var innerSphere = Assert.Single(result.surfaceMetaData, pair =>
+            pair.Key.StartsWith("ShellInner_", StringComparison.Ordinal) && pair.Value.SphereParams != null);
+        Assert.Equal(radius - thickness, innerSphere.Value.SphereParams.Radius, 10);
+        double expected = 2 * Math.PI / 3 * (Math.Pow(radius, 3) - Math.Pow(radius - thickness, 3));
+        Assert.InRange(MeshAnalysis.ComputeSignedMeshVolume(result.Mesh.Positions, result.Mesh.Triangles),
+            expected - 1, expected + 1);
+    }
+
+    [Fact]
+    public void BooleanHemisphere_WithoutSurfaceMetadata_UsesWeldedMeshOffset()
+    {
+        const double radius = 5, thickness = .4;
+        var api = new GeoAPI(new Box3D(new Vec3D(-20), new Vec3D(20)), .01);
+        var sphere = api.CreateSphere(CoordinateSystem.Default, radius, .01, "meshSphere");
+        var clip = api.CreateCuboid(new Vec3D(-10, -10, 0), new Vec3D(10, 10, 10), "meshClip");
+        var hemisphere = api.Boolean(sphere, clip, CSG.BooleanOp.Intersect, "meshHemisphere");
+        hemisphere.EnsureCoplanarPostProcessed();
+        string curvedPatch = hemisphere.surfaceMetaData.Single(pair => pair.Value.SphereParams != null).Key;
+        int capTriangle = Enumerable.Range(0, hemisphere.Mesh.Triangles.Count)
+            .OrderBy(i => {
+                var triangle = hemisphere.Mesh.Triangles[i];
+                return hemisphere.Mesh.Positions[triangle.A].Z + hemisphere.Mesh.Positions[triangle.B].Z + hemisphere.Mesh.Positions[triangle.C].Z;
+            }).First();
+        string cap = hemisphere.groupIdToExtendedName[hemisphere.Mesh.TrianglesEx[capTriangle].GroupId];
+        foreach (string patch in hemisphere.surfaceMetaData.Keys.ToArray())
+            hemisphere.surfaceMetaData[patch] = new SurfaceMetaData(SurfaceType.Unknown);
+
+        var result = api.Shell(hemisphere, new List<string> { cap }, thickness, name: "meshBowl");
+
+        Assert.True(MeshAnalysis.IsWatertightMesh(result.Mesh.PrecisionPositions, result.Mesh.Triangles));
+        string innerName = "ShellInner_" + curvedPatch;
+        Assert.Equal(SurfaceType.Unknown, result.surfaceMetaData[innerName].SurfaceType);
+        Assert.True(result.TryGetSurface(innerName, out var inner));
+        var radii = inner.Triangles.SelectMany(t => new[] { t.A, t.B, t.C }).Distinct()
+            .Select(i => inner.Points[i].Length()).ToArray();
+        Assert.InRange(radii.Min(), radius - thickness - .03, radius - thickness + .03);
+        Assert.InRange(radii.Max(), radius - thickness - .03, radius - thickness + .03);
+    }
+}

@@ -1,6 +1,7 @@
 using CSG;
 using Curves;
 using Geo.NurbsConstruction;
+using Geo.Shelling;
 using GeoCore;
 using GeoMeta;
 using GeoScriptViewer;
@@ -2044,6 +2045,17 @@ Returned mesh has new patches for each chamfer surface (names prefixed ""Chamfer
 
 
             result.Name = name;
+            RegisterMesh(result);
+            return result;
+        }
+
+        [APIDescription(@"Shell(mesh: AnchorMesh, facesToRemove: List[str], thickness: float, maxDeviation: float = -1, name: str = None) -> AnchorMesh
+Hollows a watertight solid inward while keeping the selected opening faces at their original exterior boundary. Uses exact planar, cylindrical, and spherical supports when available, with a welded triangle-normal offset fallback for other or metadata-free patches. Offsets that collapse, invert, or change topology are rejected. Cavity patches are named ShellInner_<source-patch>.")]
+        public AnchorMesh Shell(AnchorMesh mesh, List<string> facesToRemove, double thickness, double maxDeviation = -1, string name = null)
+        {
+            _ = ResolveMaxDeviation(maxDeviation); // Reserved for non-planar adapters.
+            name ??= mesh?.Name;
+            var result = new ShellOperation().Run(this, mesh, facesToRemove, thickness, name);
             RegisterMesh(result);
             return result;
         }
