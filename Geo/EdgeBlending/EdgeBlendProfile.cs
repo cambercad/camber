@@ -16,7 +16,8 @@ namespace Geo
             List<int> cornerIndices,
             CoordinateConverter cc,
             EdgeBlendType blendType,
-            double maxDeviation);
+            double maxDeviation,
+            Vec3D? exactSphereCenter = null);
 
         void AttachPatchNurbs(
             Dictionary<string, SurfaceMetaData> meta,
@@ -42,8 +43,17 @@ namespace Geo
             List<int> cornerIndices,
             CoordinateConverter cc,
             EdgeBlendType blendType,
-            double maxDeviation) =>
-            BlendCorner.TessellateSphereCap(borderLoop, maxDeviation, exactBoundary, cornerIndices, cc, blendType);
+            double maxDeviation,
+            Vec3D? exactSphereCenter = null)
+        {
+            if (!exactSphereCenter.HasValue)
+                return BlendCorner.TessellateSphereCap(borderLoop, maxDeviation, exactBoundary, cornerIndices, cc, blendType);
+            Vec3D centroid = new(0);
+            foreach (var point in borderLoop) centroid += point;
+            centroid /= borderLoop.Count;
+            return BlendCorner.TessellateSphereCap(borderLoop, maxDeviation, exactBoundary, cornerIndices, cc,
+                blendType, exactSphereCenter.Value, OffsetDistance, (centroid - exactSphereCenter.Value).Normalized());
+        }
 
         public void AttachPatchNurbs(
             Dictionary<string, SurfaceMetaData> meta,
@@ -70,7 +80,8 @@ namespace Geo
             List<int> cornerIndices,
             CoordinateConverter cc,
             EdgeBlendType blendType,
-            double maxDeviation) =>
+            double maxDeviation,
+            Vec3D? exactSphereCenter = null) =>
             BlendCorner.TessellatePlanarCap(borderLoop, exactBoundary, cornerIndices, cc, blendType);
 
         public void AttachPatchNurbs(

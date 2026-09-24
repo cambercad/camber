@@ -1,5 +1,6 @@
 using Geo;
 using GeoCore;
+using Geo.Shelling;
 
 namespace GeoTests;
 
@@ -7,6 +8,54 @@ namespace GeoTests;
 public sealed class ShellTests : IDisposable
 {
     public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
+    [Fact]
+    public void AnalyticCorner_ResolvesCylinderGeneratorSharedByTwoPlanes()
+    {
+        var converter = new CoordinateConverter(new Box3D(new Vec3D(-2), new Vec3D(2)));
+        var dummySurface = new UVSurface(
+            new List<Vec3D> { new(1, 0, 0), new(0, 1, 0), new(0, 0, 1) },
+            new List<Vec3D> { new(1, 0, 0), new(0, 1, 0), new(0, 0, 1) },
+            new List<Vec2D> { new(0, 0), new(1, 0), new(0, 1) },
+            new List<Tri> { new(0, 1, 2) });
+        var cylinder = new SurfaceMetaData(SurfaceType.Cylindrical)
+        {
+            CylinderParams = new CylinderSurfaceParams
+            {
+                Origin = new Vec3D(0), Axis = new Vec3D(0, 0, 1),
+                RefDir = new Vec3D(1, 0, 0), Radius = 1, Height = 8
+            }
+        };
+        var xPlane = new SurfaceMetaData(SurfaceType.Planar)
+        {
+            PlaneParams = new PlaneSurfaceParams
+            {
+                Origin = new Vec3D(.6, 0, 0), Normal = new Vec3D(1, 0, 0), RefDir = new Vec3D(0, 1, 0)
+            }
+        };
+        var yPlane = new SurfaceMetaData(SurfaceType.Planar)
+        {
+            PlaneParams = new PlaneSurfaceParams
+            {
+                Origin = new Vec3D(0, .8, 0), Normal = new Vec3D(0, 1, 0), RefDir = new Vec3D(1, 0, 0)
+            }
+        };
+        var registry = ShellSurfaceRegistry.AnalyticV1;
+        var cylinderAdapter = new CylindricalShellSurfaceAdapter();
+        var planarAdapter = new PlanarShellSurfaceAdapter();
+        var supports = new List<IShellSurfaceSupport>
+        {
+            cylinderAdapter.CreateOffsetSupport(cylinder, dummySurface,
+                new Vec3D(1, 0, 0), 0, converter),
+            planarAdapter.CreateOffsetSupport(xPlane, dummySurface,
+                new Vec3D(1, 0, 0), 0, converter),
+            planarAdapter.CreateOffsetSupport(yPlane, dummySurface,
+                new Vec3D(0, 1, 0), 0, converter)
+        };
+
+        Assert.True(registry.TryResolveVertex(-1, new Vec3D(.6, .8, 2), supports, 1e-8, out var point));
+        Assert.InRange((point - new Vec3D(.6, .8, 2)).Length(), 0, 1e-8);
+    }
 
     [Theory]
     [InlineData(false)]
@@ -65,6 +114,32 @@ public sealed class ShellTests : IDisposable
     }
 
     [Fact]
+    public void PlanarCuboid_RoundOutwardJoinsAreWatertightAndInsideSharpOffset()
+    {
+        var api = new GeoAPI(new Box3D(new Vec3D(-20), new Vec3D(20)), .005);
+        var block = api.CreateCuboid(new Vec3D(0, 0, 0), new Vec3D(10, 8, 6), "block");
+        var opening = new List<string> { "block-ExtrudeTop" };
+        var sharp = api.Shell(block, 1, opening, name: "sharp", outward: true);
+        var round = api.Shell(block, 1, opening, maxDeviation: .005, name: "round", outward: true, rounded: true);
+
+        Assert.True(MeshAnalysis.IsWatertightMesh(round.Mesh.PrecisionPositions, round.Mesh.Triangles, true));
+        Assert.Contains(round.extendedNameToGroupId.Keys, patch => patch.StartsWith("BlendEdge_"));
+        Assert.Contains("ShellRim_block-ExtrudeTop", round.extendedNameToGroupId.Keys);
+        double volume = MeshAnalysis.ComputeSignedMeshVolume(round.Mesh.Positions, round.Mesh.Triangles);
+        Assert.InRange(volume, 374, 377);
+        Assert.True(volume < MeshAnalysis.ComputeSignedMeshVolume(sharp.Mesh.Positions, sharp.Mesh.Triangles));
+    }
+
+    [Fact]
+    public void RoundShellRejectsInwardJoinWithoutRegisteringResult()
+    {
+        var api = new GeoAPI(new Box3D(new Vec3D(-20), new Vec3D(20)), .01);
+        var block = api.CreateCuboid(new Vec3D(0, 0, 0), new Vec3D(10, 8, 6), "block");
+        Assert.Throws<NotSupportedException>(() => api.Shell(block, 1, name: "invalid", rounded: true));
+        Assert.Null(api.GetMeshFromName("invalid"));
+    }
+
+    [Fact]
     public void PlanarCuboid_OutwardShellWithAdjacentOpeningsHasNoInternalRim()
     {
         var api = new GeoAPI(new Box3D(new Vec3D(-20), new Vec3D(20)), .001);
@@ -116,6 +191,23 @@ public sealed class ShellTests : IDisposable
 
         Assert.True(MeshAnalysis.IsWatertightMesh(result.Mesh.PrecisionPositions, result.Mesh.Triangles, true));
         Assert.InRange(MeshAnalysis.ComputeSignedMeshVolume(result.Mesh.Positions, result.Mesh.Triangles), 479.99, 480.01);
+    }
+
+    [Fact]
+    public void ConcaveUnion_RoundOutwardShellUsesRoundedOperands()
+    {
+        var api = new GeoAPI(new Box3D(new Vec3D(-20), new Vec3D(20)), .02);
+        var horizontal = api.CreateCuboid(new Vec3D(0, 0, 0), new Vec3D(10, 4, 6), "horizontal");
+        var vertical = api.CreateCuboid(new Vec3D(0, 0, 0), new Vec3D(4, 10, 6), "vertical");
+        var lShape = api.Boolean(horizontal, vertical, CSG.BooleanOp.Union, "lShape");
+
+        var result = api.Shell(lShape, 1, new List<string> { "horizontal-ExtrudeTop" },
+            maxDeviation: .02, outward: true, rounded: true);
+
+        Assert.True(MeshAnalysis.IsWatertightMesh(result.Mesh.PrecisionPositions, result.Mesh.Triangles, true));
+        Assert.True(MeshAnalysis.ComputeSignedMeshVolume(result.Mesh.Positions, result.Mesh.Triangles) > 0);
+        Assert.Contains(result.extendedNameToGroupId.Keys, patch => patch.Contains("BlendEdge_"));
+        Assert.Contains("ShellRim_horizontal-ExtrudeTop", result.extendedNameToGroupId.Keys);
     }
 
     [Fact]

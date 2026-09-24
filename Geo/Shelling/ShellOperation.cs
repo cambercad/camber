@@ -6,11 +6,14 @@ namespace Geo.Shelling;
 
 internal sealed class ShellOperation
 {
-    internal AnchorMesh Run(GeoAPI api, AnchorMesh source, List<string> faces, double thickness, string name, bool outward)
+    internal AnchorMesh Run(GeoAPI api, AnchorMesh source, List<string> faces, double thickness, string name, bool outward,
+        bool rounded, double maxDeviation)
     {
         if (source == null) throw new ArgumentNullException(nameof(source));
         if (!source.IsVolume) throw new ArgumentException("Shell requires a watertight solid volume.", nameof(source));
         if (thickness <= 0 || !double.IsFinite(thickness)) throw new ArgumentOutOfRangeException(nameof(thickness));
+        if (rounded && !outward)
+            throw new NotSupportedException("Round shell joins currently require outward=True; inward joins remain sharp.");
         faces ??= new List<string>();
         source.EnsureCoplanarPostProcessed();
         var selected = new HashSet<int>();
@@ -28,9 +31,7 @@ internal sealed class ShellOperation
             return first;
         }
         double overrun = Math.Max(thickness * 1e-5, api.Converter.SmallestUnit() * 4);
-        var exterior = outward
-            ? ExpandExterior(source)
-            : source;
+        var exterior = outward ? ExpandExterior(source) : source;
         AnchorMesh cavity;
         if (outward)
             cavity = selected.Count == 0 ? source
@@ -80,52 +81,88 @@ internal sealed class ShellOperation
         AnchorMesh ExpandExterior(AnchorMesh solid)
         {
             solid.EnsureCoplanarPostProcessed();
+            // Dilation distributes over union. Rounding each operand first
+            // also constructs the reentrant arc at a union seam by exact CSG.
+            if (rounded && solid.UnionOperands != null)
+                return ExpandUnion(solid);
             try
             {
-                return builder.BuildOffset(solid, new HashSet<int>(), -thickness, 0,
+                var sharp = builder.BuildOffset(solid, new HashSet<int>(), -thickness, 0,
                     ReserveGroups(solid.groupIdToExtendedName.Count), exterior: true);
+                return rounded ? RoundExterior(solid, sharp) : sharp;
             }
             catch (ArgumentException ex) when (solid.UnionOperands != null &&
                 ex.Message.StartsWith("Shell offset changes topology or uses an unsupported surface junction", StringComparison.Ordinal))
             {
-                var (first, second) = solid.UnionOperands.Value;
-                // Union operands may have been moved or edited since this solid
-                // was created. Recheck their set equality before using history.
-                var rebuilt = MeshNormalUV.BooleanOperation(first.Mesh, second.Mesh, BooleanOp.Union, api.Converter);
-                double unit = api.Converter.SmallestUnit();
-                double tolerance = 8 * unit * unit * unit;
-                foreach (var (left, right) in new[] { (solid.Mesh, rebuilt), (rebuilt, solid.Mesh) })
-                {
-                    var difference = MeshNormalUV.BooleanOperation(left, right, BooleanOp.Subtract, api.Converter);
-                    double volume = MeshAnalysis.ComputeSignedMeshVolume(difference.Positions, difference.Triangles);
-                    if (!double.IsFinite(volume) || Math.Abs(volume) > tolerance)
-                        throw new InvalidOperationException("Shell union operands no longer match the source solid.");
-                }
-                var a = ExpandExterior(first);
-                var b = ExpandExterior(second);
-                var united = MeshNormalUV.BooleanOperation(a.Mesh, b.Mesh, BooleanOp.Union, api.Converter);
-                if (!MeshAnalysis.IsWatertightMesh(united.PrecisionPositions, united.Triangles, true) ||
-                    MeshAnalysis.ComputeSignedMeshVolume(united.Positions, united.Triangles) <= 0)
-                    throw new InvalidOperationException("Shell expanded union is not watertight.");
-                var used = united.TrianglesEx.Select(t => t.GroupId).ToHashSet();
-                var groups = new Dictionary<int, string>();
-                var metadata = new Dictionary<string, SurfaceMetaData>();
-                void Add(AnchorMesh operand, AnchorMesh expanded)
-                {
-                    foreach (var (id, patch) in expanded.groupIdToExtendedName)
-                    {
-                        if (!used.Contains(id)) continue;
-                        string canonical = operand.extendedNameToGroupId.TryGetValue(patch, out int originalId) &&
-                            solid.groupIdToExtendedName.TryGetValue(originalId, out string mapped) ? mapped : patch;
-                        groups.Add(id, canonical);
-                        metadata.Add(canonical, expanded.surfaceMetaData[patch].Clone());
-                    }
-                }
-                Add(first, a);
-                Add(second, b);
-                return new AnchorMesh(solid.Name + "_shellOffset", united, groups, metadata,
-                    deferCoplanarPostProcess: true, isVolume: true);
+                return ExpandUnion(solid);
             }
+        }
+
+        AnchorMesh ExpandUnion(AnchorMesh solid)
+        {
+            var (first, second) = solid.UnionOperands.Value;
+            // Recheck historical operands: they may have been moved or edited.
+            var rebuilt = MeshNormalUV.BooleanOperation(first.Mesh, second.Mesh, BooleanOp.Union, api.Converter);
+            double unit = api.Converter.SmallestUnit();
+            double tolerance = 8 * unit * unit * unit;
+            foreach (var (left, right) in new[] { (solid.Mesh, rebuilt), (rebuilt, solid.Mesh) })
+            {
+                var difference = MeshNormalUV.BooleanOperation(left, right, BooleanOp.Subtract, api.Converter);
+                double volume = MeshAnalysis.ComputeSignedMeshVolume(difference.Positions, difference.Triangles);
+                if (!double.IsFinite(volume) || Math.Abs(volume) > tolerance)
+                    throw new InvalidOperationException("Shell union operands no longer match the source solid.");
+            }
+            var a = ExpandExterior(first);
+            var b = ExpandExterior(second);
+            var united = MeshNormalUV.BooleanOperation(a.Mesh, b.Mesh, BooleanOp.Union, api.Converter);
+            if (!MeshAnalysis.IsWatertightMesh(united.PrecisionPositions, united.Triangles, true) ||
+                MeshAnalysis.ComputeSignedMeshVolume(united.Positions, united.Triangles) <= 0)
+                throw new InvalidOperationException("Shell expanded union is not watertight.");
+            var used = united.TrianglesEx.Select(t => t.GroupId).ToHashSet();
+            var groups = new Dictionary<int, string>();
+            var metadata = new Dictionary<string, SurfaceMetaData>();
+            void Add(AnchorMesh operand, AnchorMesh expanded)
+            {
+                foreach (var (id, patch) in expanded.groupIdToExtendedName)
+                {
+                    if (!used.Contains(id)) continue;
+                    string canonical = operand.extendedNameToGroupId.TryGetValue(patch, out int originalId) &&
+                        solid.groupIdToExtendedName.TryGetValue(originalId, out string mapped)
+                        ? mapped : rounded ? operand.Name + "_" + patch : patch;
+                    groups.Add(id, canonical);
+                    metadata.Add(canonical, expanded.surfaceMetaData[patch].Clone());
+                }
+            }
+            Add(first, a);
+            Add(second, b);
+            return new AnchorMesh(solid.Name + "_shellOffset", united, groups, metadata,
+                deferCoplanarPostProcess: true, isVolume: true);
+        }
+
+        AnchorMesh RoundExterior(AnchorMesh original, AnchorMesh solid)
+        {
+            solid.EnsureCoplanarPostProcessed();
+            var edges = solid.GroupEdges.Select(edge => edge.Name).ToList();
+            if (edges.Count == 0) return solid;
+            int groupIdOffset = GeoAPI.GetBaseGroupIndex();
+            var result = new EdgeBlending().BlendEdges(solid, edges, thickness, api.Converter,
+                maxDeviation, ref groupIdOffset, GeoAPI.ReserveGroupIds);
+            if (!MeshAnalysis.IsWatertightMesh(result.Mesh.PrecisionPositions, result.Mesh.Triangles, true))
+                throw new InvalidOperationException("Round shell exterior is not watertight.");
+            // A round outward offset must lie between the original solid and
+            // its sharp (mitered) offset. Concave fillets can add material
+            // outside that envelope, so reject them rather than mislabeling
+            // the result as a true round offset.
+            double unit = api.Converter.SmallestUnit();
+            double tolerance = 8 * unit * unit * unit;
+            foreach (var (left, right) in new[] { (original.Mesh, result.Mesh), (result.Mesh, solid.Mesh) })
+            {
+                var escaped = MeshNormalUV.BooleanOperation(left, right, BooleanOp.Subtract, api.Converter);
+                double volume = MeshAnalysis.ComputeSignedMeshVolume(escaped.Positions, escaped.Triangles);
+                if (!double.IsFinite(volume) || Math.Abs(volume) > tolerance)
+                    throw new NotSupportedException("Round shell joins cannot be constructed for this exterior; use sharp joins.");
+            }
+            return result;
         }
     }
 }

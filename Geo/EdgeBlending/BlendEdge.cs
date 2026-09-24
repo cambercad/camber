@@ -167,6 +167,60 @@ namespace Geo
             return true;
         }
 
+        internal bool AnchorCorner(int cornerId, Rat3Hybrid center, Rat3Hybrid contactA, Rat3Hybrid contactB)
+        {
+            Vec3D node = cornerId == StartCornerId ? SourceEdge.StartNode.Position : SourceEdge.EndNode.Position;
+            bool first = (CenterCurveVec3[0] - node).LengthSquared() <
+                         (CenterCurveVec3[^1] - node).LengthSquared();
+            int index = CenterCurve.FindIndex(point => point == center);
+            bool onVertex = index >= 0;
+            if (!onVertex)
+            {
+                index = -1;
+                for (int i = 0; i + 1 < CenterCurve.Count; i++)
+                    if (PointOnBoundarySegment(CenterCurve[i], CenterCurve[i + 1], center))
+                    {
+                        index = i;
+                        break;
+                    }
+            }
+            if (index < 0)
+                throw new InvalidOperationException(
+                    $"Fillet edge '{SourceEdge.Name}' does not pass through its exact corner support intersection.");
+
+            int before = first ? (onVertex ? index : index + 1) : 0;
+            int after = first ? CenterCurve.Count : index + 1;
+            var centers = CenterCurve.GetRange(before, after - before);
+            var railA = ProjectedBoundaryCurveA.GetRange(before, after - before);
+            var railB = ProjectedBoundaryCurveB.GetRange(before, after - before);
+            if (first)
+            {
+                if (onVertex) { centers[0] = center; railA[0] = contactA; railB[0] = contactB; }
+                else { centers.Insert(0, center); railA.Insert(0, contactA); railB.Insert(0, contactB); }
+            }
+            else
+            {
+                if (onVertex) { centers[^1] = center; railA[^1] = contactA; railB[^1] = contactB; }
+                else { centers.Add(center); railA.Add(contactA); railB.Add(contactB); }
+            }
+            if (centers.Count < 2)
+                throw new InvalidOperationException($"Fillet edge '{SourceEdge.Name}' collapses at its exact corner junction.");
+            CenterCurve = centers;
+            ProjectedBoundaryCurveA = railA;
+            ProjectedBoundaryCurveB = railB;
+            CenterCurveVec3 = cc.Convert(centers);
+            ProjectedBoundaryCurveAVec3D = cc.Convert(railA);
+            ProjectedBoundaryCurveBVec3D = cc.Convert(railB);
+            return first;
+        }
+
+        internal void RegisterCornerArc(bool first)
+        {
+            int rowLength = RawSurface.PointsPrecise.Count / CenterCurve.Count;
+            int offset = first ? 0 : RawSurface.PointsPrecise.Count - rowLength;
+            TrimArcs.Add(RawSurface.PointsPrecise.GetRange(offset, rowLength));
+        }
+
         /// <summary>
         /// Build a fillet strip surface from precomputed spine and boundary curves.
         /// </summary>
@@ -1144,7 +1198,7 @@ namespace Geo
             
             if (nonZeroCount == 0)
             {
-                throw new Exception("No cluster found connected to boundary curves");
+                throw new InvalidOperationException($"Fillet edge '{SourceEdge.Name}' has no trimmed cluster connected to its boundary curves.");
             }
             
             if (nonZeroCount > 1)

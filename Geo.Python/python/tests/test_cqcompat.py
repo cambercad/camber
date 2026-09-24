@@ -327,6 +327,24 @@ class NativeWorkplaneTests(unittest.TestCase):
         bottle_points, _ = bottle.val().mesh()
         self.assertAlmostEqual(32.0, max(point.z for point in bottle_points), delta=0.01)
 
+    def test_classic_bottle_round_shell_joins_curved_and_planar_sides(self):
+        body = (Workplane("XY", size=50, tolerance=0.01).center(-10, 0).vLine(3)
+                .threePointArc((10, 9), (20, 3)).vLine(-3).mirrorX()
+                .extrude(30.0, True))
+        bottle = (body.faces(">Z").workplane(centerOption="CenterOfMass")
+                  .circle(3.0).extrude(2.0, True))
+        shell = bottle.faces(">Z").shell(0.3, kind="arc").val()
+        self.assertTrue(shell.is_watertight())
+        self.assertGreater(shell.volume(), 0)
+        self.assertTrue(any("BlendCorner_" in name for name in shell.patch_names))
+
+    def test_round_shell_on_concave_union(self):
+        arm = Workplane("XY", size=20, tolerance=0.02).box(6, 2, 3)
+        leg = Workplane("XY", size=20, tolerance=0.02).box(2, 6, 3).translate((2, 2, 0))
+        shell = arm.union(leg).shell(0.2, kind="arc").val()
+        self.assertTrue(shell.is_watertight())
+        self.assertGreater(shell.volume(), 0)
+
     def test_closed_inward_shell_bridge(self):
         block = Workplane("XY", size=20, tolerance=0.01).box(2, 2, 2)
         result = block.shell(-0.1)
@@ -346,6 +364,15 @@ class NativeWorkplaneTests(unittest.TestCase):
         self.assertTrue(any("ShellRim_" in name for name in opened.val().patch_names))
         self.assertAlmostEqual(block.part.shell(block.val(), 0.1, outward=True).volume(),
                                closed.val().volume(), delta=1e-6)
+
+    def test_round_outward_shell_bridge(self):
+        block = Workplane("XY", size=20, tolerance=0.01).box(2, 2, 2)
+        sharp = block.faces(">Z").shell(0.1)
+        rounded = block.faces(">Z").shell(0.1, kind="arc")
+        self.assertTrue(rounded.val().is_watertight())
+        self.assertLess(rounded.val().volume(), sharp.val().volume())
+        self.assertTrue(any("BlendEdge_" in name for name in rounded.val().patch_names))
+        self.assertTrue(any("ShellRim_" in name for name in rounded.val().patch_names))
 
     def test_part_shell_optional_faces(self):
         block = Workplane("XY", size=20, tolerance=0.01).box(2, 2, 2)

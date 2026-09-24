@@ -7,6 +7,64 @@ namespace Geo
 {
     public static class BlendCorner
     {
+        internal static UVSurface PlaneCoveringSurface(UVSurface target, Rat3Hybrid origin,
+            Rat3Hybrid normal, CoordinateConverter converter)
+        {
+            if (target == null) throw new ArgumentNullException(nameof(target));
+            if (normal == new Rat3Hybrid(0, 0, 0)) throw new ArgumentException("Plane normal must be nonzero.", nameof(normal));
+            if (target.Triangles.Count == 0) throw new ArgumentException("Target surface must contain triangles.", nameof(target));
+
+            int dropped = 0;
+            for (int axis = 1; axis < 3; axis++)
+                if (Math.Abs(normal[axis].ToDouble()) > Math.Abs(normal[dropped].ToDouble())) dropped = axis;
+            int x = (dropped + 1) % 3, y = (dropped + 2) % 3;
+            var usedIndices = new HashSet<int>();
+            int firstIndex = -1;
+            foreach (var triangle in target.Triangles)
+            {
+                if (firstIndex < 0) firstIndex = triangle.A;
+                usedIndices.Add(triangle.A);
+                usedIndices.Add(triangle.B);
+                usedIndices.Add(triangle.C);
+            }
+            if (usedIndices.Count == 0) throw new ArgumentException("Target surface has no referenced vertices.", nameof(target));
+            var margin = new BigRationalHybrid(converter.ConvertDirection(new Vec3D(converter.SmallestUnit(), 0, 0)).X);
+            if (margin.Sign() == 0) margin = BigRationalHybrid.One;
+            var first = target.PointsPrecise[firstIndex];
+            var minX = first[x]; var maxX = first[x];
+            var minY = first[y]; var maxY = first[y];
+            foreach (int index in usedIndices)
+            {
+                var point = target.PointsPrecise[index];
+                if (point[x] < minX) minX = point[x];
+                if (point[x] > maxX) maxX = point[x];
+                if (point[y] < minY) minY = point[y];
+                if (point[y] > maxY) maxY = point[y];
+            }
+            minX -= margin; maxX += margin;
+            minY -= margin; maxY += margin;
+            var planeD = Rat3Hybrid.Dot(normal, origin);
+            Rat3Hybrid Point(BigRationalHybrid a, BigRationalHybrid b)
+            {
+                var coordinates = new BigRationalHybrid[3];
+                coordinates[x] = a;
+                coordinates[y] = b;
+                coordinates[dropped] = (planeD - normal[x] * a - normal[y] * b) / normal[dropped];
+                var point = new Rat3Hybrid(coordinates[0], coordinates[1], coordinates[2]);
+                point.Simplify();
+                return point;
+            }
+            var points = new List<Rat3Hybrid> { Point(minX, minY), Point(maxX, minY),
+                Point(maxX, maxY), Point(minX, maxY) };
+            var triangles = new List<Tri> { new(0, 1, 2), new(0, 2, 3) };
+            if (normal[dropped].Sign() < 0)
+                triangles = new List<Tri> { new(0, 2, 1), new(0, 3, 2) };
+            var direction = new Vec3D(normal.X.ToDouble(), normal.Y.ToDouble(), normal.Z.ToDouble()).Normalized();
+            var normals = new List<Vec3D> { direction, direction, direction, direction };
+            return new UVSurface(converter.Convert(points), normals,
+                new List<Vec2D> { new(0, 0), new(1, 0), new(1, 1), new(0, 1) }, triangles, points);
+        }
+
         public static UVSurface TessellateSphereCap(List<Vec3D> borderLoop, double maxDeviation, List<Rat3Hybrid> exactBoundary, List<int> cornerIndices, CoordinateConverter cc, EdgeBlendType blendType)
         {
             SphereFitter.FitSphere(borderLoop, out var sphereCenter, out var cornerRadius);
@@ -198,7 +256,7 @@ namespace Geo
         /// </summary>
         // The connector may traverse a corner loop either way. Shared exact
         // boundary edges determine winding; fitted plane normals cannot.
-        internal static void OrientToNeighbours(UVSurface patch, IEnumerable<UVSurface> neighbours)
+        internal static void OrientBlendPatches(IReadOnlyList<UVSurface> surfaces)
         {
             static IEnumerable<(Rat3Hybrid Start, Rat3Hybrid End)> Boundary(UVSurface surface)
             {
@@ -215,27 +273,71 @@ namespace Geo
                 }
             }
 
-            var boundary = Boundary(patch).ToHashSet();
-            bool? reverse = null;
-            foreach (var neighbour in neighbours)
-                foreach (var edge in Boundary(neighbour))
-                {
-                    bool same = boundary.Contains(edge);
-                    if (!same && !boundary.Contains((edge.End, edge.Start))) continue;
-                    if (reverse.HasValue && reverse.Value != same)
-                        throw new InvalidOperationException("Corner patch neighbours have inconsistent boundary orientation.");
-                    reverse = same;
-                }
-            if (!reverse.HasValue)
-                throw new InvalidOperationException("Corner patch has no exact shared boundary with its neighbouring strips.");
-            if (!reverse.Value) return;
-            for (int i = 0; i < patch.Triangles.Count; i++)
+            static int Compare(Rat3Hybrid a, Rat3Hybrid b)
             {
-                var triangle = patch.Triangles[i];
-                patch.Triangles[i] = new Tri(triangle.A, triangle.C, triangle.B);
+                int result = a.X.CompareTo(b.X);
+                if (result != 0) return result;
+                result = a.Y.CompareTo(b.Y);
+                return result != 0 ? result : a.Z.CompareTo(b.Z);
             }
-            for (int i = 0; i < patch.Normals.Count; i++)
-                patch.Normals[i] = -patch.Normals[i];
+
+            var uses = new Dictionary<(Rat3Hybrid A, Rat3Hybrid B), List<(int Surface, bool Forward)>>();
+            for (int surfaceId = 0; surfaceId < surfaces.Count; surfaceId++)
+                foreach (var edge in Boundary(surfaces[surfaceId]))
+                {
+                    bool forward = Compare(edge.Start, edge.End) < 0;
+                    var key = forward ? (edge.Start, edge.End) : (edge.End, edge.Start);
+                    if (!uses.TryGetValue(key, out var list)) uses.Add(key, list = new());
+                    list.Add((surfaceId, forward));
+                }
+
+            var links = new List<(int Other, bool Flip)>[surfaces.Count];
+            for (int i = 0; i < links.Length; i++) links[i] = new();
+            foreach (var use in uses.Values)
+            {
+                if (use.Count < 2) continue;
+                if (use.Count != 2)
+                    throw new InvalidOperationException("Blend patches have a non-manifold shared boundary.");
+                bool flip = use[0].Forward == use[1].Forward;
+                links[use[0].Surface].Add((use[1].Surface, flip));
+                links[use[1].Surface].Add((use[0].Surface, flip));
+            }
+            int[] orientation = new int[surfaces.Count];
+            Array.Fill(orientation, -1);
+            for (int root = 0; root < surfaces.Count; root++)
+            {
+                if (orientation[root] >= 0 || links[root].Count == 0) continue;
+                orientation[root] = 0;
+                var queue = new Queue<int>();
+                queue.Enqueue(root);
+                while (queue.Count > 0)
+                {
+                    int current = queue.Dequeue();
+                    foreach (var link in links[current])
+                    {
+                        int required = orientation[current] ^ (link.Flip ? 1 : 0);
+                        if (orientation[link.Other] < 0)
+                        {
+                            orientation[link.Other] = required;
+                            queue.Enqueue(link.Other);
+                        }
+                        else if (orientation[link.Other] != required)
+                            throw new InvalidOperationException("Blend patch junction is not orientable.");
+                    }
+                }
+            }
+
+            for (int surfaceId = 0; surfaceId < surfaces.Count; surfaceId++)
+                if (orientation[surfaceId] == 1)
+                {
+                    var surface = surfaces[surfaceId];
+                    for (int i = 0; i < surface.Triangles.Count; i++)
+                    {
+                        var triangle = surface.Triangles[i];
+                        surface.Triangles[i] = new Tri(triangle.A, triangle.C, triangle.B);
+                    }
+                    for (int i = 0; i < surface.Normals.Count; i++) surface.Normals[i] = -surface.Normals[i];
+                }
         }
 
         public static UVSurface TessellatePlanarCap(

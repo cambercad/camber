@@ -1637,7 +1637,7 @@ class Part(object):
         return Solid(_require(self._n, "chamfer")(
             solid._n, _join_names(edges), float(distance), float(max_deviation), _name(name)), self)
 
-    def shell(self, solid, thickness, faces=None, name=None, max_deviation=-1, outward=False):
+    def shell(self, solid, thickness, faces=None, name=None, max_deviation=-1, outward=False, join="sharp"):
         """Hollow a solid inward, or expand it with ``outward=True``.
 
         Inward shelling keeps exterior dimensions and opening boundaries fixed. Planar,
@@ -1646,12 +1646,14 @@ class Part(object):
         inverted, or unsupported topology-changing offsets fail explicitly;
         union seams may be rebuilt from their operands with CSG. Cavity faces
         are selectable as ``ShellInner_<source-patch>``. Without ``faces``, the
-        cavity is fully enclosed. Outward joins are sharp; rounded/arc joins
-        are not yet supported. A later fillet is possible but need not match
-        a rounded shell offset.
+        cavity is fully enclosed. ``join="round"`` rounds outward joins with
+        radius equal to the thickness; sharp joins remain the default. Inward
+        round joins and unsupported concave offset corners fail explicitly.
         """
+        if join not in ("sharp", "round"):
+            raise ValueError("join must be 'sharp' or 'round'")
         return Solid(_require(self._n, "shell")(
-            solid._n, float(thickness), _join_names(faces or []), float(max_deviation), _name(name), bool(outward)), self)
+            solid._n, float(thickness), _join_names(faces or []), float(max_deviation), _name(name), bool(outward), join == "round"), self)
 
     def solid(self, name):
         """Look up a Solid or Surface already registered on this part, or None."""

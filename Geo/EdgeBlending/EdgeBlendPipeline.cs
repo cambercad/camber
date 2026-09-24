@@ -2,6 +2,7 @@
 #pragma warning disable CS8625 // Cannot convert null literal to non-nullable reference type
 
 using GeoCore;
+using Geo.Shelling;
 
 namespace Geo
 {
@@ -466,6 +467,7 @@ namespace Geo
 
             blendEdges = CreateBlendEdges(graphEdgesToBlend, profile.OffsetDistance);
             originalSurfaces = GetOriginalSurfaces(blendTopology, blendEdges);
+            var analyticCorners = FindAnalyticCorners(mesh, graphEdgesToBlend, profile.OffsetDistance, cc);
 
             Dictionary<int, UVSurface> openCornerTrimSurfaces = new Dictionary<int, UVSurface>();
             Dictionary<int, SurfaceMetaData> openCornerTrimSurfacesMetaData = new Dictionary<int, SurfaceMetaData>();
@@ -519,7 +521,7 @@ namespace Geo
                 ref groupIdOffset,
                 openCornerTrimSurfaces,
                 openCornerTrimSurfacesMetaData, collapsedContacts, collapsedSurfaces,
-                FindClosedSupportCaps(blendEdges), out var patches, allocateGroupIds);
+                FindClosedSupportCaps(blendEdges), analyticCorners, out var patches, allocateGroupIds);
             int startingGroupId = groupIdOffset - patches.Count;
 
             Dictionary<int, string> completeGroupMapping = new Dictionary<int, string>(mesh.groupIdToExtendedName);
@@ -639,6 +641,54 @@ namespace Geo
                 result.Add(blendEdge);
             }
             return result;
+        }
+
+        // Three supports define one corner. Pairwise fillet construction does not
+        // imply a common endpoint: compute one triple-support junction and reuse
+        // it on every incident strip. The current analytic resolver is limited to
+        // one cylinder meeting two planes; other junction kinds use the normal path.
+        private static Dictionary<int, (Vec3D Center, HashSet<int> Groups)> FindAnalyticCorners(
+            AnchorMesh mesh, List<GraphEdge> edges, double radius, CoordinateConverter cc)
+        {
+            var answer = new Dictionary<int, (Vec3D, HashSet<int>)>();
+            var selected = edges.Select(edge => edge.Name).ToHashSet(StringComparer.Ordinal);
+            var registry = ShellSurfaceRegistry.AnalyticV1;
+            foreach (var node in edges.SelectMany(edge => new[] { edge.StartNode, edge.EndNode }).Distinct())
+            {
+                if (node.ConnectedEdges.Count(edge => selected.Contains(edge.Name)) != 3) continue;
+                // This adapter's positive distance means inward, matching the
+                // profile offset used when the blend spine is constructed.
+                double offset = node.ConnectedEdges.First(edge => selected.Contains(edge.Name)).BlendType == EdgeBlendType.Convex
+                    ? radius : -radius;
+                var groups = node.ConnectedEdges.SelectMany(edge => new[] { edge.GroupIdA, edge.GroupIdB }).ToHashSet();
+                if (groups.Count != 3) continue;
+                int cylinderCount = 0, planeCount = 0;
+                foreach (int group in groups)
+                {
+                    var meta = mesh.surfaceMetaData[mesh.groupIdToExtendedName[group]];
+                    if (meta.CylinderParams != null) cylinderCount++;
+                    else if (meta.PlaneParams != null) planeCount++;
+                }
+                if (cylinderCount != 1 || planeCount != 2) continue;
+                var supports = new List<IShellSurfaceSupport>();
+                foreach (int id in groups)
+                {
+                    string patch = mesh.groupIdToExtendedName[id];
+                    if (!mesh.TryGetTopologySurface(patch, out var surface)) { supports.Clear(); break; }
+                    var meta = mesh.surfaceMetaData[patch];
+                    int index = mesh.Mesh.TrianglesEx.FindIndex(triangle => triangle.GroupId == id);
+                    if (index < 0) { supports.Clear(); break; }
+                    var triangle = mesh.Mesh.Triangles[index];
+                    var normal = Vec3DOps.Cross(mesh.Mesh.Positions[triangle.B] - mesh.Mesh.Positions[triangle.A],
+                        mesh.Mesh.Positions[triangle.C] - mesh.Mesh.Positions[triangle.A]).Normalized();
+                    var adapter = registry.Resolve(meta, surface, offset);
+                    if (adapter == null) { supports.Clear(); break; }
+                    supports.Add(adapter.CreateOffsetSupport(meta, surface, normal, offset, cc));
+                }
+                if (supports.Count == 3 && registry.TryResolveVertex(-1, node.Position, supports, 1e-8, out var center))
+                    answer[node.Id] = (center, groups);
+            }
+            return answer;
         }
 
         private static Dictionary<int, UVSurface> GetOriginalSurfaces(AnchorMesh mesh, List<BlendEdge> blendEdges)
@@ -781,6 +831,7 @@ namespace Geo
             Dictionary<BlendEdge, List<Rat3Hybrid>> collapsedContacts,
             HashSet<int> collapsedSurfaces,
             Dictionary<BlendEdge,List<(UVSurface Surface,SurfaceMetaData Metadata)>> closedSupportCaps,
+            Dictionary<int, (Vec3D Center, HashSet<int> Groups)> analyticCorners,
             out List<(string Name, SurfaceMetaData Metadata)> patches,
             Func<int, int> allocateGroupIds)
         {
@@ -799,6 +850,31 @@ namespace Geo
                 var extendedAndOffsetSurface = extendedSurface.GetOffsetSurface(offset, cc);
                 allElargedSurfaces.Add(v.Key, extendedSurface);
                 allElargedOffsetSurfaces.Add(v.Key, extendedAndOffsetSurface);
+            }
+
+            // Intersections below are exact in the kernel's rational triangle
+            // representation, not on the underlying continuous curved surface.
+            // Project the common offset point back to each source support once;
+            // independently recomputing pairwise contacts is what creates seams.
+            var exactCorners = new Dictionary<int, (Rat3Hybrid Center, Dictionary<int, Rat3Hybrid> Contacts)>();
+            foreach (var (cornerId, corner) in analyticCorners)
+            {
+                int[] groups = corner.Groups.OrderBy(id => id).ToArray();
+                if (groups.Length == 3 && TryTripleSupportIntersection(
+                    allElargedOffsetSurfaces[groups[0]], allElargedOffsetSurfaces[groups[1]],
+                    allElargedOffsetSurfaces[groups[2]], corner.Center, cc, out var point))
+                {
+                    var contacts = new Dictionary<int, Rat3Hybrid>(3);
+                    foreach (int group in groups)
+                    {
+                        if (!TryProjectOffsetContact(allElargedOffsetSurfaces[group],
+                            allElargedSurfaces[group], point, out var contact))
+                            throw new InvalidOperationException(
+                                $"Fillet corner {cornerId} has no exact contact on support {group}.");
+                        contacts.Add(group, contact);
+                    }
+                    exactCorners.Add(cornerId, (point, contacts));
+                }
             }
 
             Dictionary<int, UVSurface> extendedOpenCornerTrimSurfaces = new Dictionary<int, UVSurface>();
@@ -839,7 +915,14 @@ namespace Geo
                         extendedAndOffsetSurfaceA, extendedAndOffsetSurfaceB, cc))
                     continue;
 
+                var anchoredEnds = new List<bool>(2);
+                foreach (int cornerId in new[] { blendEdge.StartCornerId, blendEdge.EndCornerId }.Distinct())
+                    if (exactCorners.TryGetValue(cornerId, out var corner))
+                        anchoredEnds.Add(blendEdge.AnchorCorner(cornerId, corner.Center,
+                            corner.Contacts[blendEdge.SurfaceIndexA], corner.Contacts[blendEdge.SurfaceIndexB]));
+
                 profile.BuildStripSurface(blendEdge, cc, maxDiscretizationDeviation);
+                foreach (bool first in anchoredEnds) blendEdge.RegisterCornerArc(first);
 
 
                 foreach (var v in allElargedOffsetSurfaces)
@@ -847,13 +930,37 @@ namespace Geo
                     var surfId = v.Key;
                     if (collapsedSurfaces.Contains(surfId) || surfId == blendEdge.SurfaceIndexA || surfId == blendEdge.SurfaceIndexB)
                         continue;
-                    blendEdge.TrimByOffsetSurface(blendEdge.PerpendicularCornerTrimSurface(v.Value));
+                    if ((analyticCorners.TryGetValue(blendEdge.StartCornerId, out var startCorner) && startCorner.Groups.Contains(surfId)) ||
+                        (analyticCorners.TryGetValue(blendEdge.EndCornerId, out var endCorner) && endCorner.Groups.Contains(surfId)))
+                        continue;
+                    try { blendEdge.TrimByOffsetSurface(blendEdge.PerpendicularCornerTrimSurface(v.Value)); }
+                    catch (Exception ex)
+                    {
+                        throw new InvalidOperationException($"Fillet edge '{blendEdge.SourceEdge.Name}' failed trimming by support {surfId}; analytic corners {analyticCorners.Count}.", ex);
+                    }
                 }
+
+                foreach (int cornerId in new[] { blendEdge.StartCornerId, blendEdge.EndCornerId }.Distinct())
+                    if (analyticCorners.TryGetValue(cornerId, out var corner) && !exactCorners.ContainsKey(cornerId))
+                    {
+                        try
+                        {
+                            blendEdge.TrimByOffsetSurface(CornerCutPlane(blendEdge, corner.Center, cornerId,
+                                cc));
+                        }
+                        catch (Exception ex)
+                        {
+                            throw new InvalidOperationException($"Fillet corner {cornerId} on '{blendEdge.SourceEdge.Name}' could not be trimmed at {corner.Center}; spine {blendEdge.CenterCurveVec3[0]} to {blendEdge.CenterCurveVec3[^1]}.", ex);
+                        }
+                    }
 
                 if (blendEdge.BlendType == EdgeBlendType.Convex)
                 {
                     blendEdge.TrimBySurface(extendedOpenCornerTrimSurfaces, extensionOnlyOpenCornerTrimSurfaces);
-                    blendEdge.TrimByVolume(fullMesh, cc);
+                    // Keep analytic-junction strips complete so their shared
+                    // corner boundary is assembled before the final volume cut.
+                    if (analyticCorners.Count == 0)
+                        blendEdge.TrimByVolume(fullMesh, cc);
                 }
                 else
                     blendEdge.TrimBySurface(extendedOpenCornerTrimSurfaces, extensionOnlyOpenCornerTrimSurfaces);
@@ -890,10 +997,12 @@ namespace Geo
             }
 
             List<List<Rat3Hybrid>> edgeTerminationArcs = new List<List<Rat3Hybrid>>();
+            var arcOwners = new List<string>();
             foreach (var e in blendEdges)
             {
                 e.RefreshTrimArcs();
                 edgeTerminationArcs.AddRange(e.TrimArcs);
+                arcOwners.AddRange(Enumerable.Repeat(e.SourceEdge.Name, e.TrimArcs.Count));
             }
 
             var res = SegmentConnector.Connect(
@@ -910,18 +1019,47 @@ namespace Geo
                 {
                     if (!closed[i])
                     {
-                        throw new InvalidOperationException("Spherical corner boundary arcs are disconnected.");
+                        string owners = string.Join(", ", res[i].Select(index => arcOwners[index]).Distinct());
+                        throw new InvalidOperationException(
+                            $"Spherical corner boundary arcs did not form a closed loop (source edges: {owners}).");
                     }
 
                     List<Rat3Hybrid> cornerOutline = Resolve(res[i], edgeTerminationArcs, out var cornerIndices);
                     List<Vec3D> cornerOutlineV3 = cc.Convert(cornerOutline);
 
+                    Vec3D? exactSphereCenter = null;
+                    if (analyticCorners.Count > 0)
+                    {
+                        Vec3D centroid = new(0);
+                        foreach (var point in cornerOutlineV3) centroid += point;
+                        centroid /= cornerOutlineV3.Count;
+                        double closestDistance = double.PositiveInfinity;
+                        foreach (var (cornerId, analyticCorner) in analyticCorners)
+                        {
+                            Vec3D center = exactCorners.TryGetValue(cornerId, out var exact)
+                                ? cc.Convert(exact.Center) : analyticCorner.Center;
+                            double distance = (center - centroid).LengthSquared();
+                            if (distance < closestDistance)
+                            {
+                                closestDistance = distance;
+                                exactSphereCenter = center;
+                            }
+                        }
+                        if (closestDistance > 9 * profile.OffsetDistance * profile.OffsetDistance)
+                            exactSphereCenter = null;
+                    }
+
                     var corner = profile.BuildCornerPatch(
-                        cornerOutlineV3, cornerOutline, cornerIndices, cc, blendType, maxDiscretizationDeviation);
-                    BlendCorner.OrientToNeighbours(corner, allSurfaces);
+                        cornerOutlineV3, cornerOutline, cornerIndices, cc, blendType, maxDiscretizationDeviation,
+                        exactSphereCenter);
                     // Tessellation near a chordal support can extend outside
                     // the source shell. Clip corners just as the strips are clipped.
-                    if (blendType == EdgeBlendType.Convex)
+                    // Exact analytic rolling-ball corners are already bounded
+                    // by their common support intersection. Clipping their
+                    // open tessellated caps through the volume can be partial
+                    // by construction; the caller still checks the final
+                    // rounded solid against the sharp offset envelope.
+                    if (blendType == EdgeBlendType.Convex && analyticCorners.Count == 0)
                     {
                         var cornerMesh = BlendEdge.ToMesh(corner, cc);
                         var clippedCorner = MeshNormalUV.BooleanOperation(cornerMesh, fullMesh,
@@ -936,10 +1074,230 @@ namespace Geo
                 }
             }
 
+            BlendCorner.OrientBlendPatches(allSurfaces);
+            ValidateBlendPatchBoundaries(allSurfaces, patches, fullMesh, cc);
+
             if (allocateGroupIds != null)
                 groupIdOffset = allocateGroupIds(allSurfaces.Count);
             MeshNormalUV surface = BlendEdge.ToMesh(allSurfaces, cc, ref groupIdOffset);
             return BlendEdge.ApplyBlendSurfaceToVolume(surface, fullMesh, cc, blendType);
+        }
+
+        private static bool TryTripleSupportIntersection(UVSurface first, UVSurface second, UVSurface third,
+            Vec3D expected, CoordinateConverter converter, out Rat3Hybrid point)
+        {
+            point = default;
+            var (segments, _) = CSG.Intersector.IntersectSurfaces(first, second, converter);
+            double best = double.PositiveInfinity;
+            bool found = false;
+            foreach (var segment in segments)
+                foreach (var triangle in third.Triangles)
+                {
+                    var a = third.PointsPrecise[triangle.A];
+                    var b = third.PointsPrecise[triangle.B];
+                    var c = third.PointsPrecise[triangle.C];
+                    if (CSG.TriangleSegmentIntersector.SegmentIntersectsTriangle(
+                        segment.PointStart, segment.PointEnd, a, b, c,
+                        out var candidate, out _, out _, out _) != CSG.SegmentTriangleIntersectionType.Intersect)
+                        continue;
+                    double distance = (converter.Convert(candidate) - expected).LengthSquared();
+                    if (distance >= best) continue;
+                    best = distance;
+                    point = candidate;
+                    found = true;
+                }
+            return found;
+        }
+
+        private static bool TryProjectOffsetContact(UVSurface offset, UVSurface source,
+            Rat3Hybrid center, out Rat3Hybrid contact)
+        {
+            contact = default;
+            for (int i = 0; i < offset.Triangles.Count; i++)
+            {
+                var triangle = offset.Triangles[i];
+                var a = offset.PointsPrecise[triangle.A];
+                var b = offset.PointsPrecise[triangle.B];
+                var c = offset.PointsPrecise[triangle.C];
+                var normal = Rat3Hybrid.Cross(b - a, c - a);
+                if (normal.IsZero() || Rat3Hybrid.Dot(center - a, normal).Sign() != 0) continue;
+                var barycentric = CSG.Intersector.ComputeBarycentricCoordinates(center, a, b, c);
+                if (barycentric.X.Sign() < 0 || barycentric.Y.Sign() < 0 ||
+                    barycentric.Z.Sign() < 0) continue;
+                contact = source.PointsPrecise[triangle.A] * barycentric.X +
+                    source.PointsPrecise[triangle.B] * barycentric.Y +
+                    source.PointsPrecise[triangle.C] * barycentric.Z;
+                contact.Simplify();
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Rejects non-manifold patch edges, T-junctions, and interior open edges.
+        /// A blend boundary may remain open only where the target volume boundary
+        /// covers it. Do not repair these failures by snapping: that can hide a
+        /// gap while leaving non-conforming topology.
+        /// </summary>
+        internal static void ValidateBlendPatchBoundaries(IReadOnlyList<UVSurface> surfaces,
+            IReadOnlyList<(string Name, SurfaceMetaData Metadata)> patchNames,
+            MeshNormalUV volume, CoordinateConverter converter)
+        {
+            static int Compare(Rat3Hybrid a, Rat3Hybrid b)
+            {
+                int result = a.X.CompareTo(b.X);
+                if (result != 0) return result;
+                result = a.Y.CompareTo(b.Y);
+                return result != 0 ? result : a.Z.CompareTo(b.Z);
+            }
+
+            var edgeUses = new Dictionary<(Rat3Hybrid A, Rat3Hybrid B), List<int>>();
+            for (int surfaceId = 0; surfaceId < surfaces.Count; surfaceId++)
+            {
+                var surface = surfaces[surfaceId];
+                foreach (var (edge, adjacent) in AdjacencyEx.BuildEdgeToTrianglesMap(surface.Triangles))
+                {
+                    if (adjacent.Count != 1) continue;
+                    var (a, b) = edge;
+                    var triangle = surface.Triangles[adjacent[0]];
+                    if (!((triangle.A == a && triangle.B == b) ||
+                          (triangle.B == a && triangle.C == b) ||
+                          (triangle.C == a && triangle.A == b)))
+                        (a, b) = (b, a);
+                    var first = surface.PointsPrecise[a];
+                    var second = surface.PointsPrecise[b];
+                    var key = Compare(first, second) < 0 ? (first, second) : (second, first);
+                    if (!edgeUses.TryGetValue(key, out var owners)) edgeUses.Add(key, owners = new List<int>(2));
+                    owners.Add(surfaceId);
+                }
+            }
+
+            static bool LiesStrictlyOnSegment(Rat3Hybrid point, Rat3Hybrid start, Rat3Hybrid end)
+            {
+                var direction = end - start;
+                var offset = point - start;
+                if (Rat3Hybrid.Cross(direction, offset) != new Rat3Hybrid(0, 0, 0)) return false;
+                var along = Rat3Hybrid.Dot(offset, direction);
+                return along.Sign() > 0 && along.CompareTo(Rat3Hybrid.Dot(direction, direction)) < 0;
+            }
+
+            var points = volume.PrecisionPositions;
+            var boundaryEdges = new List<(Rat3Hybrid A, Rat3Hybrid B, int Surface)>();
+            foreach (var (edge, owners) in edgeUses)
+            {
+                if (owners.Count > 2)
+                    throw new InvalidOperationException("Edge-blend patches have a non-manifold shared edge.");
+                if (owners.Count == 2) continue;
+                boundaryEdges.Add((edge.A, edge.B, owners[0]));
+            }
+
+            for (int i = 0; i < boundaryEdges.Count; i++)
+                for (int j = i + 1; j < boundaryEdges.Count; j++)
+                {
+                    var a = boundaryEdges[i];
+                    var b = boundaryEdges[j];
+                    if (LiesStrictlyOnSegment(a.A, b.A, b.B) || LiesStrictlyOnSegment(a.B, b.A, b.B) ||
+                        LiesStrictlyOnSegment(b.A, a.A, a.B) || LiesStrictlyOnSegment(b.B, a.A, a.B))
+                        throw new InvalidOperationException(
+                            $"Edge-blend patches contain a non-conforming T-junction between patches {a.Surface} and {b.Surface}.");
+                }
+
+            static bool CoveredByBoundaryTriangles((Rat3Hybrid A, Rat3Hybrid B, int Surface) edge,
+                MeshNormalUV volume, List<Rat3Hybrid> points)
+            {
+                static BigRationalHybrid Min2(BigRationalHybrid a, BigRationalHybrid b) => a < b ? a : b;
+                static BigRationalHybrid Max2(BigRationalHybrid a, BigRationalHybrid b) => a > b ? a : b;
+                static BigRationalHybrid Min3(BigRationalHybrid a, BigRationalHybrid b, BigRationalHybrid c) =>
+                    Min2(Min2(a, b), c);
+                static BigRationalHybrid Max3(BigRationalHybrid a, BigRationalHybrid b, BigRationalHybrid c) =>
+                    Max2(Max2(a, b), c);
+                var intervals = new List<(BigRationalHybrid Start, BigRationalHybrid End)>();
+                foreach (var triangle in volume.Triangles)
+                {
+                    var a = points[triangle.A];
+                    var b = points[triangle.B];
+                    var c = points[triangle.C];
+                    if (Max2(edge.A.X, edge.B.X) < Min3(a.X, b.X, c.X) ||
+                        Min2(edge.A.X, edge.B.X) > Max3(a.X, b.X, c.X) ||
+                        Max2(edge.A.Y, edge.B.Y) < Min3(a.Y, b.Y, c.Y) ||
+                        Min2(edge.A.Y, edge.B.Y) > Max3(a.Y, b.Y, c.Y) ||
+                        Max2(edge.A.Z, edge.B.Z) < Min3(a.Z, b.Z, c.Z) ||
+                        Min2(edge.A.Z, edge.B.Z) > Max3(a.Z, b.Z, c.Z))
+                        continue;
+                    var normal = Rat3Hybrid.Cross(b - a, c - a);
+                    if (normal == new Rat3Hybrid(0, 0, 0) ||
+                        Rat3Hybrid.Dot(edge.A - a, normal).Sign() != 0 ||
+                        Rat3Hybrid.Dot(edge.B - a, normal).Sign() != 0)
+                        continue;
+
+                    var low = BigRationalHybrid.Zero;
+                    var high = BigRationalHybrid.One;
+                    bool Clip(BigRationalHybrid startSide, BigRationalHybrid endSide)
+                    {
+                        if (startSide.Sign() < 0 && endSide.Sign() < 0) return false;
+                        if (startSide.Sign() >= 0 && endSide.Sign() >= 0) return true;
+                        var crossing = startSide / (startSide - endSide);
+                        if (startSide.Sign() < 0)
+                        {
+                            if (crossing > low) low = crossing;
+                        }
+                        else if (crossing < high) high = crossing;
+                        return low <= high;
+                    }
+
+                    if (!Clip(Rat3Hybrid.Dot(Rat3Hybrid.Cross(b - a, edge.A - a), normal),
+                              Rat3Hybrid.Dot(Rat3Hybrid.Cross(b - a, edge.B - a), normal)) ||
+                        !Clip(Rat3Hybrid.Dot(Rat3Hybrid.Cross(c - b, edge.A - b), normal),
+                              Rat3Hybrid.Dot(Rat3Hybrid.Cross(c - b, edge.B - b), normal)) ||
+                        !Clip(Rat3Hybrid.Dot(Rat3Hybrid.Cross(a - c, edge.A - c), normal),
+                              Rat3Hybrid.Dot(Rat3Hybrid.Cross(a - c, edge.B - c), normal)))
+                        continue;
+                    intervals.Add((low, high));
+                }
+
+                intervals.Sort((left, right) => left.Start.CompareTo(right.Start));
+                var coveredUntil = BigRationalHybrid.Zero;
+                foreach (var interval in intervals)
+                {
+                    if (interval.Start > coveredUntil) return false;
+                    if (interval.End > coveredUntil) coveredUntil = interval.End;
+                    if (coveredUntil >= BigRationalHybrid.One) return true;
+                }
+                return false;
+            }
+
+            foreach (var edge in boundaryEdges)
+            {
+                if (!CoveredByBoundaryTriangles(edge, volume, points))
+                {
+                    string patchName = patchNames[edge.Surface].Name ?? $"closure/corner {edge.Surface}";
+                    throw new InvalidOperationException(
+                        $"Edge-blend patch '{patchName}' has an interior open boundary from {converter.Convert(edge.A)} " +
+                        $"to {converter.Convert(edge.B)}; edge/corner patches must join exactly.");
+                }
+            }
+        }
+
+        private static UVSurface CornerCutPlane(BlendEdge edge, Vec3D center, int cornerId,
+            CoordinateConverter cc)
+        {
+            var node = cornerId == edge.StartCornerId ? edge.SourceEdge.StartNode : edge.SourceEdge.EndNode;
+            var spine = edge.CenterCurveVec3;
+            bool first = (spine[0] - node.Position).LengthSquared() < (spine[^1] - node.Position).LengthSquared();
+            Rat3Hybrid outward = first
+                ? edge.CenterCurve[0] - edge.CenterCurve[1]
+                : edge.CenterCurve[^1] - edge.CenterCurve[^2];
+            // The trim keeps the side opposite the normal for convex blends,
+            // and the normal side for concave blends. Point the normal toward
+            // the corner only for convex strips so each cut retains the span.
+            if (edge.BlendType == EdgeBlendType.Concave) outward = -outward;
+            if (outward == new Rat3Hybrid(0, 0, 0))
+                throw new InvalidOperationException($"Fillet edge '{edge.SourceEdge.Name}' has a degenerate corner direction.");
+            var centerPoint = cc.Convert(center);
+            var origin = new Rat3Hybrid(centerPoint.X, centerPoint.Y, centerPoint.Z);
+            if (edge.RawSurface == null || edge.RawSurface.Triangles.Count == 0)
+                throw new InvalidOperationException($"Fillet edge '{edge.SourceEdge.Name}' has no corner-trim target surface.");
+            return BlendCorner.PlaneCoveringSurface(edge.RawSurface, origin, outward, cc);
         }
 
         private static List<Rat3Hybrid> Resolve(List<int> encodedSourceIndices, List<List<Rat3Hybrid>> source, out List<int> cornerIndices)

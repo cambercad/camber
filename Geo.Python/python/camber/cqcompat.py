@@ -1781,18 +1781,22 @@ class Workplane(object):
             mirrored = self.part.union(self._solid, mirrored)
         return self._cleared(_solid=mirrored, _faces=[], _edges=[])
 
-    def shell(self, thickness):
+    def shell(self, thickness, kind="intersection"):
         """Shell inward for negative thickness, outward for positive thickness.
 
-        Unlike CadQuery's default arc join, outward corners remain sharp.
+        ``kind="arc"`` requests round outward joins; ``"intersection"``
+        keeps the existing sharp joins. Complex round offsets can fail.
         """
         thickness = float(thickness)
         if thickness == 0:
             raise ValueError("shell thickness must be nonzero")
+        if kind not in ("intersection", "arc"):
+            raise ValueError("shell kind must be 'intersection' or 'arc'")
         if self._solid is None:
             raise ValueError("shell needs a solid")
         faces = [face["name"] for face in self._selected_faces]
-        shelled = self.part.shell(self._solid, abs(thickness), faces=faces, outward=thickness > 0)
+        shelled = self.part.shell(self._solid, abs(thickness), faces=faces,
+                                  outward=thickness > 0, join="round" if kind == "arc" else "sharp")
         return self._cleared(_solid=shelled, _faces=[], _edges=[])
 
     def split(self, keepTop=False, keepBottom=False):

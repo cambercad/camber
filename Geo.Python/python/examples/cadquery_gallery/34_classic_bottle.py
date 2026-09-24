@@ -8,7 +8,7 @@ body = (
     .vLine(-width / 2).mirrorX().extrude(30.0, True)
 )
 result = body.faces(">Z").workplane(centerOption="CenterOfMass").circle(3.0).extrude(2.0, True)
-result = result.faces(">Z").shell(0.3)
+result = result.faces(">Z").shell(0.3, kind="arc")
 assert result.val().is_watertight()
 assert result.val().volume() > 0
 assert any("ShellRim_" in name for name in result.val().patch_names)

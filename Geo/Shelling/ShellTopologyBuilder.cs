@@ -46,6 +46,10 @@ internal sealed class ShellTopologyBuilder
             // topology and therefore need no offset constraint.
             if (groups.Count == 0) { points.Add(source.Mesh.Positions[vertex]); continue; }
             var supports = groups.Select(id => support[id]).ToList();
+            // Each offset vertex must satisfy every incident surface support at
+            // once. Averaging normals or snapping the resulting mesh can break
+            // shared edges; if the supports have no valid common solution, fail
+            // rather than silently changing topology or manufacturing a seam.
             if (!_surfaces.TryResolveVertex(vertex, source.Mesh.Positions[vertex], supports,
                     Math.Max(_converter.SmallestUnit() * .1, 1e-8), out var point))
                 throw new ArgumentException($"Shell offset changes topology or uses an unsupported surface junction at vertex {vertex} ({source.Mesh.Positions[vertex]}): " +

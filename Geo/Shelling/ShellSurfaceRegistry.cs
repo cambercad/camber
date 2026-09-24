@@ -192,6 +192,43 @@ public sealed class CylindricalShellSurfaceAdapter : IShellSurfaceAdapter
             return false;
         var cylinder = cylinders[0].Cylinder;
         var axis = cylinder.Axis.Normalized();
+        var planes = supports.OfType<PlanarShellSupport>().Select(s => s.Plane).ToArray();
+        if (planes.Length == 2)
+        {
+            // Two planes meet in a line. Intersect that line with the cylinder
+            // and choose the branch local to the source vertex.
+            var n0 = planes[0].Normal.Normalized();
+            var n1 = planes[1].Normal.Normalized();
+            var direction = Vec3DOps.Cross(n0, n1);
+            double lengthSquared = direction.LengthSquared();
+            if (lengthSquared < 1e-20) return false;
+            double d0 = Vec3DOps.Dot(n0, planes[0].Origin - sourcePoint);
+            double d1 = Vec3DOps.Dot(n1, planes[1].Origin - sourcePoint);
+            var basePoint = sourcePoint + (Vec3DOps.Cross(n1, direction) * d0 +
+                Vec3DOps.Cross(direction, n0) * d1) / lengthSquared;
+            var fromAxis = basePoint - cylinder.Origin;
+            var baseRadial = fromAxis - axis * Vec3DOps.Dot(fromAxis, axis);
+            var radialDirection = direction - axis * Vec3DOps.Dot(direction, axis);
+            double a = radialDirection.LengthSquared();
+            double c = baseRadial.LengthSquared() - cylinder.Radius * cylinder.Radius;
+            if (a < 1e-20)
+            {
+                // If the plane-intersection line is a cylinder generator, the
+                // supports share that line rather than an isolated point. The
+                // closest point on it to the source vertex is the stable miter.
+                if (Math.Abs(c) > 1e-10 * Math.Max(1, cylinder.Radius * cylinder.Radius)) return false;
+                point = basePoint;
+                return PlanarShellSurfaceAdapter.IsFinite(point);
+            }
+            double b = 2 * Vec3DOps.Dot(baseRadial, radialDirection);
+            double discriminant = b * b - 4 * a * c;
+            if (discriminant < 0) return false;
+            double root = Math.Sqrt(discriminant);
+            var first = basePoint + direction * ((-b + root) / (2 * a));
+            var second = basePoint + direction * ((-b - root) / (2 * a));
+            point = (first - sourcePoint).LengthSquared() <= (second - sourcePoint).LengthSquared() ? first : second;
+            return PlanarShellSurfaceAdapter.IsFinite(point);
+        }
         Vec3D fromOrigin = sourcePoint - cylinder.Origin;
         Vec3D radial = fromOrigin - axis * Vec3DOps.Dot(fromOrigin, axis);
         if (radial.LengthSquared() == 0) return false;
