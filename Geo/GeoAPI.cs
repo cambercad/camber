@@ -1910,6 +1910,8 @@ Group/patch names from both inputs are merged (throws on group-id conflict for t
                 result = new AnchorMesh(name, combinedMesh, nameToGroupCombined, metaDataCombined,
                     deferCoplanarPostProcess: true, preferLexClosedLoopStarts: true, isVolume: resultIsVolume,
                     faceLineages: lineages, ambiguousReferences: obsolete);
+                if (operation == BooleanOp.Union && meshA.IsVolume && meshB.IsVolume)
+                    result.UnionOperands = (meshA, meshB);
                 RegisterMesh(result);
             }
             //nameOfMostRecentMesh = name;
@@ -2061,13 +2063,13 @@ Returned mesh has new patches for each chamfer surface (names prefixed ""Chamfer
             return result;
         }
 
-        [APIDescription(@"Shell(mesh: AnchorMesh, thickness: float, facesToRemove: List[str] = None, maxDeviation: float = -1, name: str = None) -> AnchorMesh
-Hollows a watertight solid inward. With no removed faces, the cavity is closed; selected faces become openings whose exterior boundaries stay fixed. Uses exact planar, cylindrical, and spherical supports when available, with a welded triangle-normal offset fallback for other or metadata-free patches. Offsets that collapse, invert, or change topology are rejected. Cavity patches are named ShellInner_<source-patch>.")]
-        public AnchorMesh Shell(AnchorMesh mesh, double thickness, List<string> facesToRemove = null, double maxDeviation = -1, string name = null)
+        [APIDescription(@"Shell(mesh: AnchorMesh, thickness: float, facesToRemove: List[str] = None, maxDeviation: float = -1, name: str = None, outward: bool = false) -> AnchorMesh
+Hollows a watertight solid inward by default, or expands its exterior when outward is true. Outward joins are sharp intersections; rounded/arc joins are not yet supported. With no removed faces, the cavity is closed; selected faces become openings. Uses exact planar, cylindrical, and spherical supports when available, with a welded triangle-normal offset fallback for other or metadata-free patches. Valid topology changes at Boolean union seams can be rebuilt from union operands with CSG; other unsupported topology changes and collapsed or inverted offsets are rejected. Cavity patches are named ShellInner_<source-patch>.")]
+        public AnchorMesh Shell(AnchorMesh mesh, double thickness, List<string> facesToRemove = null, double maxDeviation = -1, string name = null, bool outward = false)
         {
             _ = ResolveMaxDeviation(maxDeviation); // Reserved for non-planar adapters.
             name ??= mesh?.Name;
-            var result = new ShellOperation().Run(this, mesh, facesToRemove, thickness, name);
+            var result = new ShellOperation().Run(this, mesh, facesToRemove, thickness, name, outward);
             RegisterMesh(result);
             return result;
         }

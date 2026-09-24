@@ -162,6 +162,10 @@ shell rim, and the generic triangle-mesh fallback on a twisted loft):
 python python\shell_showcase.py
 ```
 
+Outward shelling currently uses sharp, intersecting joins. It does not yet
+create CadQuery's default rounded outward corners. A later fillet can soften
+selected shell edges, but is not necessarily the same as a rounded shell offset.
+
 ---
 
 ## 6. Interactive sketch (optional)

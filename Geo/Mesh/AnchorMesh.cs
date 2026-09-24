@@ -47,6 +47,9 @@ namespace Geo
         public Dictionary<string, SurfaceMetaData> surfaceMetaData;
         internal Dictionary<int, FaceLineage> FaceLineages = new();
         internal HashSet<string> AmbiguousFaceReferences = new(StringComparer.Ordinal);
+        // CSG union history lets topology-changing outward offsets expand each
+        // closed operand before robustly reuniting them.
+        internal (AnchorMesh First, AnchorMesh Second)? UnionOperands;
 
         private void InitializeFaceLineage(Dictionary<int, FaceLineage> inherited = null)
         {

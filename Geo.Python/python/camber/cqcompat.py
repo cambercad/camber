@@ -1,8 +1,7 @@
 """CadQuery-shaped fluent API on top of camber (Workplane / Sketch).
 
 This is not a drop-in CadQuery replacement. Solids are camber meshes with named
-patches; some selectors and modeling modes remain unsupported. Outward shelling
-is not yet available.
+patches; some selectors and modeling modes remain unsupported.
 
 Typical use::
 
@@ -104,6 +103,80 @@ def _xy2(point):
     if isinstance(point, vec3):
         return (point.x, point.y)
     return (float(point[0]), float(point[1]))
+
+
+def _sample_parametric_curve(func, N, start, stop, tolerance):
+    """Sample a planar callback, refining chords until sampled error is within tolerance."""
+    if not callable(func):
+        raise TypeError("parametricCurve func must be callable")
+    if isinstance(N, bool) or int(N) != N or int(N) < 2:
+        raise ValueError("parametricCurve N must be an integer >= 2")
+    N = int(N)
+    start, stop, tolerance = float(start), float(stop), float(tolerance)
+    if not math.isfinite(start) or not math.isfinite(stop) or start == stop:
+        raise ValueError("parametricCurve requires a finite, nonzero parameter interval")
+    if not math.isfinite(stop - start):
+        raise ValueError("parametricCurve parameter interval is too large")
+    if not math.isfinite(tolerance) or tolerance <= 0:
+        raise ValueError("parametricCurve tolerance must be finite and > 0")
+
+    max_samples = 100000
+    if N + 1 > max_samples:
+        raise ValueError("parametricCurve exceeded the 100000 sample limit")
+    max_depth = 16
+    evaluated = {}
+
+    def evaluate(t):
+        if t in evaluated:
+            return evaluated[t]
+        if len(evaluated) >= max_samples:
+            raise ValueError("parametricCurve exceeded the 100000 sample limit")
+        try:
+            value = func(t)
+        except Exception as exc:
+            raise ValueError("parametricCurve callback failed at t={0!r}".format(t)) from exc
+        if isinstance(value, (vec2, vec3)):
+            if isinstance(value, vec3) and abs(float(value.z)) > tolerance:
+                raise NotImplementedError("parametricCurve currently accepts planar 2D points only")
+            point = (float(value.x), float(value.y))
+        else:
+            try:
+                if len(value) != 2:
+                    raise NotImplementedError("parametricCurve currently accepts planar 2D points only")
+                point = (float(value[0]), float(value[1]))
+            except TypeError as exc:
+                raise TypeError("parametricCurve callback must return a 2D point") from exc
+        if not all(math.isfinite(coordinate) for coordinate in point):
+            raise ValueError("parametricCurve callback returned a non-finite point at t={0!r}".format(t))
+        evaluated[t] = point
+        return point
+
+    def point_chord_distance(point, a, b):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        length2 = dx * dx + dy * dy
+        if length2 == 0:
+            return math.hypot(point[0] - a[0], point[1] - a[1])
+        fraction = max(0.0, min(1.0,
+            ((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / length2))
+        return math.hypot(point[0] - a[0] - fraction * dx,
+                          point[1] - a[1] - fraction * dy)
+
+    def refine(t0, p0, t1, p1, depth):
+        span = t1 - t0
+        probes = [t0 + span * f for f in (0.25, 0.5, 0.75)]
+        if max(point_chord_distance(evaluate(t), p0, p1) for t in probes) <= tolerance:
+            return [p1]
+        if depth >= max_depth:
+            raise ValueError("parametricCurve could not meet tolerance before maximum subdivision depth")
+        tm = probes[1]
+        pm = evaluate(tm)
+        return refine(t0, p0, tm, pm, depth + 1) + refine(tm, pm, t1, p1, depth + 1)
+
+    parameters = [start + (stop - start) * i / N for i in range(N + 1)]
+    points = [evaluate(parameters[0])]
+    for t0, t1 in zip(parameters, parameters[1:]):
+        points.extend(refine(t0, evaluate(t0), t1, evaluate(t1), 0))
+    return points
 
 
 def _as_vec3(point):
@@ -838,35 +911,52 @@ class Workplane(object):
                            _construction_vertices=[])
 
     def center(self, x, y):
-        """Move the 2D drawing origin without moving previously drawn wires."""
+        """Shift the 2D origin and set the current point to the new center."""
         dx, dy = float(x), float(y)
+        center = (self._center2d[0] + dx, self._center2d[1] + dy)
+        pending = list(self._pending)
+        if self._open_segments:
+            segments = list(self._open_segments)
+            if _dist2(self._cursor, self._open[0]) > 1e-18:
+                segments.append(("line", self._cursor, self._open[0]))
+            pending.append(_Wire(segments))
         return self._spawn(
-            _center2d=(self._center2d[0] + dx, self._center2d[1] + dy),
+            _center2d=center,
             _locations=[(px + dx, py + dy) for px, py in self._locations],
+            _pending=pending,
+            _cursor=center,
+            _open=None,
+            _open_segments=[],
         )
 
-    def moveTo(self, x, y):
-        """Set the 2D cursor and start a new open path."""
-        pt = (float(x), float(y))
-        return self._spawn(_cursor=pt, _open=[pt], _open_segments=[])
+    def _path_point(self, point):
+        x, y = _xy2(point)
+        return (x + self._center2d[0], y + self._center2d[1])
 
-    def move(self, xDist, yDist):
-        """Relative move of the 2D cursor."""
-        return self.moveTo(self._cursor[0] + float(xDist), self._cursor[1] + float(yDist))
-
-    def lineTo(self, x, y):
-        """Line from the cursor to an absolute 2D point."""
-        end = (float(x), float(y))
+    def _line_to_point(self, end):
         pts = list(self._open or [self._cursor])
-        if not pts:
-            pts = [self._cursor]
         pts.append(end)
         return self._spawn(_cursor=end, _open=pts,
                            _open_segments=self._open_segments + [("line", self._cursor, end)])
 
+    def moveTo(self, x, y):
+        """Set the 2D cursor and start a new open path."""
+        pt = self._path_point((x, y))
+        return self._spawn(_cursor=pt, _open=[pt], _open_segments=[])
+
+    def move(self, xDist, yDist):
+        """Relative move of the 2D cursor."""
+        point = (self._cursor[0] + float(xDist), self._cursor[1] + float(yDist))
+        return self._spawn(_cursor=point, _open=[point], _open_segments=[])
+
+    def lineTo(self, x, y):
+        """Line from the cursor to an absolute 2D point."""
+        return self._line_to_point(self._path_point((x, y)))
+
     def line(self, xDist, yDist):
         """Relative line from the cursor."""
-        return self.lineTo(self._cursor[0] + float(xDist), self._cursor[1] + float(yDist))
+        return self._line_to_point((self._cursor[0] + float(xDist),
+                                    self._cursor[1] + float(yDist)))
 
     def hLine(self, distance):
         """Horizontal relative line."""
@@ -878,11 +968,11 @@ class Workplane(object):
 
     def hLineTo(self, x):
         """Horizontal line to absolute X."""
-        return self.lineTo(x, self._cursor[1])
+        return self._line_to_point((float(x) + self._center2d[0], self._cursor[1]))
 
     def vLineTo(self, y):
         """Vertical line to absolute Y."""
-        return self.lineTo(self._cursor[0], y)
+        return self._line_to_point((self._cursor[0], float(y) + self._center2d[1]))
 
     def close(self):
         """Close the open path into a pending wire."""
@@ -930,7 +1020,7 @@ class Workplane(object):
 
     def polyline(self, listOfXY, includeCurrent=False):
         """Open path through 2D points (does not close)."""
-        pts = [_xy2(p) for p in listOfXY]
+        pts = [self._path_point(p) for p in listOfXY]
         if includeCurrent:
             pts = [self._cursor] + pts
         if len(pts) < 2:
@@ -941,8 +1031,8 @@ class Workplane(object):
     def threePointArc(self, point1, point2):
         """Arc from the cursor through ``point1`` to ``point2``."""
         start = self._cursor
-        mid = _xy2(point1)
-        end = _xy2(point2)
+        mid = self._path_point(point1)
+        end = self._path_point(point2)
         pts = list(self._open or [start])
         pts.append(end)
         return self._spawn(_cursor=end, _open=pts,
@@ -950,14 +1040,20 @@ class Workplane(object):
 
     def radiusArc(self, endPoint, radius):
         """Arc from the cursor to ``endPoint`` with signed radius (CCW if positive)."""
-        end = _xy2(endPoint)
+        end = self._path_point(endPoint)
         mid = _radius_arc_mid(self._cursor, end, radius)
-        return self.threePointArc(mid, end)
+        start = self._cursor
+        pts = list(self._open or [start])
+        pts.append(end)
+        return self._spawn(_cursor=end, _open=pts,
+                           _open_segments=self._open_segments + [("arc", start, mid, end)])
 
     def _mirror_open(self, axis):
         if not self._open_segments:
             raise ValueError("mirror requires an open 2D path")
-        flip = (lambda p: (-p[0], p[1])) if axis == "Y" else (lambda p: (p[0], -p[1]))
+        cx, cy = self._center2d
+        flip = (lambda p: (2 * cx - p[0], p[1])) if axis == "Y" else (
+            lambda p: (p[0], 2 * cy - p[1]))
         start = self._open[0]
         end = self._cursor
         segments = list(self._open_segments)
@@ -1569,14 +1665,17 @@ class Workplane(object):
         return self._cleared(_solid=mirrored, _faces=[], _edges=[])
 
     def shell(self, thickness):
-        """Shell inward; selected faces, if any, become openings."""
+        """Shell inward for negative thickness, outward for positive thickness.
+
+        Unlike CadQuery's default arc join, outward corners remain sharp.
+        """
         thickness = float(thickness)
-        if thickness >= 0:
-            raise NotImplementedError("CadQuery outward shell thickness is not supported")
+        if thickness == 0:
+            raise ValueError("shell thickness must be nonzero")
         if self._solid is None:
             raise ValueError("shell needs a solid")
         faces = [face["name"] for face in self._selected_faces]
-        shelled = self.part.shell(self._solid, -thickness, faces=faces)
+        shelled = self.part.shell(self._solid, abs(thickness), faces=faces, outward=thickness > 0)
         return self._cleared(_solid=shelled, _faces=[], _edges=[])
 
     def split(self, keepTop=False, keepBottom=False):
@@ -1677,7 +1776,7 @@ class Workplane(object):
         """Add a cubic Hermite spline to the current 2D path."""
         if tangents is not None or periodic:
             raise NotImplementedError("tangents and periodic splines are not yet supported")
-        points = [_xy2(p) for p in listOfXY]
+        points = [self._path_point(p) for p in listOfXY]
         if includeCurrent:
             points.insert(0, self._cursor)
         if len(points) < 2:
@@ -1687,6 +1786,31 @@ class Workplane(object):
         open_points = list(self._open or [points[0]]) + points[1:]
         return self._spawn(_cursor=points[-1], _open=open_points,
                            _open_segments=self._open_segments + [("spline", points)])
+
+    def parametricCurve(self, func, N=400, start=0, stop=1, tol=None,
+                        minDeg=1, maxDeg=6, smoothing=(1, 1, 1), makeWire=True):
+        """Add a sampled planar callback curve as a pending sketch wire.
+
+        Sampling starts with ``N`` parameter intervals and adaptively refines
+        chords to the explicit ``tol`` or the Part's tessellation tolerance.
+        Error is estimated at quarter points on each parameter span; arbitrary
+        callbacks cannot provide a strict error bound without derivative or
+        curvature information.
+        Curves must return 2D points. The sketch backend stores the samples as
+        line segments, so spline degree/smoothing and ``makeWire=False`` are
+        not supported.
+        """
+        if not makeWire:
+            raise NotImplementedError("parametricCurve currently creates sketch wires only")
+        if minDeg != 1 or maxDeg != 6 or smoothing not in (None, (1, 1, 1)):
+            raise NotImplementedError("parametricCurve spline fitting controls are not supported for sampled wires")
+        tolerance = self._ensure_part().max_deviation if tol is None else float(tol)
+        points = [self._path_point(point)
+                  for point in _sample_parametric_curve(func, N, start, stop, tolerance)]
+        if _dist2(points[0], points[-1]) <= tolerance * tolerance:
+            points[-1] = points[0]
+        wire = _Wire.from_points(points, closed=False)
+        return self._spawn(_pending=self._pending + [wire])
 
     def each(self, callback, useLocalCoordinates=False, combine=True, clean=True):
         """Not implemented."""

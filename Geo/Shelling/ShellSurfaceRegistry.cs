@@ -7,7 +7,8 @@ public interface IShellSurfaceSupport
     SurfaceMetaData Metadata { get; }
 }
 
-/// <summary>The only surface-specific seam used by shell topology.</summary>
+/// <summary>The only surface-specific seam used by shell topology.
+/// Offset distance is signed: positive inward, negative outward.</summary>
 public interface IShellSurfaceAdapter
 {
     bool Supports(SurfaceMetaData metadata, UVSurface surface, double inwardThickness);
@@ -33,11 +34,47 @@ public sealed class ShellSurfaceRegistry
         _adapters.FirstOrDefault(a => a.Supports(metadata, surface, thickness));
 
     public bool TryResolveVertex(int sourceVertex, Vec3D sourcePoint,
-        IReadOnlyList<IShellSurfaceSupport> supports, out Vec3D point)
+        IReadOnlyList<IShellSurfaceSupport> supports, double tolerance, out Vec3D point)
     {
         foreach (var adapter in _adapters)
             if (adapter.TryResolveVertex(sourceVertex, sourcePoint, supports, out point)) return true;
+        // A Boolean seam can put more than three analytic patches at one vertex.
+        // Solve a determined subset, but accept it only if every other exact
+        // support passes through the same point. Inconsistent miters still fail.
+        if (supports.Count > 3 && supports.All(s => s is PlanarShellSupport or
+                CylindricalShellSupport or SphericalShellSupport))
+        {
+            for (int size = 2; size <= 3; size++)
+                for (int i = 0; i < supports.Count; i++)
+                    for (int j = i + 1; j < supports.Count; j++)
+                        for (int k = size == 2 ? supports.Count : j + 1; k <= supports.Count; k++)
+                        {
+                            if (size == 3 && k == supports.Count) continue;
+                            IShellSurfaceSupport[] subset = size == 2
+                                ? new[] { supports[i], supports[j] }
+                                : new[] { supports[i], supports[j], supports[k] };
+                            foreach (var adapter in _adapters)
+                                if (adapter.TryResolveVertex(sourceVertex, sourcePoint, subset, out var candidate) &&
+                                    supports.All(s => OnSupport(s, candidate, tolerance)))
+                                { point = candidate; return true; }
+                        }
+        }
         point = default;
+        return false;
+    }
+
+    private static bool OnSupport(IShellSurfaceSupport support, Vec3D point, double tolerance)
+    {
+        if (support is PlanarShellSupport plane)
+            return Math.Abs(Vec3DOps.Dot(point - plane.Plane.Origin, plane.Plane.Normal.Normalized())) <= tolerance;
+        if (support is CylindricalShellSupport cylinder)
+        {
+            var axis = cylinder.Cylinder.Axis.Normalized();
+            var v = point - cylinder.Cylinder.Origin;
+            return Math.Abs((v - axis * Vec3DOps.Dot(v, axis)).Length() - cylinder.Cylinder.Radius) <= tolerance;
+        }
+        if (support is SphericalShellSupport sphere)
+            return Math.Abs((point - sphere.Sphere.Center).Length() - sphere.Sphere.Radius) <= tolerance;
         return false;
     }
 
@@ -65,7 +102,7 @@ public sealed class PlanarShellSurfaceAdapter : IShellSurfaceAdapter
 {
     public bool Supports(SurfaceMetaData metadata, UVSurface surface, double inwardThickness) =>
         metadata?.SurfaceType == SurfaceType.Planar && metadata.PlaneParams != null &&
-        surface != null && surface.IsSurfacePlanar() && inwardThickness > 0;
+        surface != null && surface.IsSurfacePlanar() && double.IsFinite(inwardThickness);
 
     public IShellSurfaceSupport CreateOffsetSupport(SurfaceMetaData metadata, UVSurface surface,
         Vec3D outwardAtSample, double inwardThickness, CoordinateConverter converter)
@@ -128,7 +165,7 @@ public sealed class CylindricalShellSurfaceAdapter : IShellSurfaceAdapter
 {
     public bool Supports(SurfaceMetaData metadata, UVSurface surface, double inwardThickness) =>
         metadata?.SurfaceType == SurfaceType.Cylindrical && metadata.CylinderParams != null &&
-        surface != null && inwardThickness > 0;
+        surface != null && double.IsFinite(inwardThickness);
 
     public IShellSurfaceSupport CreateOffsetSupport(SurfaceMetaData metadata, UVSurface surface,
         Vec3D outwardAtSample, double inwardThickness, CoordinateConverter converter)
@@ -188,7 +225,7 @@ public sealed class SphericalShellSurfaceAdapter : IShellSurfaceAdapter
 {
     public bool Supports(SurfaceMetaData metadata, UVSurface surface, double inwardThickness) =>
         metadata?.SurfaceType == SurfaceType.Spherical && metadata.SphereParams != null &&
-        surface != null && inwardThickness > 0;
+        surface != null && double.IsFinite(inwardThickness);
 
     public IShellSurfaceSupport CreateOffsetSupport(SurfaceMetaData metadata, UVSurface surface,
         Vec3D outwardAtSample, double inwardThickness, CoordinateConverter converter)
@@ -270,7 +307,7 @@ public sealed class MeshShellSupport : IShellSurfaceSupport
 public sealed class MeshShellSurfaceAdapter : IShellSurfaceAdapter
 {
     public bool Supports(SurfaceMetaData metadata, UVSurface surface, double inwardThickness) =>
-        surface?.Triangles?.Count > 0 && surface.Normals != null && inwardThickness > 0;
+        surface?.Triangles?.Count > 0 && surface.Normals != null && double.IsFinite(inwardThickness);
 
     public IShellSurfaceSupport CreateOffsetSupport(SurfaceMetaData metadata, UVSurface surface,
         Vec3D outwardAtSample, double inwardThickness, CoordinateConverter converter)

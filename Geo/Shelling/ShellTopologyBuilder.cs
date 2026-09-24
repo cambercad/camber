@@ -5,7 +5,7 @@ using GeoMeta;
 namespace Geo.Shelling;
 
 /// <summary>
-/// Builds the cavity cutter from common offset supports.  CSG performs all trimming,
+/// Builds a mitered offset solid from common surface supports. CSG performs trimming,
 /// rim construction and intersection validation; this keeps shell topology independent
 /// of the supported surface kinds.
 /// </summary>
@@ -17,7 +17,8 @@ internal sealed class ShellTopologyBuilder
     internal ShellTopologyBuilder(CoordinateConverter converter, ShellSurfaceRegistry surfaces)
     { _converter = converter; _surfaces = surfaces; }
 
-    internal AnchorMesh BuildCavity(AnchorMesh source, HashSet<int> openingGroups, double thickness, int firstGroupId)
+    internal AnchorMesh BuildOffset(AnchorMesh source, HashSet<int> openingGroups,
+        double retainedOffset, double openingOffset, int firstGroupId, bool exterior)
     {
         var support = new Dictionary<int, IShellSurfaceSupport>();
         foreach (var (id, patch) in source.groupIdToExtendedName)
@@ -25,16 +26,14 @@ internal sealed class ShellTopologyBuilder
             if (!source.surfaceMetaData.TryGetValue(patch, out var meta) ||
                 !source.TryGetTopologySurface(patch, out var uv))
                 throw new ArgumentException($"Shell requires topology metadata for patch '{patch}'.");
-            var adapter = _surfaces.Resolve(meta, uv, thickness);
+            double amount = openingGroups.Contains(id) ? openingOffset : retainedOffset;
+            var adapter = _surfaces.Resolve(meta, uv, amount);
             if (adapter == null)
                 throw new NotSupportedException($"Shell does not support surface patch '{patch}' ({meta.SurfaceType}).");
             int triangleIndex = source.Mesh.TrianglesEx.FindIndex(t => t.GroupId == id);
             var tri = source.Mesh.Triangles[triangleIndex];
             var outward = Vec3DOps.Cross(source.Mesh.Positions[tri.B] - source.Mesh.Positions[tri.A],
                 source.Mesh.Positions[tri.C] - source.Mesh.Positions[tri.A]);
-            // Opening supports are moved just beyond the exterior so CSG removes the
-            // selected outer face while retaining the original opening boundary.
-            double amount = openingGroups.Contains(id) ? -OpeningOverrun(thickness) : thickness;
             support[id] = adapter.CreateOffsetSupport(meta, uv, outward.Normalized(), amount, _converter);
         }
 
@@ -47,8 +46,9 @@ internal sealed class ShellTopologyBuilder
             // topology and therefore need no offset constraint.
             if (groups.Count == 0) { points.Add(source.Mesh.Positions[vertex]); continue; }
             var supports = groups.Select(id => support[id]).ToList();
-            if (!_surfaces.TryResolveVertex(vertex, source.Mesh.Positions[vertex], supports, out var point))
-                throw new ArgumentException($"Shell offset changes topology or uses an unsupported surface junction at vertex {vertex}: " +
+            if (!_surfaces.TryResolveVertex(vertex, source.Mesh.Positions[vertex], supports,
+                    Math.Max(_converter.SmallestUnit() * .1, 1e-8), out var point))
+                throw new ArgumentException($"Shell offset changes topology or uses an unsupported surface junction at vertex {vertex} ({source.Mesh.Positions[vertex]}): " +
                     string.Join(", ", groups.Select(id => source.groupIdToExtendedName[id] + " (" + support[id].Metadata.SurfaceType + ")")) + ".");
             points.Add(point);
         }
@@ -75,7 +75,8 @@ internal sealed class ShellTopologyBuilder
             remap[id] = target;
             // The opening cutter is intentionally private implementation detail;
             // retained supports become the public, stable cavity-face names.
-            string name = openingGroups.Contains(id) ? "ShellOpening_" + patch : EntityNaming.ShellInner(patch);
+            string name = openingGroups.Contains(id) ? "ShellOpening_" + patch :
+                exterior ? patch : EntityNaming.ShellInner(patch);
             cavityGroups[target] = name;
             cavityMeta[name] = support[id].Metadata.Clone();
         }
@@ -86,11 +87,9 @@ internal sealed class ShellTopologyBuilder
             Triangles = new List<Tri>(source.Mesh.Triangles), TrianglesEx = corners
         };
         ValidateOffset(source.Mesh, cavity);
-        return new AnchorMesh(source.Name + "_shellCavity", cavity, cavityGroups, cavityMeta,
+        return new AnchorMesh(source.Name + "_shellOffset", cavity, cavityGroups, cavityMeta,
             deferCoplanarPostProcess: true, isVolume: true);
     }
-
-    private double OpeningOverrun(double thickness) => Math.Max(thickness * 1e-5, _converter.SmallestUnit() * 4);
 
     private static Dictionary<int, List<int>> BuildIncidentGroups(AnchorMesh mesh)
     {
@@ -120,7 +119,7 @@ internal sealed class ShellTopologyBuilder
         }
         if (!MeshAnalysis.IsWatertightMesh(cavity.PrecisionPositions, cavity.Triangles, true) ||
             MeshAnalysis.ComputeSignedMeshVolume(cavity.Positions, cavity.Triangles) <= 0)
-            throw new InvalidOperationException("Shell cavity collapsed or changed topology.");
+            throw new InvalidOperationException("Shell offset collapsed or changed topology.");
     }
 
 }

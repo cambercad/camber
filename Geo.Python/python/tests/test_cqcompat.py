@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+import math
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -11,6 +12,7 @@ from camber.cqcompat import (
     _radius_arc_mid as radius_arc_mid,
     _select_edges as select_edges,
     _select_faces as select_faces,
+    _sample_parametric_curve,
 )
 from camber.cqcompat import _center_shifts, _prism_faces
 from camber.vec import vec3
@@ -117,6 +119,39 @@ def _dot_z(frame):
     return frame.z.x * 0 + frame.z.y * 0 + frame.z.z
 
 
+class ParametricCurveSamplingTests(unittest.TestCase):
+    def test_adaptive_circle_sampling_respects_chord_tolerance(self):
+        points = _sample_parametric_curve(
+            lambda t: (math.cos(t), math.sin(t)), N=8,
+            start=0, stop=2 * math.pi, tolerance=0.005,
+        )
+        self.assertGreater(len(points), 9)
+        self.assertAlmostEqual(points[0][0], points[-1][0], places=12)
+        self.assertAlmostEqual(points[0][1], points[-1][1], places=12)
+        angles = [math.atan2(y, x) for x, y in points]
+        for first, second in zip(angles, angles[1:]):
+            delta = abs(second - first)
+            if delta > math.pi:
+                delta = 2 * math.pi - delta
+            self.assertLessEqual(1 - math.cos(delta / 2), 0.005 + 1e-9)
+
+    def test_tighter_tolerance_adds_samples(self):
+        curve = lambda t: (math.cos(t), math.sin(t))
+        coarse = _sample_parametric_curve(curve, 8, 0, 2 * math.pi, 0.05)
+        fine = _sample_parametric_curve(curve, 8, 0, 2 * math.pi, 0.001)
+        self.assertGreater(len(fine), len(coarse))
+
+    def test_rejects_invalid_callback_results_and_parameters(self):
+        with self.assertRaises(ValueError):
+            _sample_parametric_curve(lambda t: (float("nan"), 0), 8, 0, 1, 0.01)
+        with self.assertRaises(ValueError):
+            _sample_parametric_curve(lambda t: (t, 0), 1, 0, 1, 0.01)
+        with self.assertRaises(ValueError):
+            _sample_parametric_curve(lambda t: (t, 0), 100000, 0, 1, 0.01)
+        with self.assertRaises(NotImplementedError):
+            _sample_parametric_curve(lambda t: (t, 0, 1), 8, 0, 1, 0.01)
+
+
 class PendingGeometryTests(unittest.TestCase):
     def test_rect_and_circle_are_pending(self):
         wp = Workplane("XY").rect(2, 4).circle(0.5)
@@ -170,7 +205,7 @@ class PendingGeometryTests(unittest.TestCase):
 
     def test_missing_features_raise(self):
         wp = Workplane("XY")
-        with self.assertRaises(NotImplementedError):
+        with self.assertRaises(ValueError):
             wp.shell(0.2)
         with self.assertRaises(ValueError):
             wp.translate((1, 0, 0))
@@ -181,6 +216,15 @@ class PendingGeometryTests(unittest.TestCase):
         wp = Workplane("XY").circle(3).center(1.5, 0).rect(0.5, 0.5)
         self.assertEqual((0.0, 0.0), wp._pending[0].segments[0][1])
         self.assertEqual((1.25, -0.25), wp._pending[1].segments[0][1])
+
+    def test_center_shifts_cursor_and_absolute_path_points(self):
+        wire = (Workplane("XY").center(-10, 0).vLine(3)
+                .threePointArc((10, 9), (20, 3)).vLine(-3).mirrorX()._pending[0])
+        self.assertEqual(("line", (-10.0, 0.0), (-10.0, 3.0)), wire.segments[0])
+        self.assertEqual(("arc", (-10.0, 3.0), (0.0, 9.0), (10.0, 3.0)), wire.segments[1])
+        xs = [point[0] for segment in wire.segments for point in segment[1:]]
+        self.assertAlmostEqual(-10.0, min(xs))
+        self.assertAlmostEqual(10.0, max(xs))
 
     def test_arc_stays_in_path_order(self):
         wp = Workplane("XY").lineTo(2, 0).threePointArc((3, 1), (2, 2)).close()
@@ -200,6 +244,20 @@ class PendingGeometryTests(unittest.TestCase):
 
 @unittest.skipUnless(_NATIVE_AVAILABLE, "requires the installed camber native module")
 class NativeWorkplaneTests(unittest.TestCase):
+    def test_classic_bottle_profile_is_centered_and_extrudes_one_sided(self):
+        body = (Workplane("XY", size=50, tolerance=0.01).center(-10, 0).vLine(3)
+                .threePointArc((10, 9), (20, 3)).vLine(-3).mirrorX()
+                .extrude(30.0, True))
+        points, _ = body.val().mesh()
+        self.assertAlmostEqual(-10.0, min(point.x for point in points), delta=0.01)
+        self.assertAlmostEqual(10.0, max(point.x for point in points), delta=0.01)
+        self.assertAlmostEqual(0.0, min(point.z for point in points), delta=0.01)
+        self.assertAlmostEqual(30.0, max(point.z for point in points), delta=0.01)
+        bottle = (body.faces(">Z").workplane(centerOption="CenterOfMass")
+                  .circle(3.0).extrude(2.0, True))
+        bottle_points, _ = bottle.val().mesh()
+        self.assertAlmostEqual(32.0, max(point.z for point in bottle_points), delta=0.01)
+
     def test_closed_inward_shell_bridge(self):
         block = Workplane("XY", size=20, tolerance=0.01).box(2, 2, 2)
         result = block.shell(-0.1)
@@ -207,6 +265,18 @@ class NativeWorkplaneTests(unittest.TestCase):
         self.assertAlmostEqual(result.val().volume(), 8 - 1.8**3, delta=0.01)
         self.assertTrue(any("ShellInner_" in name for name in result.val().patch_names))
         self.assertFalse(any("ShellRim_" in name for name in result.val().patch_names))
+
+    def test_outward_shell_bridge(self):
+        block = Workplane("XY", size=20, tolerance=0.01).box(2, 2, 2)
+        closed = block.shell(0.1)
+        opened = block.faces(">Z").shell(0.1)
+        self.assertTrue(closed.val().is_watertight())
+        self.assertTrue(opened.val().is_watertight())
+        self.assertAlmostEqual(closed.val().volume(), 2.2**3 - 8, delta=0.01)
+        self.assertAlmostEqual(opened.val().volume(), 2.2**3 - 2*2*2.1, delta=0.01)
+        self.assertTrue(any("ShellRim_" in name for name in opened.val().patch_names))
+        self.assertAlmostEqual(block.part.shell(block.val(), 0.1, outward=True).volume(),
+                               closed.val().volume(), delta=1e-6)
 
     def test_part_shell_optional_faces(self):
         block = Workplane("XY", size=20, tolerance=0.01).box(2, 2, 2)

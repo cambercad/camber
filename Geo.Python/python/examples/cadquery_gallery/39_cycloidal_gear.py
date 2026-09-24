@@ -1,8 +1,32 @@
-"""CadQuery gallery: Cycloidal gear profile from a parametric curve."""
-from math import cos, sin
+"""CadQuery gallery: the cycloidal gear, using a tolerance-sampled curve."""
+from math import cos, floor, pi, sin
 from camber.cqcompat import Workplane
 
+
+def hypocycloid(t, r1, r2):
+    return (
+        (r1 - r2) * cos(t) + r2 * cos(r1 / r2 * t - t),
+        (r1 - r2) * sin(t) + r2 * sin(-(r1 / r2 * t - t)),
+    )
+
+
+def epicycloid(t, r1, r2):
+    return (
+        (r1 + r2) * cos(t) - r2 * cos(r1 / r2 * t + t),
+        (r1 + r2) * sin(t) - r2 * sin(r1 / r2 * t + t),
+    )
+
+
+def gear(t, r1=4, r2=1):
+    if (-1) ** (1 + floor(t / (2 * pi) * (r1 / r2))) < 0:
+        return epicycloid(t, r1, r2)
+    return hypocycloid(t, r1, r2)
+
+
 result = (
-    Workplane("XY").parametricCurve(lambda t: (5 * cos(t), 5 * sin(t)))
+    Workplane("XY").parametricCurve(lambda t: gear(t * 2 * pi, 6, 1))
     .twistExtrude(15, 90)
+    .faces(">Z").workplane().circle(2).cutThruAll()
 )
+assert result.val().is_watertight()
+assert result.val().volume() > 0
