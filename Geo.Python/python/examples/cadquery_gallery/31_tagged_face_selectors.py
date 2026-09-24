@@ -6,3 +6,6 @@ result = (
     .sphere(10)
     .faces("<X", tag="prism").workplane().circle(1).cutThruAll()
 )
+
+if __name__ == "__main__":
+    result.show(title="CadQuery gallery 31 — tagged face selectors")

@@ -6,3 +6,6 @@ body = (Workplane("XY").box(1, 1, 1).faces(">Z").workplane()
 result = body.faces(">Y").workplane(-0.5).split(keepTop=True)
 assert result.val().is_watertight()
 assert abs(result.val().volume() - body.val().volume() / 2) < 0.01
+
+if __name__ == "__main__":
+    result.show(title="CadQuery gallery 33 — split object")

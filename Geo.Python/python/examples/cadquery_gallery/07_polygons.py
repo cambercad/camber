@@ -8,3 +8,6 @@ result = (
 )
 assert result.val().is_watertight()
 assert 2.5 < result.val().volume() < 3.0
+
+if __name__ == "__main__":
+    result.show(title="CadQuery gallery 07 — polygons")

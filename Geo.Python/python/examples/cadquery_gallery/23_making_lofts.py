@@ -7,3 +7,6 @@ result = (
 )
 assert result.val().is_watertight()
 assert result.val().volume() > 4.0
+
+if __name__ == "__main__":
+    result.show(title="CadQuery gallery 23 — lofts")

@@ -2,6 +2,7 @@ import os
 import sys
 import unittest
 import math
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -14,10 +15,11 @@ from camber.cqcompat import (
     _select_faces as select_faces,
     _sample_parametric_curve,
 )
-from camber.cqcompat import _center_shifts, _prism_faces
+from camber.cqcompat import _center_shifts, _prism_faces, _wire_bounds
 from camber.vec import vec3
 
 try:
+    from _camber_native.__dotwrap_generated.main import NativeAssemblyLeaf
     from _camber_native.__dotwrap_generated.main import NativePart
     _NATIVE_AVAILABLE = NativePart is not None
 except ImportError:
@@ -181,6 +183,14 @@ class PendingGeometryTests(unittest.TestCase):
         wp = Workplane("XY").rarray(2, 2, 2, 1).circle(0.25)
         self.assertEqual(2, len(wp._pending))
 
+    def test_ellipse_at_each_location_and_rotated_bounds(self):
+        wp = Workplane("XY").pushPoints([(1, 2), (-3, 4)]).ellipse(3, 2, 90)
+        self.assertEqual(2, len(wp._pending))
+        self.assertAlmostEqual(math.pi / 2, wp._pending[0].segments[0][4])
+        self.assertEqual((-5.0, 3.0, -1.0, 7.0), _wire_bounds(wp._pending))
+        with self.assertRaises(ValueError):
+            Workplane("XY").ellipse(3, 0)
+
     def test_sketch_finalize_returns_parent_with_wires(self):
         wp = Workplane("XY").sketch().rect(1, 1).circle(0.2).finalize()
         self.assertEqual(2, len(wp._pending))
@@ -243,7 +253,66 @@ class PendingGeometryTests(unittest.TestCase):
 
 
 @unittest.skipUnless(_NATIVE_AVAILABLE, "requires the installed camber native module")
+class EachPointTests(unittest.TestCase):
+    def test_eachpoint_keeps_one_transformed_solid_per_location(self):
+        base = Workplane("YZ", origin=(10, 0, 0), size=20).pushPoints([(2, 3), (-1, 4)])
+        result = base.eachpoint(
+            lambda _location: Workplane("XY", size=20).box(2, 4, 6),
+            useLocalCoordinates=True,
+        )
+
+        self.assertEqual(2, len(result.vals()))
+        centers = []
+        for solid in result.vals():
+            points, _ = solid.mesh()
+            centers.append(tuple(sum(point[i] for point in points) / len(points) for i in range(3)))
+        for actual, expected in zip(centers, [(10, 2, 3), (10, -1, 4)]):
+            for coordinate, target in zip(actual, expected):
+                self.assertAlmostEqual(target, coordinate, places=6)
+        points, _ = result.vals()[0].mesh()
+        extents = [max(point[i] for point in points) - min(point[i] for point in points)
+                   for i in range(3)]
+        for actual, expected in zip(extents, (6, 2, 4)):
+            self.assertAlmostEqual(expected, actual, places=6)
+
+    def test_eachpoint_callback_can_place_its_own_result(self):
+        base = Workplane("XY", size=20).pushPoints([(4, -2)])
+        result = base.eachpoint(
+            lambda location: Workplane("XY", size=20).box(1, 1, 1).translate(location)
+        )
+        points, _ = result.val().mesh()
+        center = tuple(sum(point[i] for point in points) / len(points) for i in range(3))
+        self.assertAlmostEqual(4, center[0], places=6)
+        self.assertAlmostEqual(-2, center[1], places=6)
+
+    def test_show_displays_every_solid_in_the_workplane_stack(self):
+        result = (Workplane("XY", size=20).pushPoints([(-3, 0), (3, 0)])
+                  .eachpoint(lambda location: Workplane("XY", size=20).box(2, 2, 2)
+                             .translate(location)))
+        from camber.display import decode_native_solid
+        expected = [decode_native_solid(solid._n) for solid in result.vals()]
+        with patch("camber.view.show") as show:
+            result.show(title="stack")
+        shown_scene = show.call_args.args[0]
+        self.assertEqual(sum(len(scene.patches) for scene in expected), len(shown_scene.patches))
+        self.assertEqual(sum(len(scene.curves) for scene in expected), len(shown_scene.curves))
+        self.assertEqual(sum(len(scene.points) for scene in expected), len(shown_scene.points))
+        self.assertGreater(len(shown_scene.curves), 0)
+        self.assertGreater(len(shown_scene.points), 0)
+        show.assert_called_once_with(shown_scene, title="stack")
+
+
+@unittest.skipUnless(_NATIVE_AVAILABLE, "requires the installed camber native module")
 class NativeWorkplaneTests(unittest.TestCase):
+    def test_ellipse_sketch_extrudes_with_expected_dimensions_and_volume(self):
+        solid = Workplane("XY", size=20, tolerance=0.01).ellipse(3, 2, 90).extrude(4).val()
+        points, _ = solid.mesh()
+        extents = [max(point[i] for point in points) - min(point[i] for point in points)
+                   for i in range(3)]
+        for actual, expected in zip(extents, (4, 6, 4)):
+            self.assertAlmostEqual(expected, actual, places=5)
+        self.assertAlmostEqual(24 * math.pi, solid.volume(), delta=0.4)
+
     def test_classic_bottle_profile_is_centered_and_extrudes_one_sided(self):
         body = (Workplane("XY", size=50, tolerance=0.01).center(-10, 0).vLine(3)
                 .threePointArc((10, 9), (20, 3)).vLine(-3).mirrorX()
@@ -426,6 +495,38 @@ class NativeWorkplaneTests(unittest.TestCase):
         )
         self.assertTrue(result.val().is_volume)
         self.assertGreater(result.val().triangle_count, 0)
+
+    def test_cadquery_loft_aligns_unlike_closed_section_seams(self):
+        workplane = (Workplane("XY", size=30, tolerance=0.05)
+                     .rect(5, 16).workplane(offset=10).ellipse(3, 8)
+                     .workplane(offset=10).slot2D(20, 5, 90))
+        part = workplane._ensure_part()
+        with patch.object(part, "loft", return_value=None) as loft:
+            workplane.loft()
+        options = loft.call_args.kwargs["options"]
+        self.assertEqual(1, options._n.alignment_mode)  # MinimumTwist
+
+    def test_parametric_curve_is_one_sampled_native_sketch_curve(self):
+        workplane = Workplane("XY", size=20).parametricCurve(
+            lambda t: (t, t * t), N=8)
+        part = workplane._ensure_part()
+        sketch = part.sketch(name="sampled_parametric")
+        workplane._draw_wires(sketch, workplane._wires())
+        self.assertEqual(1, sketch.curve_count)
+
+    def test_gallery_25_lofted_stack_cuts_and_keeps_display_entities(self):
+        import runpy
+        path = os.path.join(os.path.dirname(__file__), "..", "examples",
+                            "cadquery_gallery", "25_multi_section_loft_until.py")
+        result = runpy.run_path(path)["result"]
+        solids = result.vals()
+        self.assertEqual(4, len(solids))
+        self.assertTrue(all(solid.is_watertight() for solid in solids))
+        self.assertTrue(all(solid.curve_names and solid.point_names for solid in solids))
+        loft_sides = [name for name in solids[0].patch_names if "-Side-Line" in name]
+        self.assertEqual(4, len(loft_sides))
+        volumes = sorted(solid.volume() for solid in solids)
+        self.assertLess(volumes[1], volumes[2])
 
     def test_loft_starts_from_selected_face_profile(self):
         result = (Workplane("XY", size=20, tolerance=0.05).box(4, 4, 0.25)

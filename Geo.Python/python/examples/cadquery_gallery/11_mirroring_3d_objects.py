@@ -19,3 +19,6 @@ for copy in mirrors:
     result = result.union(copy)
 assert result.val().is_watertight()
 assert result.val().volume() > 1000
+
+if __name__ == "__main__":
+    result.show(title="CadQuery gallery 11 — mirrored 3D objects")

@@ -9,3 +9,6 @@ result = (
 )
 assert result.val().is_watertight()
 assert 0.5 < result.val().volume() < 1.0
+
+if __name__ == "__main__":
+    result.show(title="CadQuery gallery 04 — lines and arcs")

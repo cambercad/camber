@@ -5,3 +5,6 @@ from camber.cqcompat import Workplane
 result = Workplane("front").box(2, 2, 2).shell(0.1)
 assert result.val().is_watertight()
 assert result.val().volume() > 0
+
+if __name__ == "__main__":
+    result.show(title="CadQuery gallery 20 — outward shell")

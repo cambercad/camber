@@ -522,6 +522,8 @@ public class NativeSketch
 
     public string Name { get { return Native.Name; } }
 
+    public int CurveCount { get { return Native.GetAllCurves().Count; } }
+
     public NativeFrame Frame()
     {
         return new NativeFrame(Native.CoordinateSystem);
@@ -766,6 +768,20 @@ public class NativeSketch
         Vec2D? startTangent = hasStartTangent != 0 ? new Vec2D(startTx, startTy) : (Vec2D?)null;
         Vec2D? endTangent = hasEndTangent != 0 ? new Vec2D(endTx, endTy) : (Vec2D?)null;
         Native.AddCubicHermiteSpline(points, startTangent, endTangent);
+    }
+
+    public void AddSampledCurve(string pointsJoined, string name)
+    {
+        List<Vec2D> points = ParseJoinedPoints(pointsJoined);
+        if (points.Count < 2)
+            throw new ArgumentException("A sampled curve needs at least two points.", nameof(pointsJoined));
+        for (int i = 0; i < points.Count; i++)
+        {
+            if (!double.IsFinite(points[i].X) || !double.IsFinite(points[i].Y))
+                throw new ArgumentException("Sampled curve points must be finite.", nameof(pointsJoined));
+        }
+        var curve = Native.AddSampledCurve(points);
+        ApplyCurveName(curve, name);
     }
 
     public void AppendCubicHermiteSpline(

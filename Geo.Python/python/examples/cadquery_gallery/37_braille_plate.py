@@ -8,3 +8,6 @@ result = (
     .faces(">Z").workplane().pushPoints(points).circle(0.65).extrude(0.5)
 )
 assert result.val().is_watertight()
+
+if __name__ == "__main__":
+    result.show(title="CadQuery gallery 37 — Braille plate")

@@ -8,3 +8,6 @@ result = (
 )
 assert result.val().is_watertight()
 assert result.val().volume() > 0.1
+
+if __name__ == "__main__":
+    result.show(title="CadQuery gallery 10 — mirrored geometry")

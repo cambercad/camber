@@ -8,3 +8,6 @@ result = (
 )
 assert result.val().is_watertight()
 assert 1.9 < result.val().volume() < 2.0
+
+if __name__ == "__main__":
+    result.show(title="CadQuery gallery 18 — construction geometry")

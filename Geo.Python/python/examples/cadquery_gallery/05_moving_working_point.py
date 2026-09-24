@@ -8,3 +8,6 @@ result = result.center(-1.5, 1.5).circle(0.25).extrude(0.25)
 assert result.val().is_watertight()
 expected = (math.pi * 3**2 - 0.5**2 - math.pi * 0.25**2) * 0.25
 assert abs(result.val().volume() - expected) < 0.05
+
+if __name__ == "__main__":
+    result.show(title="CadQuery gallery 05 — moving working point")

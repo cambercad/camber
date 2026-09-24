@@ -10,3 +10,6 @@ for y in (30, 10, -10, -30):
         .cutThruAll()
     )
 assert result.val().is_watertight()
+
+if __name__ == "__main__":
+    result.show(title="CadQuery gallery 38 — connector panel")

@@ -12,3 +12,6 @@ result = result.faces(">Z").shell(0.3)
 assert result.val().is_watertight()
 assert result.val().volume() > 0
 assert any("ShellRim_" in name for name in result.val().patch_names)
+
+if __name__ == "__main__":
+    result.show(title="CadQuery gallery 34 — classic bottle")

@@ -6,3 +6,6 @@ result = (
     .offset2D(-0.25, forConstruction=True).vertices()
     .cboreHole(0.125, 0.25, 0.125, depth=None)
 )
+
+if __name__ == "__main__":
+    result.show(title="CadQuery gallery 28 — offset edges for holes")

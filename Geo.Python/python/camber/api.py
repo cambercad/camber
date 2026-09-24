@@ -1732,8 +1732,10 @@ class Sketch(object):
 
     @property
     def curve_count(self):
-        """Number of constraint-solver curves, or -1 if this is a plotter-only sketch."""
-        n = getattr(self._n, "constraint_curve_count", None)
+        """Number of stored curves in this sketch, including sampled curves."""
+        n = getattr(self._n, "curve_count", None)
+        if n is None:
+            n = getattr(self._n, "constraint_curve_count", None)
         if n is None:
             return -1
         return int(n)
@@ -2358,6 +2360,18 @@ class Sketch(object):
         curve_name = self._added_curve_name(None, "spline", index)
         return SketchCurve(curve_name, "spline")
 
+    def add_sampled_curve(self, points, name=None, construction=False):
+        """Add one curve represented by the supplied 2D samples."""
+        joined = _join_xy_points(points)
+        if len(joined.split("|")) < 2:
+            raise ValueError("a sampled curve needs at least two points")
+        index = self.curve_count
+        _require(self._n, "add_sampled_curve")(joined, _name(name))
+        curve_name = self._added_curve_name(name, "sampled", index)
+        if construction:
+            self.set_construction(curve_name, True)
+        return SketchCurve(curve_name, "sampled")
+
     def add_involute(self, center, base_radius, t_start, t_end, rotation=0, name=None, max_deviation=-1):
         """Circle involute as a cubic Hermite spline (same idea as NACA airfoils).
 
@@ -2723,6 +2737,12 @@ class Solid(_MeshBody):
     def __add__(self, other):
         """Boolean union. Result keeps this solid's name."""
         return self._part.union(self, other, name=self.name)
+
+    def located(self, location):
+        """Return this solid translated to a world-space location."""
+        target = _xyz(location)
+        copies = self._part.pattern_linear(self, 2, target)
+        return copies[1]
 
     def __sub__(self, other):
         """Boolean subtraction (this minus other). Result keeps this solid's name."""

@@ -453,6 +453,11 @@ class _Wire(object):
         return _Wire([("circle", _xy2(center), float(radius))], kind="circle", name=name)
 
     @staticmethod
+    def ellipse(center, x_radius, y_radius, rotation=0.0, name=None):
+        return _Wire([("ellipse", _xy2(center), float(x_radius), float(y_radius),
+                       float(rotation))], kind="ellipse", name=name)
+
+    @staticmethod
     def rect(xmin, xmax, ymin, ymax, names=None):
         if names is None:
             wire = _Wire.from_points(
@@ -483,6 +488,9 @@ class _Wire(object):
             if seg[0] == "circle":
                 c = seg[1]
                 segs.append(("circle", (c[0] + dx, c[1] + dy), seg[2]))
+            elif seg[0] == "ellipse":
+                c = seg[1]
+                segs.append(("ellipse", (c[0] + dx, c[1] + dy), seg[2], seg[3], seg[4]))
             elif seg[0] == "line":
                 extra = (seg[3],) if len(seg) > 3 else ()
                 segs.append(("line", (seg[1][0] + dx, seg[1][1] + dy),
@@ -496,6 +504,8 @@ class _Wire(object):
                 ))
             elif seg[0] == "spline":
                 segs.append(("spline", [(x + dx, y + dy) for x, y in seg[1]]))
+            elif seg[0] == "sampled":
+                segs.append(("sampled", [(x + dx, y + dy) for x, y in seg[1]]))
             else:
                 segs.append(seg)
         return _Wire(segs, kind=self.kind, name=self.name)
@@ -506,6 +516,20 @@ class _Wire(object):
         for seg in self.segments:
             if seg[0] == "circle":
                 segs.append(("circle", map_point(seg[1]), seg[2]))
+            elif seg[0] == "ellipse":
+                center, rx, ry, angle = seg[1:]
+                major = (center[0] + rx * math.cos(angle), center[1] + rx * math.sin(angle))
+                minor = (center[0] - ry * math.sin(angle), center[1] + ry * math.cos(angle))
+                mapped_center = map_point(center)
+                mapped_major = map_point(major)
+                mapped_minor = map_point(minor)
+                major_vector = (mapped_major[0] - mapped_center[0],
+                                mapped_major[1] - mapped_center[1])
+                minor_vector = (mapped_minor[0] - mapped_center[0],
+                                mapped_minor[1] - mapped_center[1])
+                segs.append(("ellipse", mapped_center, math.hypot(*major_vector),
+                             math.hypot(*minor_vector),
+                             math.atan2(major_vector[1], major_vector[0])))
             elif seg[0] == "line":
                 extra = (seg[3],) if len(seg) > 3 else ()
                 segs.append(("line", map_point(seg[1]), map_point(seg[2])) + extra)
@@ -513,6 +537,8 @@ class _Wire(object):
                 segs.append(("arc", map_point(seg[1]), map_point(seg[2]), map_point(seg[3])))
             elif seg[0] == "spline":
                 segs.append(("spline", [map_point(p) for p in seg[1]]))
+            elif seg[0] == "sampled":
+                segs.append(("sampled", [map_point(p) for p in seg[1]]))
             else:
                 segs.append(seg)
         return _Wire(segs, kind=self.kind, name=self.name)
@@ -522,6 +548,9 @@ class _Wire(object):
         for i, seg in enumerate(self.segments):
             if seg[0] == "circle":
                 curves.append(sketch.add_circle(seg[1], seg[2], name=self.name))
+            elif seg[0] == "ellipse":
+                curves.append(sketch.add_ellipse(seg[1], (seg[2], seg[3]),
+                                                 rotation=seg[4], name=self.name))
             elif seg[0] == "line":
                 name = seg[3] if len(seg) > 3 else (self.name if i == 0 else None)
                 curves.append(sketch.add_line(seg[1], seg[2], name=name))
@@ -529,6 +558,8 @@ class _Wire(object):
                 curves.append(sketch.add_arc(seg[1], seg[2], seg[3], name=self.name))
             elif seg[0] == "spline":
                 curves.append(sketch.add_spline(seg[1], name=self.name))
+            elif seg[0] == "sampled":
+                curves.append(sketch.add_sampled_curve(seg[1], name=self.name))
         return curves
 
 
@@ -549,6 +580,12 @@ class Sketch(object):
     def circle(self, radius, mode="a"):
         """Add a circle at the parent Workplane locations. ``mode`` is unused."""
         self._wires.extend(_circle_wires(radius, self._parent._locations))
+        return self
+
+    def ellipse(self, x_radius, y_radius, rotation_angle=0.0, mode="a"):
+        """Add a closed ellipse at each parent Workplane location."""
+        self._wires.extend(_ellipse_wires(
+            x_radius, y_radius, rotation_angle, self._parent._locations))
         return self
 
     def push(self, locs):
@@ -583,6 +620,14 @@ def _circle_wires(radius, locations, name=None):
     return [_Wire.circle(loc, radius, name=name) for loc in locations]
 
 
+def _ellipse_wires(x_radius, y_radius, rotation_angle, locations):
+    rx, ry, angle = float(x_radius), float(y_radius), float(rotation_angle)
+    if not all(math.isfinite(value) for value in (rx, ry, angle)) or rx <= 0 or ry <= 0:
+        raise ValueError("ellipse radii must be positive and all parameters finite")
+    angle = math.radians(angle)
+    return [_Wire.ellipse(location, rx, ry, angle) for location in locations]
+
+
 def _named_rect_sides(wires):
     for wire in wires:
         names = [seg[3] for seg in wire.segments if seg[0] == "line" and len(seg) > 3]
@@ -601,6 +646,13 @@ def _wire_bounds(wires):
                 r = float(seg[2])
                 xs.extend((cx - r, cx + r))
                 ys.extend((cy - r, cy + r))
+            elif seg[0] == "ellipse":
+                cx, cy = seg[1]
+                rx, ry, angle = map(float, seg[2:])
+                ex = math.hypot(rx * math.cos(angle), ry * math.sin(angle))
+                ey = math.hypot(rx * math.sin(angle), ry * math.cos(angle))
+                xs.extend((cx - ex, cx + ex))
+                ys.extend((cy - ey, cy + ey))
             elif seg[0] in ("line", "arc"):
                 for pt in seg[1:4] if seg[0] == "arc" else seg[1:3]:
                     xs.append(float(pt[0]))
@@ -1002,6 +1054,18 @@ class Workplane(object):
             return self
         return self._spawn(_pending=self._pending + _circle_wires(radius, self._locations))
 
+    def ellipse(self, x_radius, y_radius, rotation_angle=0.0, forConstruction=False):
+        """Add a closed ellipse for each workplane location.
+
+        Radii are semiaxis lengths. ``rotation_angle`` is in degrees, matching
+        CadQuery; the native sketch stores the equivalent angle in radians.
+        Construction ellipses are ignored, like construction circles here.
+        """
+        if forConstruction:
+            return self
+        return self._spawn(_pending=self._pending + _ellipse_wires(
+            x_radius, y_radius, rotation_angle, self._locations))
+
     def polygon(self, nSides, diameter, forConstruction=False):
         """Regular polygon inscribed in a circle of ``diameter``."""
         if int(nSides) < 3:
@@ -1355,6 +1419,9 @@ class Workplane(object):
         for i, (frame, section_wires) in enumerate(sections):
             sketches.append(self._profile_sketch(section_wires, "{0}_s{1}".format(name, i), frame=frame))
         options = LoftOptions()
+        # CadQuery aligns closed section seams to avoid arbitrary rotation
+        # between unlike profiles (e.g. rectangle -> ellipse -> slot).
+        options._n.alignment_mode = 1  # LoftAlignmentMode.MinimumTwist
         if ruled:
             native = options._n
             if hasattr(native, "style"):
@@ -1400,9 +1467,22 @@ class Workplane(object):
         )
 
     def cutBlind(self, until, clean=True, both=False, taper=0):
-        """Cut pending wires to a depth. ``taper`` is not implemented."""
+        """Cut pending wires to a depth, or through to the far side with ``'last'``."""
         if taper:
             raise NotImplementedError("tapered cutBlind needs a kernel change")
+        if isinstance(until, str):
+            if until.lower() != "last":
+                raise ValueError("cutBlind string extent must be 'last'")
+            solids = self.vals()
+            if not solids:
+                raise ValueError("cut needs an existing solid")
+            frame = self._active_frame()
+            origin, normal = vec3(frame.origin), vec3(frame.z)
+            depth = max(_dot(point - origin, normal)
+                        for solid in solids for point in solid.mesh()[0])
+            if depth <= 0:
+                raise ValueError("cutBlind('last') has no solid in the workplane normal direction")
+            return self._cut_pending(depth, both=False)
         return self._cut_pending(float(until), both=both)
 
     def cutThruAll(self, clean=True, taper=0):
@@ -1412,19 +1492,28 @@ class Workplane(object):
         return self._cut_pending(2.0 * self._size, both=True)
 
     def _cut_pending(self, height, both):
-        if self._solid is None:
+        solids = self.vals()
+        if not solids:
             raise ValueError("cut needs an existing solid")
         wires = self._wires()
-        name = self._new_name("cut")
-        sk = self._profile_sketch(wires, name + "_sk")
-        if both:
-            cutter = self.part.extrude_two_sides(sk, abs(height), abs(height), name=name)
-        elif height >= 0:
-            cutter = self.part.extrude(sk, height, name=name)
-        else:
-            cutter = self.part.extrude_two_sides(sk, 0.0, abs(height), name=name)
-        cut = self.part.subtract(self._solid, cutter, name=self._solid.name)
-        return self._cleared(_solid=cut, _faces=list(self._faces), _edges=list(self._edges))
+        frame = self._active_frame()
+        results = []
+        for solid in solids:
+            part = solid._part
+            name = part._generate_name("cut")
+            sk = part.sketch(frame=frame, name=name + "_sk")
+            self._draw_wires(sk, wires)
+            if both:
+                cutter = part.extrude_two_sides(sk, abs(height), abs(height), name=name)
+            elif height >= 0:
+                cutter = part.extrude(sk, height, name=name)
+            else:
+                cutter = part.extrude_two_sides(sk, 0.0, abs(height), name=name)
+            results.append(part.subtract(solid, cutter, name=solid.name))
+        return self._cleared(
+            _solid=results[0] if len(results) == 1 else None,
+            _stack_solids=[] if len(results) == 1 else results,
+            _faces=list(self._faces), _edges=list(self._edges))
 
     def hole(self, diameter, depth=None, clean=True):
         """Circular hole. ``depth=None`` means thru-all."""
@@ -1572,8 +1661,23 @@ class Workplane(object):
         return 2.0 * self._size * math.sqrt(3.0)
 
     def show(self, title="Camber"):
-        """Open the 3D viewer on ``val()``."""
-        self.val().show(title=title)
+        """Open the 3D viewer on the current solid or complete solid stack."""
+        solids = self.vals()
+        if not solids:
+            raise ValueError("Workplane has no solid to show")
+        if len(solids) == 1:
+            solids[0].show(title=title)
+            return self
+
+        # A display operation must not boolean-union the stack: that changes
+        # the model and drops the individual solids' named edges and anchors.
+        from .display import DisplayScene, decode_native_solid
+        from .view import show as show_scene
+
+        scene = DisplayScene()
+        for solid in solids:
+            scene.extend(decode_native_solid(solid._n))
+        show_scene(scene, title=title)
         return self
 
     def __add__(self, other):
@@ -1642,6 +1746,19 @@ class Workplane(object):
         moved = self.part.pattern_circular(
             self._solid, 2, axis=axis, angle=math.radians(float(angleDegrees)))[1]
         return self._cleared(_solid=moved, _faces=[], _edges=[])
+
+    def rotateAboutCenter(self, axis, angleDegrees):
+        """Rotate the solid around an axis through its bounding-box center."""
+        solid = self.val()
+        points, _ = solid.mesh()
+        center = vec3(*(
+            (min(getattr(point, axis_name) for point in points) +
+             max(getattr(point, axis_name) for point in points)) * 0.5
+            for axis_name in ("x", "y", "z")))
+        direction = _as_vec3(axis)
+        if _norm(direction) < 1e-12:
+            raise ValueError("rotation axis is degenerate")
+        return self.rotate(center, center + direction, angleDegrees)
 
     def mirror(self, mirrorPlane="XY", basePointVector=(0, 0, 0), union=False):
         """Reflect a solid across a named plane; optionally union the source."""
@@ -1796,8 +1913,8 @@ class Workplane(object):
         Error is estimated at quarter points on each parameter span; arbitrary
         callbacks cannot provide a strict error bound without derivative or
         curvature information.
-        Curves must return 2D points. The sketch backend stores the samples as
-        line segments, so spline degree/smoothing and ``makeWire=False`` are
+        Curves must return 2D points. The native sketch stores the samples as
+        one sampled curve; spline fitting controls and ``makeWire=False`` are
         not supported.
         """
         if not makeWire:
@@ -1809,16 +1926,54 @@ class Workplane(object):
                   for point in _sample_parametric_curve(func, N, start, stop, tolerance)]
         if _dist2(points[0], points[-1]) <= tolerance * tolerance:
             points[-1] = points[0]
-        wire = _Wire.from_points(points, closed=False)
+        wire = _Wire([("sampled", points)], kind="path")
         return self._spawn(_pending=self._pending + [wire])
 
     def each(self, callback, useLocalCoordinates=False, combine=True, clean=True):
         """Not implemented."""
         raise NotImplementedError("each() is not implemented")
 
-    def eachpoint(self, callback, useLocalCoordinates=False, combine=True, clean=True):
-        """Not implemented."""
-        raise NotImplementedError("eachpoint() is not implemented")
+    def eachpoint(self, callback, useLocalCoordinates=False, combine=False, clean=True):
+        """Build one solid per pushed point using ``callback(location)``.
+
+        The callback receives a world-space ``vec3`` at each workplane location.
+        By default it is responsible for placing its result there. With
+        ``useLocalCoordinates=True``, it receives the local XY point and its
+        result is transformed from the active workplane to that point.
+        """
+        if not callable(callback):
+            raise TypeError("eachpoint callback must be callable")
+
+        frame = self._active_frame()
+        solids = []
+        for x, y in self._locations:
+            world_location = _world_from_local(frame, (x, y, 0.0))
+            location = vec3(x, y, 0.0) if useLocalCoordinates else world_location
+            result = callback(location)
+            solid = result.val() if isinstance(result, Workplane) else result
+            if not isinstance(solid, Solid):
+                raise TypeError("eachpoint callback must return a Solid or a Workplane containing one Solid")
+
+            if not useLocalCoordinates and (solid._part is self.part or not combine):
+                solids.append(solid)
+                continue
+
+            points, triangles = solid.mesh()
+            if useLocalCoordinates:
+                points = [_world_from_local(_frame_plus_local(frame, (x, y, 0.0)),
+                                            (point.x, point.y, point.z))
+                          for point in points]
+            # The target Part owns the returned stack, independent of the
+            # callback's temporary Part.
+            solids.append(self._ensure_part().solid_from_mesh(
+                points, triangles, name=self._new_name("eachpoint")))
+
+        if not solids:
+            raise ValueError("eachpoint needs at least one location")
+        if combine:
+            solid = solids[0] if len(solids) == 1 else self._ensure_part().batch_union(solids)
+            return self._cleared(_solid=solid, _stack_solids=[])
+        return self._cleared(_solid=None, _stack_solids=solids)
 
     def __repr__(self):
         solid = None if self._solid is None else self._solid.name

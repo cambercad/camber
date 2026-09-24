@@ -302,7 +302,7 @@ namespace Geo
                     prevPoly, prevNorms, prevClosed, prevSeamU0, systems[pi], prevSystem);
 
                 // Match legacy order: roll closed profiles first, then orient CCW (may reverse).
-                bool rollClosed = closed &&
+                bool rollClosed = closed && !prepared[pi].CorrespondenceLocked &&
                     (seamHint.HasPoint || options.AlignmentMode != LoftAlignmentMode.AsAuthored);
                 if (rollClosed)
                 {
@@ -314,7 +314,8 @@ namespace Geo
                     RollPolylineInPlace(polys[pi], polyNormals[pi], closed, rollBy);
                 }
 
-                bool reversed = options.FirstCurves == null && OrientClosedCounterClockwise(polys[pi], polyNormals[pi], closed);
+                bool reversed = options.FirstCurves == null && !prepared[pi].CorrespondenceLocked &&
+                    OrientClosedCounterClockwise(polys[pi], polyNormals[pi], closed);
                 if (reversed)
                 {
                     crease = RemapCreaseReverse(crease, polys[pi].Count);
@@ -366,7 +367,10 @@ namespace Geo
 
             bool closedForCaps = profileClosed[0];
             bool matchingVertices = options.CorrespondenceMode == LoftCorrespondenceMode.MatchingVertices;
-            output.LoftSideSupportFactory = BuildExactPolygonLoftSupport(prepared, options.Style, out var polygonBreaks, matchingVertices);
+            bool preparedMatchedCurves = prepared.All(p => p.CorrespondenceLocked && p.MatchedCurve != null);
+            output.LoftSideSupportFactory = preparedMatchedCurves
+                ? BuildPreparedCurveLoftSupport(prepared, options.Style, out var polygonBreaks)
+                : BuildExactPolygonLoftSupport(prepared, options.Style, out polygonBreaks, matchingVertices);
 
             bool matchedCurves = prepared[0].MatchedCurve != null;
             int matchedCount = matchedCurves ? prepared[0].MatchedCurveNames.Count :
@@ -456,11 +460,12 @@ namespace Geo
             ComputeLoftMeshTolerancesFromGrid(grid, vRows, m, out double minSqCross, out double minSqEdge);
 
             int sideGroup = baseGroupIndex;
-            int sideCount = matchingVertices ? matchedCount : 1;
+            bool matchedBoundaries = matchingVertices || preparedMatchedCurves;
+            int sideCount = matchedBoundaries ? matchedCount : 1;
             int startCapGroup = baseGroupIndex + sideCount;
             int endCapGroup = startCapGroup + 1;
             int[] sideColumns = null;
-            if (matchingVertices)
+            if (matchedBoundaries)
             {
                 output.LoftSideDomains = new Dictionary<string, ParametricRange>();
                 var names = MatchedSideNames(prepared[0], loftName);
@@ -490,7 +495,7 @@ namespace Geo
             }
             var startRim = PreciseRim(0);
             var endRim = PreciseRim(pCount - 1);
-            var planarGrid = matchingVertices && !matchedCurves
+            var planarGrid = matchingVertices && !matchedCurves && !preparedMatchedCurves
                 ? PreservePlanarMatchedSides(prepared, uColumns, rowVUniform, vRows, options.Style,
                     converter, startRim, endRim) : null;
             int baseVert = vertices.Count;

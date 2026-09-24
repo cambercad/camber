@@ -42,6 +42,7 @@ namespace Geo
                 {
                     Poly = poly,
                     Norms = pn,
+                    Closed = SketchStripTessellator.IsClosedPolyline(poly),
                     CreaseIdx = creases,
                     System = sketch.CoordinateSystem,
                     AnalyticStrip = analytic,
@@ -49,6 +50,8 @@ namespace Geo
                     SeamU0 = 0
                 });
             }
+            if (options.CorrespondenceMode != LoftCorrespondenceMode.MatchingVertices && options.FirstCurves == null)
+                PrepareSampledCurveCorrespondence(prepared, maxDeviation);
         }
 
         private static void PrepareProfilePolyline(List<Vec2D> poly, List<Vec2D> norms, out bool closed, out int removedClosingCount)

@@ -11,3 +11,6 @@ half_profile = [
 result = Workplane("front").polyline(half_profile).mirrorY().extrude(length)
 assert result.val().is_watertight()
 assert abs(result.val().volume() - (2 * width * wall + (height - 2 * wall) * wall) * length) < 1e-3
+
+if __name__ == "__main__":
+    result.show(title="CadQuery gallery 08 — polylines")

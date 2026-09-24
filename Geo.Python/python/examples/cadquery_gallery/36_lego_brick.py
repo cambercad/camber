@@ -15,3 +15,6 @@ result = (
     .circle(stud_diameter / 2).extrude(stud_height)
 )
 assert result.val().is_watertight()
+
+if __name__ == "__main__":
+    result.show(title="CadQuery gallery 36 — Lego brick")

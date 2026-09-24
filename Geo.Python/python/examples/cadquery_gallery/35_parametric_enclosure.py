@@ -9,3 +9,6 @@ result = (
 )
 assert result.val().is_watertight()
 assert result.val().volume() > 0
+
+if __name__ == "__main__":
+    result.show(title="CadQuery gallery 35 — parametric enclosure")

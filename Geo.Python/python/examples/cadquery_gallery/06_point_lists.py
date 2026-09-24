@@ -9,3 +9,6 @@ result = (
 )
 assert result.val().is_watertight()
 assert abs(result.val().volume() - math.pi * (2**2 - 4 * 0.25**2) * 0.125) < 0.01
+
+if __name__ == "__main__":
+    result.show(title="CadQuery gallery 06 — point lists")

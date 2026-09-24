@@ -99,6 +99,8 @@ namespace Geo
         public string FirstCurveName;
         public NURBS.BSplineCurve MatchedCurve;
         public IReadOnlyList<string> MatchedCurveNames;
+        /// <summary>Profile was internally reparameterized into matching sampled spans.</summary>
+        public bool CorrespondenceLocked;
         /// <summary>
         /// Seam in authored strip parameter: evaluate shared column u at authored <c>Frac(u + SeamU0)</c> (closed).
         /// Zero means as-authored / open profiles.
