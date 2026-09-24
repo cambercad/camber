@@ -435,7 +435,7 @@ Solid patterns make copies that can be used as additive bodies or cutting tools:
 
 ```python
 holes = part.pattern_linear(hole_tool, count=4, step=(20, 0, 0))
-plate = part.cut(plate, part.batch_union(holes))
+plate = part.batch_subtract(plate, holes)
 ring_tools = part.pattern_circular(hole_tool, count=6, axis=camber.Frame())
 other_hand = part.mirror(bracket, plane=camber.Frame(), name="left_bracket")
 ```

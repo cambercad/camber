@@ -16,7 +16,7 @@ public class BlendClosureFaceTests : IDisposable
         var api = new GeoAPI(new Box3D(new Vec3D(-20), new Vec3D(40)), .01);
         var block = api.CreateCuboid(new Vec3D(0), new Vec3D(20, 20, 6), "block");
         var cutter = api.CreateCuboid(new Vec3D(10, 10, -2), new Vec3D(25, 25, 8), "notch");
-        var body = api.Boolean(block, cutter, BooleanOp.Difference, "body");
+        var body = api.Boolean(block, cutter, BooleanOp.Subtract, "body");
         var graph = new EdgeGraph(body.Mesh.Triangles, body.Mesh.GetTriangleGroups(),
             body.Mesh.Positions, body.Mesh.PrecisionPositions, body.groupIdToExtendedName);
         var edge = Assert.Single(graph.Edges.Where(e => body.groupIdToExtendedName[e.GroupIdA].StartsWith("notch-") && body.groupIdToExtendedName[e.GroupIdB].StartsWith("notch-")));

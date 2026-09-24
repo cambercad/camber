@@ -7,7 +7,7 @@ from collections import namedtuple
 from .vec import _xy, _xyz, vec2, vec3
 
 BOOLEAN_UNION = 0  # a + b / Part.union
-BOOLEAN_DIFFERENCE = 1  # a - b / Part.cut
+BOOLEAN_SUBTRACT = 1  # a - b / Part.subtract
 BOOLEAN_INTERSECT = 2  # a & b / Part.intersect
 BOOLEAN_RESOLVE = 3
 BOOLEAN_NO_OP_INTERSECTION_CONTOUR_ONLY = 4
@@ -1481,16 +1481,16 @@ class Part(object):
             tangent(start_tangent), tangent(end_tangent), float(max_deviation), _name(name)), self)
 
     def boolean(self, a, b, operation, name=None):
-        """CSG: ``operation`` is BOOLEAN_UNION / DIFFERENCE / INTERSECT."""
+        """CSG: ``operation`` is BOOLEAN_UNION / SUBTRACT / INTERSECT."""
         return Solid(_require(self._n, "boolean")(a._n, b._n, int(operation), _name(name)), self)
 
     def union(self, a, b, name=None):
         """Boolean union. Same as ``a + b``."""
         return Solid(_invoke(self._n, "union", a._n, b._n, _name(name)), self)
 
-    def cut(self, a, b, name=None):
-        """Boolean difference ``a minus b``. Same as ``a - b``."""
-        return Solid(_invoke(self._n, "cut", a._n, b._n, _name(name)), self)
+    def subtract(self, a, b, name=None):
+        """Boolean subtraction ``a minus b``. Same as ``a - b``."""
+        return Solid(_invoke(self._n, "subtract", a._n, b._n, _name(name)), self)
 
     def intersect(self, a, b, name=None):
         """Boolean intersection. Same as ``a & b``."""
@@ -1523,6 +1523,23 @@ class Part(object):
         if len(meshes) == 1:
             return meshes[0]
         return Solid(_require(self._n, "batch_union")(_solid_list(meshes)), self)
+
+    def batch_subtract(self, base, cutters, name=None):
+        """Subtract the union of ``cutters`` from ``base`` in one Boolean step.
+
+        ``cutters`` may be any iterable of solids. An empty iterable leaves
+        ``base`` unchanged; the input solids are never modified.
+        """
+        if not isinstance(base, Solid) or base._part is not self:
+            raise TypeError("base must be a Solid from this Part")
+        cutters = list(cutters)
+        if any(not isinstance(cutter, Solid) or cutter._part is not self
+               for cutter in cutters):
+            raise TypeError("cutters must be Solids from this Part")
+        if not cutters:
+            return base
+        return Solid(_require(self._n, "batch_subtract")(
+            base._n, _solid_list(cutters), _name(name)), self)
 
     def batch_boolean_chain(self, mesh_a, steps):
         """Apply ``steps`` as ``[(solid, BOOLEAN_*), ...]`` in order onto ``mesh_a``."""
@@ -1620,17 +1637,18 @@ class Part(object):
         return Solid(_require(self._n, "chamfer")(
             solid._n, _join_names(edges), float(distance), float(max_deviation), _name(name)), self)
 
-    def shell(self, solid, faces, thickness, name=None, max_deviation=-1):
-        """Hollow a planar-patch solid inward through one or more named faces.
+    def shell(self, solid, thickness, faces=None, name=None, max_deviation=-1):
+        """Hollow a solid inward; optionally remove faces to create openings.
 
-        The exterior dimensions and opening boundary remain fixed. Planar,
+        The exterior dimensions and any opening boundaries remain fixed. Planar,
         cylindrical, and spherical patches use exact analytic offsets; other
         or metadata-free patches use a welded triangle-normal offset. Collapsed,
         inverted, or topology-changing offsets fail explicitly. Cavity faces
-        are selectable as ``ShellInner_<source-patch>``.
+        are selectable as ``ShellInner_<source-patch>``. Without ``faces``, the
+        cavity is fully enclosed.
         """
         return Solid(_require(self._n, "shell")(
-            solid._n, _join_names(faces), float(thickness), float(max_deviation), _name(name)), self)
+            solid._n, float(thickness), _join_names(faces or []), float(max_deviation), _name(name)), self)
 
     def solid(self, name):
         """Look up a Solid or Surface already registered on this part, or None."""
@@ -2691,7 +2709,7 @@ class _MeshBody(object):
 class Solid(_MeshBody):
     """Closed triangle volume owned by a Part.
 
-    Operators are ``+`` union, ``-`` cut, and ``&`` intersect.
+    Operators are ``+`` union, ``-`` subtract, and ``&`` intersect.
     """
 
     def __init__(self, native, part):
@@ -2704,8 +2722,8 @@ class Solid(_MeshBody):
         return self._part.union(self, other, name=self.name)
 
     def __sub__(self, other):
-        """Boolean difference (this minus other). Result keeps this solid's name."""
-        return self._part.cut(self, other, name=self.name)
+        """Boolean subtraction (this minus other). Result keeps this solid's name."""
+        return self._part.subtract(self, other, name=self.name)
 
     def __and__(self, other):
         """Boolean intersection. Result keeps this solid's name."""

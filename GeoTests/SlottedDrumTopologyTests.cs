@@ -32,7 +32,7 @@ public class SlottedDrumTopologyTests : IDisposable
             profile.AddArc(new Vec2D(2, -h), new Vec2D(0, -length / 2), new Vec2D(-2, -h));
             var cutter = api.Extrude(profile, 9, name: $"tool_{i}");
             var tools = api.BatchUnion(api.PatternCircular(cutter, 4, CoordinateSystem.Default, 2 * Math.PI, $"row_{i}").ToList());
-            body = api.Boolean(body, tools, BooleanOp.Difference);
+            body = api.Boolean(body, tools, BooleanOp.Subtract);
             Assert.True(MeshAnalysis.IsWatertightMesh(body.Mesh.PrecisionPositions, body.Mesh.Triangles), $"raw row {i}");
             body.EnsureCoplanarPostProcessed();
             Assert.True(MeshAnalysis.IsWatertightMesh(body.Mesh.PrecisionPositions, body.Mesh.Triangles), $"processed row {i}");

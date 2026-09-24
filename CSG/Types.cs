@@ -70,7 +70,7 @@ namespace CSG
     public enum BooleanOp
     {
         Union,
-        Difference,
+        Subtract,
         Intersect,
         Resolve,
         NoOpIntersectionContourOnly,
@@ -93,7 +93,7 @@ namespace CSG
         public bool keepCoplanarIfSameNormal;
         public bool keepCoplanarIfOppositeNormal;
 
-        public BoolSettings(BooleanOp op = BooleanOp.Difference) : this()
+        public BoolSettings(BooleanOp op = BooleanOp.Subtract) : this()
         {
 
             switch (op)
@@ -114,7 +114,7 @@ namespace CSG
                     keepCoplanarIfSameNormal = true;
                     keepCoplanarIfOppositeNormal = false;
                     break;
-                case BooleanOp.Difference:
+                case BooleanOp.Subtract:
                     //keepInside1 = false;
                     //keepInside2 = true;
                     //flipTriOrientation1 = false;

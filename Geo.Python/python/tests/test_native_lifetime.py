@@ -18,10 +18,10 @@ for optional in (False, True):
     base = part.cuboid((0, 0, 0), (12, 4, 2), name="base")
     if optional:
         notch = part.cuboid((1, -1, -1), (2, 5, 3), name="optional_slot")
-        base = part.cut(base, notch, name="before_main")
+        base = part.subtract(base, notch, name="before_main")
         assert base.curve_names
     cutter = part.cuboid((4, -1, -1), (5, 5, 3), name="main_slot")
-    final = part.cut(base, cutter, name="finished")
+    final = part.subtract(base, cutter, name="finished")
     packed = glview.pack_scene(glview._as_scene(final))
     assert packed["mesh_idx"] and packed["face_names"]
 print("completed", flush=True)

@@ -76,6 +76,16 @@ class PlaneAndSelectorTests(unittest.TestCase):
         caps = sorted(f["name"] for f in select_faces(faces, "#Z"))
         self.assertEqual(["bottom", "top"], caps)
 
+    def test_face_selector_or_combines_branches(self):
+        faces = [
+            _face("top", (0, 0, 1), (0, 0, 1)),
+            _face("west", (-1, 0, 0), (-1, 0, 0)),
+            _face("east", (1, 0, 0), (1, 0, 0)),
+            _face("south", (0, -1, 0), (0, -1, 0)),
+        ]
+        self.assertEqual(["top", "west", "east"],
+                         [face["name"] for face in select_faces(faces, "+Z or -X or +X")])
+
     def test_edge_parallel_to_z(self):
         edges = [
             _edge("vert", (0, 0, 0), (0, 0, 1)),
@@ -162,14 +172,112 @@ class PendingGeometryTests(unittest.TestCase):
         wp = Workplane("XY")
         with self.assertRaises(NotImplementedError):
             wp.shell(0.2)
-        with self.assertRaises(NotImplementedError):
+        with self.assertRaises(ValueError):
             wp.translate((1, 0, 0))
         with self.assertRaises(NotImplementedError):
             wp.vertices()
 
+    def test_center_keeps_earlier_wires_in_place(self):
+        wp = Workplane("XY").circle(3).center(1.5, 0).rect(0.5, 0.5)
+        self.assertEqual((0.0, 0.0), wp._pending[0].segments[0][1])
+        self.assertEqual((1.25, -0.25), wp._pending[1].segments[0][1])
+
+    def test_arc_stays_in_path_order(self):
+        wp = Workplane("XY").lineTo(2, 0).threePointArc((3, 1), (2, 2)).close()
+        self.assertEqual(["line", "arc", "line"], [s[0] for s in wp._pending[0].segments])
+
+    def test_construction_rectangle_yields_four_locations(self):
+        wp = Workplane("XY").rect(2, 4, forConstruction=True).vertices()
+        self.assertEqual({(-1.0, -2.0), (1.0, -2.0), (1.0, 2.0), (-1.0, 2.0)},
+                         set(wp._locations))
+
+    def test_2d_mirror_closes_outline(self):
+        wp = Workplane("XY").polyline([(0, 1), (2, 1), (2, -1), (0, -1)]).mirrorY()
+        self.assertEqual(1, len(wp._pending))
+        self.assertIsNone(wp._open)
+        self.assertGreater(len(wp._pending[0].segments), 4)
+
 
 @unittest.skipUnless(_NATIVE_AVAILABLE, "requires the installed camber native module")
 class NativeWorkplaneTests(unittest.TestCase):
+    def test_closed_inward_shell_bridge(self):
+        block = Workplane("XY", size=20, tolerance=0.01).box(2, 2, 2)
+        result = block.shell(-0.1)
+        self.assertTrue(result.val().is_watertight())
+        self.assertAlmostEqual(result.val().volume(), 8 - 1.8**3, delta=0.01)
+        self.assertTrue(any("ShellInner_" in name for name in result.val().patch_names))
+        self.assertFalse(any("ShellRim_" in name for name in result.val().patch_names))
+
+    def test_part_shell_optional_faces(self):
+        block = Workplane("XY", size=20, tolerance=0.01).box(2, 2, 2)
+        closed = block.part.shell(block.val(), 0.1)
+        explicit_empty = block.part.shell(block.val(), 0.1, faces=[])
+        self.assertAlmostEqual(closed.volume(), explicit_empty.volume(), delta=1e-6)
+
+    def test_closed_spherical_shell(self):
+        result = Workplane("XY", size=20, tolerance=0.01).sphere(2).shell(-0.2)
+        self.assertTrue(result.val().is_watertight())
+        self.assertAlmostEqual(result.val().volume(), 4 * 3.141592653589793 / 3 *
+                               (2**3 - 1.8**3), delta=0.3)
+
+    def test_open_inward_shell_bridge(self):
+        result = Workplane("XY", size=20, tolerance=0.05).box(2, 2, 2).faces(">Z").shell(-0.1)
+        self.assertTrue(result.val().is_watertight())
+        self.assertLess(result.val().volume(), 8.0)
+
+    def test_offset2d_profiles(self):
+        source = Workplane("XY", size=20, tolerance=0.05).polygon(5, 10).extrude(0.1)
+        outward = Workplane("XY", size=20, tolerance=0.05).polygon(5, 10).offset2D(1).extrude(0.1)
+        inward = Workplane("XY", size=20, tolerance=0.05).polygon(5, 10).offset2D(-0.5, "intersection").extrude(0.1)
+        self.assertGreater(outward.val().volume(), source.val().volume())
+        self.assertLess(inward.val().volume(), source.val().volume())
+        self.assertTrue(outward.val().is_watertight())
+        self.assertTrue(inward.val().is_watertight())
+
+    def test_to_pending_offsets_selected_face_edges(self):
+        block = Workplane("XY", size=20, tolerance=0.05).box(4, 2, 0.5)
+        selected = block.faces(">Z").edges().toPending()
+        self.assertEqual(1, len(selected._pending))
+        self.assertEqual(4, len(selected._pending[0].segments))
+        holes = selected.offset2D(-0.25, forConstruction=True).vertices().cboreHole(
+            0.125, 0.25, 0.125)
+        self.assertTrue(holes.val().is_watertight())
+        self.assertLess(holes.val().volume(), block.val().volume())
+
+    def test_tagged_face_selection_survives_later_solid_features(self):
+        prism = Workplane("XY", size=20, tolerance=0.05).polygon(3, 5).extrude(4).tag("prism")
+        result = prism.sphere(10).faces("<X", tag="prism").workplane().circle(1).cutThruAll()
+        self.assertTrue(result.val().is_watertight())
+        self.assertLess(result.val().volume(), prism.sphere(10).val().volume())
+
+    def test_split_keeps_requested_halves_on_tilted_workplane(self):
+        body = Workplane("XY", size=20, tolerance=0.05).box(2, 2, 2)
+        with self.assertRaises(ValueError):
+            body.split()
+        split = body.transformed(rotate=(0, 30, 0)).split(keepTop=True, keepBottom=True)
+        top, bottom = split.vals()
+        self.assertEqual(2, len(split.all()))
+        self.assertIs(split.val(), top)
+        self.assertIs(split._solid, body.val())
+        self.assertTrue(top.is_watertight())
+        self.assertTrue(bottom.is_watertight())
+        self.assertAlmostEqual(top.volume() + bottom.volume(), body.val().volume(), delta=0.01)
+        self.assertAlmostEqual(top.volume(), bottom.volume(), delta=0.01)
+        self.assertIs(split.all()[1].val(), bottom)
+        bottom_only = body.split(keepBottom=True)
+        self.assertEqual(1, len(bottom_only.vals()))
+        self.assertTrue(bottom_only.val().is_watertight())
+
+    def test_split_uses_face_normal_and_live_mesh_bounds(self):
+        body = Workplane("XY", size=20, tolerance=0.05).box(1, 1, 1).faces(">Z").workplane().hole(0.5)
+        plane = body.faces(">Y").workplane(-0.5)
+        self.assertAlmostEqual(plane._frame.origin.y, 0.0, delta=0.01)
+        self.assertGreater(plane._frame.z.y, 0.0)
+        halves = plane.split(keepTop=True, keepBottom=True).vals()
+        self.assertEqual(2, len(halves))
+        self.assertTrue(all(half.is_watertight() for half in halves))
+        self.assertAlmostEqual(sum(half.volume() for half in halves), body.val().volume(), delta=0.01)
+
     def test_box_is_volume(self):
         result = Workplane("XY", size=20, tolerance=0.05).box(2, 2, 2)
         solid = result.val()
@@ -227,6 +335,17 @@ class NativeWorkplaneTests(unittest.TestCase):
         self.assertTrue(result.val().is_volume)
         self.assertGreater(result.val().triangle_count, 0)
 
+    def test_revolve_custom_axis_uses_workplane_coordinates(self):
+        # Gallery #24: local axis (-20, 0) passes through world origin.
+        result = (Workplane(origin=(20, 0, 0), tolerance=0.05).circle(2)
+                  .revolve(180, (-20, 0, 0), (-20, -1, 0)))
+        solid = result.val()
+        points, _ = solid.mesh()
+        self.assertTrue(solid.is_watertight())
+        self.assertGreater(solid.volume(), 700)
+        self.assertAlmostEqual(min(p.x for p in points), -22, delta=0.1)
+        self.assertAlmostEqual(max(p.x for p in points), 22, delta=0.1)
+
     def test_loft_two_circles(self):
         result = (
             Workplane("XY", size=20, tolerance=0.05)
@@ -237,6 +356,13 @@ class NativeWorkplaneTests(unittest.TestCase):
         )
         self.assertTrue(result.val().is_volume)
         self.assertGreater(result.val().triangle_count, 0)
+
+    def test_loft_starts_from_selected_face_profile(self):
+        result = (Workplane("XY", size=20, tolerance=0.05).box(4, 4, 0.25)
+                  .faces(">Z").circle(1.5).workplane(offset=3)
+                  .rect(0.75, 0.5).loft())
+        self.assertTrue(result.val().is_watertight())
+        self.assertGreater(result.val().volume(), 4.0)
 
 
 if __name__ == "__main__":

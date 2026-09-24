@@ -39,7 +39,7 @@ public class AssemblyInterferenceTests : IDisposable
         var api = Api();
         var outer = api.CreateCylinder(CoordinateSystem.Default, 2, 3, .005, "Outer");
         var bore = api.CreateCylinder(new CoordinateSystem(new Vec3D(0, 0, -1)), 1.5, 5, .005, "Bore");
-        var ring = api.Boolean(outer, bore, CSG.BooleanOp.Difference, "Ring");
+        var ring = api.Boolean(outer, bore, CSG.BooleanOp.Subtract, "Ring");
         var shaft = api.CreateCylinder(CoordinateSystem.Default, 1, 3, .005, "Shaft");
         var pose = new Transform(new Vec3D(13, -7, 4), new Quaternion(.31, .57, .11, .75));
         var assembly = api.GetAssembly("Bearing");

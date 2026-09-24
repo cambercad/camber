@@ -307,7 +307,13 @@ public class NativePart
 
     public NativeSolid Boolean(NativeSolid a, NativeSolid b, int operation, string name)
     {
-        string kind = operation == (int)BooleanOp.Union ? "Union" : operation == (int)BooleanOp.Difference ? "Cut" : "Intersect";
+        string kind = operation switch
+        {
+            (int)BooleanOp.Union => "Union",
+            (int)BooleanOp.Subtract => "Subtract",
+            (int)BooleanOp.Intersect => "Intersect",
+            _ => "Boolean"
+        };
         return Track(_inner.Boolean(a.Native, b.Native, NativeUtil.ToBooleanOp(operation), NativeUtil.EmptyToNull(name)), kind, new[] { a.Native.Name, b.Native.Name });
     }
 
@@ -316,9 +322,9 @@ public class NativePart
         return Boolean(a, b, (int)BooleanOp.Union, name);
     }
 
-    public NativeSolid Cut(NativeSolid a, NativeSolid b, string name)
+    public NativeSolid Subtract(NativeSolid a, NativeSolid b, string name)
     {
-        return Boolean(a, b, (int)BooleanOp.Difference, name);
+        return Boolean(a, b, (int)BooleanOp.Subtract, name);
     }
 
     public NativeSolid Intersect(NativeSolid a, NativeSolid b, string name)
@@ -351,6 +357,16 @@ public class NativePart
         if (result == null)
             return null;
         return Track(result, "Union", meshes.Items.Select(mesh => mesh.Name));
+    }
+
+    public NativeSolid BatchSubtract(NativeSolid basis, NativeSolidList cutters, string name)
+    {
+        if (basis == null) throw new ArgumentNullException(nameof(basis));
+        if (cutters == null) throw new ArgumentNullException(nameof(cutters));
+        if (cutters.Items.Count == 0)
+            return basis;
+        var result = _inner.BatchSubtract(basis.Native, cutters.Items, NativeUtil.EmptyToNull(name));
+        return Track(result, "Subtract", new[] { basis.Native.Name }.Concat(cutters.Items.Select(mesh => mesh.Name)));
     }
 
     public NativeSolid BatchBooleanChain(NativeSolid meshA, NativeBooleanChain chain)
@@ -394,10 +410,10 @@ public class NativePart
         return Track(_inner.Chamfer(mesh.Native, entities, distance, maxDeviation, NativeUtil.EmptyToNull(name)), "Chamfer", new[] { mesh.Native.Name }, entities, $"distance={distance:G6}");
     }
 
-    public NativeSolid Shell(NativeSolid mesh, string faceNames, double thickness, double maxDeviation, string name)
+    public NativeSolid Shell(NativeSolid mesh, double thickness, string faceNames, double maxDeviation, string name)
     {
         var entities = NativeUtil.SplitNames(faceNames);
-        return Track(_inner.Shell(mesh.Native, entities, thickness, maxDeviation, NativeUtil.EmptyToNull(name)),
+        return Track(_inner.Shell(mesh.Native, thickness, entities, maxDeviation, NativeUtil.EmptyToNull(name)),
             "Shell", new[] { mesh.Native.Name }, entities, $"thickness={thickness:G6}");
     }
 

@@ -51,7 +51,7 @@ def notch(part, body):
     # A through cut exposes an accessible inside corner, with planar end trims.
     profile = rectangle(part, "notch_profile", -10, 30, 30, center=(15, 15))
     cutter = part.extrude(profile, 45, name="notch")
-    return part.cut(body, cutter, name="notched_housing")
+    return part.subtract(body, cutter, name="notched_housing")
 
 
 def edge(first, second):
@@ -134,7 +134,7 @@ def hollow_duct(part, shoe):
                       for i, ((x, y, z), width, height, angle)
                       in enumerate(DUCT_STATIONS)]
     inner = sculpted_loft(part, "passage", inner_stations)
-    return part.cut(part.union(shoe, outer), inner, name="open_duct")
+    return part.subtract(part.union(shoe, outer), inner, name="open_duct")
 
 
 def opening_rim(solid, cap):
@@ -162,7 +162,7 @@ def build_sculpture(part, case):
                              name="shell")
         passage = part.extrude(rectangle(part, "passage_profile", -10, 30, 22), 71,
                                name="passage")
-        body = part.cut(part.union(shoe, shell), passage, name="open_extrusion")
+        body = part.subtract(part.union(shoe, shell), passage, name="open_extrusion")
         untreated_volume = body.volume()
         body = part.fillet(body, longitudinal_edges("passage"), 2,
                            name="inner_upright_rounds")
@@ -204,7 +204,7 @@ def build_sculpture(part, case):
     # Its offset locates the cut outside the loft root, preserving the wall.
     relief = part.extrude(rectangle(part, "relief_profile", -12, 18, 20,
                                     center=(36, 32)), 18, name="relief")
-    body = part.cut(body, relief, name="relieved_shoe")
+    body = part.subtract(body, relief, name="relieved_shoe")
     before = body.volume()
     inside = edge("relief-bottom", "relief-left")
     inside_before = body.volume()
@@ -336,7 +336,7 @@ def probe_corner(case):
     if case == "inward_chamfer_network":
         body = part.extrude(rectangle(part, "block_profile", -10, 60, 44), 14, name="block")
         cutter = part.extrude(rectangle(part, "pocket_profile", -5, 16, 12), 15, name="pocket")
-        body = part.cut(body, cutter)
+        body = part.subtract(body, cutter)
         return part.chamfer(body, [edge("pocket-bottom", "pocket-ExtrudeBottom"),
                                    edge("pocket-left", "pocket-ExtrudeBottom"),
                                    edge("pocket-bottom", "pocket-left")], .6)
@@ -348,7 +348,7 @@ def probe_corner(case):
     if case == "pocket_round":
         cutter = part.extrude(rectangle(part, "pocket_profile", 15, 14, 10), 20,
                               name="pocket")
-        body = part.cut(body, cutter)
+        body = part.subtract(body, cutter)
         return part.fillet(body, edge("pocket-bottom", "pocket-ExtrudeBottom"), 1)
     if case == "flange_chamfer_corner":
         return part.chamfer(flange(part, body), FLANGE_CORNER, .7)

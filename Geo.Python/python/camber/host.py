@@ -278,10 +278,9 @@ class Viewer(object):
         self._sync_size()
 
     def on_close(self):
-        # Pyglet dispatches ``on_close`` from Window.close().  Do not enter
-        # close() again while it is releasing GL resources.
-        if not self._closed:
-            self._close_resources(close_window=False)
+        # The native close button dispatches on_close; handling the event
+        # suppresses pyglet's default handler, so close the window ourselves.
+        self.close()
         return self._pyglet.event.EVENT_HANDLED
 
     def close(self):
@@ -291,11 +290,11 @@ class Viewer(object):
         context = self._imgui_context
         previous = self._imgui.get_current_context() if context is not None else None
         with self._ui_context():
-            self._close_resources(close_window=True)
+            self._close_resources()
         if context is not None:
             self._imgui.set_current_context(None if previous is context else previous)
 
-    def _close_resources(self, *, close_window):
+    def _close_resources(self):
         # Set this before invoking any native cleanup.  A driver/context loss
         # or Window.close() may dispatch on_close synchronously.
         self._closed = True
@@ -330,8 +329,7 @@ class Viewer(object):
                     self._imgui.destroy_context(self._imgui_context)
                     self._imgui_context = None
             finally:
-                if close_window:
-                    self.window.close()
+                self.window.close()
 
     def on_draw(self):
         if self._closed:

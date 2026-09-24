@@ -1,4 +1,4 @@
-r"""Shell feature showcase: analytic cup, spherical bowl, and mesh-offset loft.
+r"""Shell feature showcase: cup, bowl, twisted loft, and concave L-shaped prism.
 
 Run from ``Geo.Python`` after rebuilding/installing the wheel::
 
@@ -28,12 +28,12 @@ def twisted_rectangle(part, name, center_x, z, width, depth, angle_degrees):
 
 
 def build_showcase():
-    part = Part((-32, -18, -3), (32, 18, 24), tolerance=.015)
+    part = Part((-32, -34, -3), (32, 18, 24), tolerance=.015)
 
     # Exact cylinder/plane adapters. Round the cavity-side rim after shelling to
     # demonstrate that shell rims are ordinary selectable feature edges.
     cup = part.cylinder((-18, 0, 0), 6.5, 13, name="cup", max_deviation=.02)
-    cup = part.shell(cup, "cup-ExtrudeTop", .8, name="cup_shell")
+    cup = part.shell(cup, .8, faces="cup-ExtrudeTop", name="cup_shell")
     inner_rims = [name for name in cup.curve_names
                   if "ShellRim_" in name and "ShellInner_" in name]
     if not inner_rims:
@@ -44,7 +44,7 @@ def build_showcase():
     sphere = part.sphere((0, 0, 6), 7, name="bowl_sphere", max_deviation=.02)
     upper = part.cuboid((-8, -8, 6), (8, 8, 16), name="bowl_clip")
     hemisphere = part.intersect(sphere, upper, name="hemisphere")
-    bowl = part.shell(hemisphere, "bowl_clip-ExtrudeBottom", .65, name="sphere_bowl")
+    bowl = part.shell(hemisphere, .65, faces="bowl_clip-ExtrudeBottom", name="sphere_bowl")
 
     # Four rotated sections form NURBS/mesh-backed sides. The shell fallback
     # offsets their existing triangulation and miters all shared support tangents.
@@ -59,12 +59,25 @@ def build_showcase():
                 for i, (z, width, depth, angle) in enumerate(stations)]
     vessel = part.loft(sections, first_curves=["south"] * len(sections),
                        name="twisted_vessel", max_deviation=.025)
-    vessel = part.shell(vessel, "twisted_vessel-EndCap", .15,
+    vessel = part.shell(vessel, .15, faces="twisted_vessel-EndCap",
                         name="twisted_vessel_shell", max_deviation=.025)
+
+    # One sketched L profile gives the shell both convex corners and a concave
+    # re-entrant corner; remove its single top face to leave an L-shaped cup.
+    l_sketch = part.sketch(name="l_profile")
+    l_points = ((-27, -31), (-13, -31), (-13, -27),
+                (-23, -27), (-23, -17), (-27, -17))
+    for i, start in enumerate(l_points):
+        l_sketch.add_line(start, l_points[(i + 1) % len(l_points)],
+                          name="l_edge_{0}".format(i + 1))
+    l_prism = part.extrude(l_sketch, 10, name="l_prism")
+    l_shell = part.shell(l_prism, .6, faces="l_prism-ExtrudeTop",
+                         name="l_shaped_shell")
 
     for label, solid in (("filleted analytic cup", cup),
                          ("spherical CSG bowl", bowl),
-                         ("twisted mesh-offset vessel", vessel)):
+                         ("twisted mesh-offset vessel", vessel),
+                         ("concave L-shaped shell", l_shell)):
         if not solid.is_watertight() or solid.volume() <= 0:
             raise RuntimeError("{0} is not a positive watertight solid".format(label))
         shell_patches = [name for name in solid.patch_names
@@ -73,7 +86,7 @@ def build_showcase():
             label, solid.triangle_count, solid.volume()))
         print("  shell patches: " + ", ".join(shell_patches))
 
-    gallery = part.batch_union([cup, bowl, vessel])
+    gallery = part.batch_union([cup, bowl, vessel, l_shell])
     if not gallery.is_watertight():
         raise RuntimeError("Combined shell gallery is not watertight")
     return gallery

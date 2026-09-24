@@ -7,7 +7,7 @@ then carves the ISO 60° internal thread.
 Set include_bore_chamfers True to add the nut-style lead-in/out countersinks
 (those two CSG unions dominate the cutter build).
 """
-from camber import BOOLEAN_DIFFERENCE, Frame, Part, vec3
+from camber import BOOLEAN_SUBTRACT, Frame, Part, vec3
 from hex_bolt import MM_TO_M, clamp, metric_thread_m, parse_metric_designation
 
 metric_designation = "M10"
@@ -45,7 +45,7 @@ def create_metric_threaded_plate(
         name=name + "_tapHole",
         max_deviation=max_deviation,
     )
-    holed = part.boolean(plate, hole, BOOLEAN_DIFFERENCE, name=name + "_holed")
+    holed = part.boolean(plate, hole, BOOLEAN_SUBTRACT, name=name + "_holed")
 
     thread_axis = Frame(vec3(0, 0, 0))
     thread_negative = part.create_metric_thread_for_hole_negative(
@@ -53,7 +53,7 @@ def create_metric_threaded_plate(
         max_deviation=max_deviation, right_handed=True,
         include_bore_chamfers=include_bore_chamfers,
     )
-    return part.boolean(holed, thread_negative, BOOLEAN_DIFFERENCE, name=name)
+    return part.boolean(holed, thread_negative, BOOLEAN_SUBTRACT, name=name)
 
 
 if __name__ == "__main__":

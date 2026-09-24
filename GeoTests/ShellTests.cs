@@ -8,12 +8,30 @@ public sealed class ShellTests : IDisposable
 {
     public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PlanarCuboid_ClosedShellWithoutOpening(bool passEmptyList)
+    {
+        var api = new GeoAPI(new Box3D(new Vec3D(-20), new Vec3D(20)), .001);
+        var block = api.CreateCuboid(new Vec3D(0, 0, 0), new Vec3D(10, 8, 6), "block");
+        var result = passEmptyList ? api.Shell(block, 1, new List<string>(), name: "closedShell")
+            : api.Shell(block, 1, name: "closedShell");
+
+        Assert.True(result.IsVolume);
+        Assert.True(MeshAnalysis.IsWatertightMesh(result.Mesh.PrecisionPositions, result.Mesh.Triangles));
+        Assert.InRange(MeshAnalysis.ComputeSignedMeshVolume(result.Mesh.Positions, result.Mesh.Triangles),
+            287.9, 288.1); // 10*8*6 - 8*6*4
+        Assert.DoesNotContain(result.extendedNameToGroupId.Keys, name => name.StartsWith("ShellRim_"));
+        Assert.Contains("ShellInner_block-ExtrudeTop", result.extendedNameToGroupId.Keys);
+    }
+
     [Fact]
     public void PlanarCuboid_ShellsThroughNamedTopFace()
     {
         var api = new GeoAPI(new Box3D(new Vec3D(-20), new Vec3D(20)), .001);
         var block = api.CreateCuboid(new Vec3D(0, 0, 0), new Vec3D(10, 8, 6), "block");
-        var result = api.Shell(block, new List<string> { "block-ExtrudeTop" }, 1, name: "shell");
+        var result = api.Shell(block, 1, new List<string> { "block-ExtrudeTop" }, name: "shell");
 
         Assert.True(result.IsVolume);
         Assert.True(MeshAnalysis.IsWatertightMesh(result.Mesh.PrecisionPositions, result.Mesh.Triangles));
@@ -31,7 +49,7 @@ public sealed class ShellTests : IDisposable
         var cylinder = api.CreateCylinder(CoordinateSystem.Default, radius, height, .005, "cyl");
         double sourceVolume = MeshAnalysis.ComputeSignedMeshVolume(cylinder.Mesh.Positions, cylinder.Mesh.Triangles);
 
-        var result = api.Shell(cylinder, new List<string> { "cyl-ExtrudeTop" }, thickness, name: "cup");
+        var result = api.Shell(cylinder, thickness, new List<string> { "cyl-ExtrudeTop" }, name: "cup");
 
         Assert.True(MeshAnalysis.IsWatertightMesh(result.Mesh.PrecisionPositions, result.Mesh.Triangles));
         var innerWall = Assert.Single(result.surfaceMetaData.Where(pair =>
@@ -50,7 +68,7 @@ public sealed class ShellTests : IDisposable
         var api = new GeoAPI(new Box3D(new Vec3D(-20), new Vec3D(20)), .01);
         var outer = api.CreateCylinder(CoordinateSystem.Default, outerRadius, height, .01, "outer");
         var bore = api.CreateCylinder(new CoordinateSystem(new Vec3D(0, 0, -1)), boreRadius, height + 2, .01, "bore");
-        var annulus = api.Boolean(outer, bore, CSG.BooleanOp.Difference, "annulus");
+        var annulus = api.Boolean(outer, bore, CSG.BooleanOp.Subtract, "annulus");
         annulus.EnsureCoplanarPostProcessed();
         int topTriangle = Enumerable.Range(0, annulus.Mesh.Triangles.Count)
             .OrderByDescending(i => {
@@ -59,7 +77,7 @@ public sealed class ShellTests : IDisposable
             }).First();
         string top = annulus.groupIdToExtendedName[annulus.Mesh.TrianglesEx[topTriangle].GroupId];
 
-        var result = api.Shell(annulus, new List<string> { top }, thickness, name: "shelledAnnulus");
+        var result = api.Shell(annulus, thickness, new List<string> { top }, name: "shelledAnnulus");
 
         Assert.True(MeshAnalysis.IsWatertightMesh(result.Mesh.PrecisionPositions, result.Mesh.Triangles));
         var radii = result.surfaceMetaData
@@ -88,7 +106,7 @@ public sealed class ShellTests : IDisposable
             }).First();
         string cap = hemisphere.groupIdToExtendedName[hemisphere.Mesh.TrianglesEx[capTriangle].GroupId];
 
-        var result = api.Shell(hemisphere, new List<string> { cap }, thickness, name: "sphereBowl");
+        var result = api.Shell(hemisphere, thickness, new List<string> { cap }, name: "sphereBowl");
 
         Assert.True(MeshAnalysis.IsWatertightMesh(result.Mesh.PrecisionPositions, result.Mesh.Triangles));
         var innerSphere = Assert.Single(result.surfaceMetaData, pair =>
@@ -118,7 +136,7 @@ public sealed class ShellTests : IDisposable
         foreach (string patch in hemisphere.surfaceMetaData.Keys.ToArray())
             hemisphere.surfaceMetaData[patch] = new SurfaceMetaData(SurfaceType.Unknown);
 
-        var result = api.Shell(hemisphere, new List<string> { cap }, thickness, name: "meshBowl");
+        var result = api.Shell(hemisphere, thickness, new List<string> { cap }, name: "meshBowl");
 
         Assert.True(MeshAnalysis.IsWatertightMesh(result.Mesh.PrecisionPositions, result.Mesh.Triangles));
         string innerName = "ShellInner_" + curvedPatch;

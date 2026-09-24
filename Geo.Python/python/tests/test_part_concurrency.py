@@ -24,7 +24,7 @@ class PartConcurrencyTests(unittest.TestCase):
         sketch.add_rectangle((0, 0), (12, 4))
         blank = owner.extrude(sketch, 2, name='blank')
         tool = owner.cuboid((4+index*.1, -1, -1), (5+index*.1, 5, 3), name='slot')
-        body = owner.cut(blank, tool, name='finished')
+        body = owner.subtract(blank, tool, name='finished')
         # Materialize on the owning worker; no mutable body is shared by workers.
         edges = tuple(sorted(name.partition(':')[2] for name in body.curve_names))
         points, triangles = body.mesh()

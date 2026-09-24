@@ -61,7 +61,7 @@ public class RoundedSlopeSupportTests : IDisposable
         var cavity = Extrude("cavity", 7.8 - 2 * 1.2, new(rear, -.1), new(front, -.1),
             new(front, height - gradient * (front + 7.9) - drop),
             new(-7.9 + (1.2 - drop) / gradient, height - 1.2), new(rear, height - 1.2));
-        var shell = api.Boolean(blank, cavity, BooleanOp.Difference, "shell");
+        var shell = api.Boolean(blank, cavity, BooleanOp.Subtract, "shell");
         var post = api.CreateCylinder(new CoordinateSystem(new Vec3D(0, -8, .15)), 1.6, height - .15, name: "post");
         var posts = api.PatternLinear(post, 3, new Vec3D(0, 8, 0), "posts");
         var supported = api.Boolean(shell, api.BatchUnion(posts.ToList()), BooleanOp.Union, "supported");

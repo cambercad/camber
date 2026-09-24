@@ -74,7 +74,7 @@ public class BRepExportSmokeTests : IDisposable
         var api = new GeoAPI(new Box3D(new Vec3D(-5), new Vec3D(5)), 1e-4);
         var cube = api.CreateCube(CoordinateSystem.Default, 2.0, "cube");
         var cyl = api.CreateCylinder(new CoordinateSystem(new Vec3D(1, 1, -0.5)), 0.4, 3.0, 0.01, "cyl");
-        var diff = api.Boolean(cube, cyl, BooleanOp.Difference, "diff");
+        var diff = api.Boolean(cube, cyl, BooleanOp.Subtract, "diff");
         var solid = BRepAssembler.BuildFromAnchorMesh(diff);
         Assert.True(solid.Shell.Faces.Count > 0);
         string step = Path.Combine(Path.GetTempPath(), $"csg_diff_{Guid.NewGuid():N}.stp");

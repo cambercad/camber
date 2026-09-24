@@ -47,7 +47,7 @@ Text outlines come from TrueType fonts (no WinForms). Family names resolve again
 
 Script 2 (boolean difference):
   cyl = part.CreateCylinder(CoordinateSystem(Vec3D(0.5,0.5,-0.1)), 0.2, 1.5)
-  result = part.Boolean(cube, cyl, BooleanOp.Difference, ""CubeMinusCyl"")
+  result = part.Boolean(cube, cyl, BooleanOp.Subtract, ""CubeMinusCyl"")
   part.SaveBinaryStlFile(result, ""out.stl"")
 ")]
     public partial class GeoAPI
@@ -1774,9 +1774,21 @@ Parallel pairwise (tournament-tree) union of N meshes. Boolean merges run on thr
             }
         }
 
+        /// <summary>Subtract the batched union of cutter solids from a base solid.</summary>
+        public AnchorMesh BatchSubtract(AnchorMesh basis, List<AnchorMesh> cutters, string name = null)
+        {
+            if (basis == null) throw new ArgumentNullException(nameof(basis));
+            if (cutters == null) throw new ArgumentNullException(nameof(cutters));
+            if (cutters.Any(cutter => cutter == null))
+                throw new ArgumentException("Cutters must not contain null.", nameof(cutters));
+            if (cutters.Count == 0) return basis;
+            var combined = cutters.Count == 1 ? cutters[0] : BatchUnion(cutters);
+            return Boolean(basis, combined, BooleanOp.Subtract, name);
+        }
+
         [APIDescription(@"BatchBooleanChain(meshA: AnchorMesh, opChain: List[BooleanOpChainNode]) -> AnchorMesh
-Applies a sequence of boolean ops starting from meshA. Each BooleanOpChainNode has fields: MeshB (AnchorMesh), Operation (BooleanOp.Union | Difference | Intersect — only these three supported, else NotSupportedException).
-Consecutive Union or Intersect runs are batched in parallel (associative); Difference is strictly sequential and order-sensitive. Throws on null nodes or null MeshB.")]
+Applies a sequence of boolean ops starting from meshA. Each BooleanOpChainNode has fields: MeshB (AnchorMesh), Operation (BooleanOp.Union | Subtract | Intersect — only these three supported, else NotSupportedException).
+Consecutive Union or Intersect runs are batched in parallel (associative); Subtract is strictly sequential and order-sensitive. Throws on null nodes or null MeshB.")]
         public AnchorMesh BatchBooleanChain(AnchorMesh meshA, List<BooleanOpChainNode> opChain)
         {
             if (meshA == null)
@@ -1832,10 +1844,10 @@ Consecutive Union or Intersect runs are batched in parallel (associative); Diffe
                     throw new ArgumentException($"opChain[{iNode}].MeshB is null", nameof(opChain));
 
                 if (node.Operation != BooleanOp.Union &&
-                    node.Operation != BooleanOp.Difference &&
+                    node.Operation != BooleanOp.Subtract &&
                     node.Operation != BooleanOp.Intersect)
                 {
-                    throw new NotSupportedException($"BatchBooleanChain only supports Union/Difference/Intersect, got {node.Operation} at index {iNode}.");
+                    throw new NotSupportedException($"BatchBooleanChain only supports Union/Subtract/Intersect, got {node.Operation} at index {iNode}.");
                 }
 
                 // For associative ops we can batch consecutive runs with a task tree.
@@ -1858,7 +1870,7 @@ Consecutive Union or Intersect runs are batched in parallel (associative); Diffe
                     continue;
                 }
 
-                // Difference remains strictly sequential and order-sensitive.
+                // Subtract remains strictly sequential and order-sensitive.
                 current = Boolean(current, node.MeshB, node.Operation);
                 iNode++;
             }
@@ -1868,7 +1880,7 @@ Consecutive Union or Intersect runs are batched in parallel (associative); Diffe
 
         [APIDescription(@"Boolean(meshA: AnchorMesh, meshB: AnchorMesh, operation: BooleanOp, name: str = None) -> AnchorMesh
 CSG boolean between two meshes.
-  operation: BooleanOp.Union | Difference (A minus B) | Intersect | Resolve | NoOpIntersectionContourOnly | AAsSurfaceBAsTrimSurfaceKeepInTriNormalDirection | AAsSurfaceBAsTrimSurfaceRemoveInTriNormalDirection | AAsVolumeBAsTrimSurfaceKeepInTriNormalDirection | AAsVolumeBAsTrimSurfaceRemoveInTriNormalDirection | AAsSurfaceBAsTrimVolumeKeepInside | AAsSurfaceBAsTrimVolumeKeepOutside.
+  operation: BooleanOp.Union | Subtract (A minus B) | Intersect | Resolve | NoOpIntersectionContourOnly | AAsSurfaceBAsTrimSurfaceKeepInTriNormalDirection | AAsSurfaceBAsTrimSurfaceRemoveInTriNormalDirection | AAsVolumeBAsTrimSurfaceKeepInTriNormalDirection | AAsVolumeBAsTrimSurfaceRemoveInTriNormalDirection | AAsSurfaceBAsTrimVolumeKeepInside | AAsSurfaceBAsTrimVolumeKeepOutside.
 Group/patch names from both inputs are merged (throws on group-id conflict for the same name). The new mesh inherits surface metadata from both. Both meshes must come from the same GeoAPI instance (same operating space / converter).")]
         public AnchorMesh Boolean(AnchorMesh meshA, AnchorMesh meshB, BooleanOp operation, string name = null)
         {
@@ -1883,7 +1895,7 @@ Group/patch names from both inputs are merged (throws on group-id conflict for t
             obsolete.UnionWith(meshB.AmbiguousFaceReferences);
             var (nameToGroupCombined, metaDataCombined) = MergeBooleanPatchData(
                 meshA, meshB, inheritedLineages, obsolete);
-            var provenance = operation == BooleanOp.Difference ? new BooleanFaceLineage(meshA, meshB) : null;
+            var provenance = operation == BooleanOp.Subtract ? new BooleanFaceLineage(meshA, meshB) : null;
             MeshNormalUV combinedMesh = MeshNormalUV.BooleanOperation(meshA.Mesh, meshB.Mesh, operation, converter,
                 classifiedFragments: provenance == null ? null : provenance.Classify);
             var lineages = FaceLineageNaming.Apply(combinedMesh, nameToGroupCombined, metaDataCombined,
@@ -2049,9 +2061,9 @@ Returned mesh has new patches for each chamfer surface (names prefixed ""Chamfer
             return result;
         }
 
-        [APIDescription(@"Shell(mesh: AnchorMesh, facesToRemove: List[str], thickness: float, maxDeviation: float = -1, name: str = None) -> AnchorMesh
-Hollows a watertight solid inward while keeping the selected opening faces at their original exterior boundary. Uses exact planar, cylindrical, and spherical supports when available, with a welded triangle-normal offset fallback for other or metadata-free patches. Offsets that collapse, invert, or change topology are rejected. Cavity patches are named ShellInner_<source-patch>.")]
-        public AnchorMesh Shell(AnchorMesh mesh, List<string> facesToRemove, double thickness, double maxDeviation = -1, string name = null)
+        [APIDescription(@"Shell(mesh: AnchorMesh, thickness: float, facesToRemove: List[str] = None, maxDeviation: float = -1, name: str = None) -> AnchorMesh
+Hollows a watertight solid inward. With no removed faces, the cavity is closed; selected faces become openings whose exterior boundaries stay fixed. Uses exact planar, cylindrical, and spherical supports when available, with a welded triangle-normal offset fallback for other or metadata-free patches. Offsets that collapse, invert, or change topology are rejected. Cavity patches are named ShellInner_<source-patch>.")]
+        public AnchorMesh Shell(AnchorMesh mesh, double thickness, List<string> facesToRemove = null, double maxDeviation = -1, string name = null)
         {
             _ = ResolveMaxDeviation(maxDeviation); // Reserved for non-planar adapters.
             name ??= mesh?.Name;

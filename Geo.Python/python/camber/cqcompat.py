@@ -1,10 +1,8 @@
 """CadQuery-shaped fluent API on top of camber (Workplane / Sketch).
 
 This is not a drop-in CadQuery replacement. Solids are camber meshes with named
-patches, so selectors only see faces and edges the adapter registered (caps,
-named sides, and the usual ``|Z`` / ``>Z`` / ``#Z`` filters). Operations that
-need BRep topology or a kernel transform (shell, solid move/rotate/mirror,
-2D offset, splines, …) raise ``NotImplementedError``.
+patches; some selectors and modeling modes remain unsupported. Outward shelling
+is not yet available.
 
 Typical use::
 
@@ -168,7 +166,7 @@ def _plane_from_normal(origin, normal, hint_x):
     z = _unit(normal)
     x = vec3(hint_x) - z * _dot(hint_x, z)
     if _norm(x) < 1e-9:
-        fallback = (1.0, 0.0, 0.0) if abs(z.z) < 0.9 else (0.0, 1.0, 0.0)
+        fallback = min(_AXES.values(), key=lambda axis: abs(_dot(axis, z)))
         x = vec3(fallback) - z * _dot(fallback, z)
     x = _unit(x)
     y = _unit(_cross(z, x))
@@ -230,6 +228,15 @@ def _select_edges(edges, selector):
 
 def _select_items(items, selector, kind):
     items = list(items or [])
+    if selector and re.search(r"\s+or\s+", str(selector), re.IGNORECASE):
+        chosen = []
+        names = set()
+        for clause in re.split(r"\s+or\s+", str(selector), flags=re.IGNORECASE):
+            for item in _select_items(items, clause, kind):
+                if item["name"] not in names:
+                    names.add(item["name"])
+                    chosen.append(item)
+        return chosen
     preds = _parse_selector(selector)
     if not preds:
         return items
@@ -414,41 +421,42 @@ class _Wire(object):
                     (seg[2][0] + dx, seg[2][1] + dy),
                     (seg[3][0] + dx, seg[3][1] + dy),
                 ))
+            elif seg[0] == "spline":
+                segs.append(("spline", [(x + dx, y + dy) for x, y in seg[1]]))
             else:
                 segs.append(seg)
         return _Wire(segs, kind=self.kind, name=self.name)
 
-    def swapped_xy(self):
-        """Map CadQuery (x, y) onto a camber revolve sketch (axis=X, radius=Y)."""
+    def mapped_xy(self, map_point):
+        """Map a wire through a rigid change of 2D sketch coordinates."""
         segs = []
         for seg in self.segments:
             if seg[0] == "circle":
-                c = seg[1]
-                segs.append(("circle", (c[1], c[0]), seg[2]))
+                segs.append(("circle", map_point(seg[1]), seg[2]))
             elif seg[0] == "line":
                 extra = (seg[3],) if len(seg) > 3 else ()
-                segs.append(("line", (seg[1][1], seg[1][0]), (seg[2][1], seg[2][0])) + extra)
+                segs.append(("line", map_point(seg[1]), map_point(seg[2])) + extra)
             elif seg[0] == "arc":
-                segs.append((
-                    "arc",
-                    (seg[1][1], seg[1][0]),
-                    (seg[2][1], seg[2][0]),
-                    (seg[3][1], seg[3][0]),
-                ))
+                segs.append(("arc", map_point(seg[1]), map_point(seg[2]), map_point(seg[3])))
+            elif seg[0] == "spline":
+                segs.append(("spline", [map_point(p) for p in seg[1]]))
             else:
                 segs.append(seg)
         return _Wire(segs, kind=self.kind, name=self.name)
 
     def draw(self, sketch):
+        curves = []
         for i, seg in enumerate(self.segments):
             if seg[0] == "circle":
-                sketch.add_circle(seg[1], seg[2], name=self.name)
+                curves.append(sketch.add_circle(seg[1], seg[2], name=self.name))
             elif seg[0] == "line":
                 name = seg[3] if len(seg) > 3 else (self.name if i == 0 else None)
-                sketch.add_line(seg[1], seg[2], name=name)
+                curves.append(sketch.add_line(seg[1], seg[2], name=name))
             elif seg[0] == "arc":
-                sketch.add_arc(seg[1], seg[2], seg[3], name=self.name)
-        return self
+                curves.append(sketch.add_arc(seg[1], seg[2], seg[3], name=self.name))
+            elif seg[0] == "spline":
+                curves.append(sketch.add_spline(seg[1], name=self.name))
+        return curves
 
 
 class Sketch(object):
@@ -524,9 +532,26 @@ def _wire_bounds(wires):
                 for pt in seg[1:4] if seg[0] == "arc" else seg[1:3]:
                     xs.append(float(pt[0]))
                     ys.append(float(pt[1]))
+            elif seg[0] == "spline":
+                for pt in seg[1]:
+                    xs.append(float(pt[0]))
+                    ys.append(float(pt[1]))
     if not xs:
         return None
     return (min(xs), max(xs), min(ys), max(ys))
+
+
+def _wire_signed_area(wire):
+    points = []
+    for segment in wire.segments:
+        if segment[0] != "line":
+            return 1.0
+        if not points:
+            points.append(segment[1])
+        points.append(segment[2])
+    return 0.5 * sum(points[i][0] * points[i + 1][1] -
+                     points[i + 1][0] * points[i][1]
+                     for i in range(len(points) - 1))
 
 
 class Workplane(object):
@@ -550,6 +575,7 @@ class Workplane(object):
                 self._frame = Frame(vec3(origin), self._frame.x, self._frame.y, self._frame.z)
             if obj is not None:
                 self._solid = self._as_solid(obj)
+                self._stack_solids = []
             return
         if isinstance(inPlane, Frame):
             self._frame = inPlane
@@ -559,15 +585,21 @@ class Workplane(object):
             self._frame = named_plane(inPlane, origin)
         self.part = part
         self._solid = self._as_solid(obj)
+        self._stack_solids = []
         self._pending = []
         self._cursor = (0.0, 0.0)
         self._open = None
+        self._open_segments = []
         self._locations = [(0.0, 0.0)]
+        self._center2d = (0.0, 0.0)
         self._sections = []
         self._faces = []
         self._edges = []
         self._selected_faces = []
         self._selected_edges = []
+        self._selected_vertices = []
+        self._construction_vertices = []
+        self._tags = {}
 
     def _copy_from(self, other):
         self.part = other.part
@@ -575,15 +607,21 @@ class Workplane(object):
         self._tolerance = other._tolerance
         self._frame = other._frame
         self._solid = other._solid
+        self._stack_solids = list(other._stack_solids)
         self._pending = list(other._pending)
         self._cursor = other._cursor
         self._open = None if other._open is None else list(other._open)
+        self._open_segments = list(other._open_segments)
         self._locations = list(other._locations)
+        self._center2d = other._center2d
         self._sections = list(other._sections)
         self._faces = list(other._faces)
         self._edges = list(other._edges)
         self._selected_faces = list(other._selected_faces)
         self._selected_edges = list(other._selected_edges)
+        self._selected_vertices = list(other._selected_vertices)
+        self._construction_vertices = list(other._construction_vertices)
+        self._tags = dict(other._tags)
 
     def _spawn(self, **updates):
         wp = Workplane.__new__(Workplane)
@@ -611,8 +649,11 @@ class Workplane(object):
 
     def _wires(self):
         wires = list(self._pending)
-        if self._open and len(self._open) >= 2:
-            wires.append(_Wire.from_points(self._open, closed=True))
+        if self._open_segments:
+            segments = list(self._open_segments)
+            if _dist2(self._cursor, self._open[0]) > 1e-18:
+                segments.append(("line", self._cursor, self._open[0]))
+            wires.append(_Wire(segments))
         return wires
 
     def _draw_wires(self, sketch, wires):
@@ -634,8 +675,14 @@ class Workplane(object):
             except Exception:
                 kernel = None
         if kernel is not None:
-            return Frame(origin, kernel.x, kernel.y, kernel.z)
+            return self._aligned_face_frame(kernel, origin, normal)
         return _plane_from_normal(origin, normal, self._frame.x)
+
+    @staticmethod
+    def _aligned_face_frame(frame, origin, normal):
+        if _dot(vec3(frame.z), vec3(normal)) < 0:
+            return Frame(origin, frame.x, -vec3(frame.y), -vec3(frame.z))
+        return Frame(origin, frame.x, frame.y, frame.z)
 
     def _profile_sketch(self, wires, name, frame=None):
         if not wires:
@@ -658,7 +705,7 @@ class Workplane(object):
                 _edges=self._edges + list(edges),
             )
         if combine in ("cut", "s", "difference"):
-            merged = self.part.cut(self._solid, solid, name=name)
+            merged = self.part.subtract(self._solid, solid, name=name)
             return self._cleared(_solid=merged, _faces=list(self._faces), _edges=list(self._edges))
         if combine in ("intersect", "i"):
             merged = self.part.intersect(self._solid, solid, name=name)
@@ -667,12 +714,16 @@ class Workplane(object):
 
     def _cleared(self, **updates):
         defaults = dict(
+            _stack_solids=[],
             _pending=[],
             _open=None,
+            _open_segments=[],
             _cursor=(0.0, 0.0),
             _sections=[],
             _selected_faces=[],
             _selected_edges=[],
+            _selected_vertices=[],
+            _construction_vertices=[],
         )
         defaults.update(updates)
         return self._spawn(**defaults)
@@ -690,19 +741,22 @@ class Workplane(object):
         """New plane offset along +Z of the current plane or selected face."""
         offset = float(offset)
         if self._selected_faces:
+            sections = list(self._sections)
+            if self._pending:
+                sections.append((self._active_frame(), list(self._pending)))
             face = self._selected_faces[0]
             origin = vec3(face["center"])
             normal = vec3(face["normal"])
             if str(centerOption) == "ProjectedOrigin":
                 origin = _project_to_plane(self._frame.origin, origin, normal)
+            elif self._selected_vertices:
+                origin = self._selected_vertices[0]
             try:
                 kernel = self._ensure_part().plane_frame(face["name"]) if self.part is not None else None
             except Exception:
                 kernel = None
             if kernel is not None:
-                frame = kernel
-                if str(centerOption) != "ProjectedOrigin":
-                    frame = Frame(origin, kernel.x, kernel.y, kernel.z)
+                frame = self._aligned_face_frame(kernel, origin, normal)
             else:
                 frame = _plane_from_normal(origin, normal, self._frame.x)
         else:
@@ -718,10 +772,15 @@ class Workplane(object):
                 _frame=frame,
                 _pending=[],
                 _open=None,
+                _open_segments=[],
                 _cursor=(0.0, 0.0),
                 _sections=sections,
+                _locations=[(0.0, 0.0)],
+                _center2d=(0.0, 0.0),
                 _selected_faces=[],
                 _selected_edges=[],
+                _selected_vertices=[],
+                _construction_vertices=[],
             )
         if invert:
             frame = Frame(frame.origin, -vec3(frame.x), vec3(frame.y), -vec3(frame.z))
@@ -730,9 +789,15 @@ class Workplane(object):
             _frame=frame,
             _pending=[],
             _open=None,
+            _open_segments=[],
             _cursor=(0.0, 0.0),
+            _sections=sections,
+            _locations=[(0.0, 0.0)],
+            _center2d=(0.0, 0.0),
             _selected_faces=[],
             _selected_edges=[],
+            _selected_vertices=[],
+            _construction_vertices=[],
         )
 
     def transformed(self, rotate=(0, 0, 0), offset=(0, 0, 0)):
@@ -741,14 +806,49 @@ class Workplane(object):
         frame = _frame_plus_local(frame, offset)
         return self._spawn(_frame=frame)
 
+    def copyWorkplane(self, other):
+        """Continue the current solid on another Workplane's sketch frame."""
+        if not isinstance(other, Workplane):
+            raise TypeError("copyWorkplane expects a Workplane")
+        return self._spawn(_frame=other._active_frame(), _pending=[], _open=None,
+                           _open_segments=[], _cursor=(0.0, 0.0),
+                           _locations=[(0.0, 0.0)], _center2d=(0.0, 0.0),
+                           _selected_faces=[], _selected_edges=[], _selected_vertices=[],
+                           _construction_vertices=[])
+
+    def tag(self, name):
+        """Save the current workplane and face references under a reusable tag."""
+        if not name:
+            raise ValueError("tag name must be nonempty")
+        tags = dict(self._tags)
+        tags[str(name)] = (self._active_frame(), list(self.faces()._selected_faces))
+        return self._spawn(_tags=tags)
+
+    def workplaneFromTagged(self, name):
+        """Restore a workplane frame saved by ``tag`` while keeping this solid."""
+        try:
+            saved = self._tags[str(name)]
+        except KeyError:
+            raise ValueError("unknown workplane tag {0!r}".format(name))
+        frame = saved[0] if isinstance(saved, tuple) else saved
+        return self._spawn(_frame=frame, _pending=[], _open=None,
+                           _open_segments=[], _cursor=(0.0, 0.0),
+                           _locations=[(0.0, 0.0)], _center2d=(0.0, 0.0),
+                           _selected_faces=[], _selected_edges=[], _selected_vertices=[],
+                           _construction_vertices=[])
+
     def center(self, x, y):
-        """Shift the workplane origin in the current XY."""
-        return self._spawn(_frame=_frame_plus_local(self._frame, (float(x), float(y), 0.0)))
+        """Move the 2D drawing origin without moving previously drawn wires."""
+        dx, dy = float(x), float(y)
+        return self._spawn(
+            _center2d=(self._center2d[0] + dx, self._center2d[1] + dy),
+            _locations=[(px + dx, py + dy) for px, py in self._locations],
+        )
 
     def moveTo(self, x, y):
         """Set the 2D cursor and start a new open path."""
         pt = (float(x), float(y))
-        return self._spawn(_cursor=pt, _open=[pt])
+        return self._spawn(_cursor=pt, _open=[pt], _open_segments=[])
 
     def move(self, xDist, yDist):
         """Relative move of the 2D cursor."""
@@ -761,7 +861,8 @@ class Workplane(object):
         if not pts:
             pts = [self._cursor]
         pts.append(end)
-        return self._spawn(_cursor=end, _open=pts)
+        return self._spawn(_cursor=end, _open=pts,
+                           _open_segments=self._open_segments + [("line", self._cursor, end)])
 
     def line(self, xDist, yDist):
         """Relative line from the cursor."""
@@ -787,20 +888,29 @@ class Workplane(object):
         """Close the open path into a pending wire."""
         if not self._open or len(self._open) < 2:
             raise ValueError("close() needs a path with at least one segment")
-        wire = _Wire.from_points(self._open, closed=True)
-        return self._spawn(_pending=self._pending + [wire], _open=None, _cursor=self._open[0])
+        segments = list(self._open_segments)
+        if _dist2(self._cursor, self._open[0]) > 1e-18:
+            segments.append(("line", self._cursor, self._open[0]))
+        wire = _Wire(segments)
+        return self._spawn(_pending=self._pending + [wire], _open=None,
+                           _open_segments=[], _cursor=self._open[0])
 
     def rect(self, xLen, yLen, centered=True, forConstruction=False):
-        """Pending rectangle. Construction flag is ignored (not drawn)."""
+        """Pending rectangle or construction rectangle for vertex locations."""
         if forConstruction:
-            return self
+            dx, dy = _center_shifts((xLen, yLen), centered)
+            vertices = []
+            for ox, oy in self._locations:
+                vertices.extend([(ox + dx, oy + dy), (ox + dx + xLen, oy + dy),
+                                 (ox + dx + xLen, oy + dy + yLen), (ox + dx, oy + dy + yLen)])
+            return self._spawn(_construction_vertices=vertices)
         return self._spawn(_pending=self._pending + _rect_wires(xLen, yLen, centered, self._locations))
 
     def circle(self, radius, forConstruction=False):
         """Pending circle. Construction flag is ignored (not drawn)."""
         if forConstruction:
             return self
-        return self._spawn(_pending=self._pending + _circle_wires(radius, self._locations, name="side"))
+        return self._spawn(_pending=self._pending + _circle_wires(radius, self._locations))
 
     def polygon(self, nSides, diameter, forConstruction=False):
         """Regular polygon inscribed in a circle of ``diameter``."""
@@ -825,23 +935,55 @@ class Workplane(object):
             pts = [self._cursor] + pts
         if len(pts) < 2:
             raise ValueError("polyline needs at least two points")
-        return self._spawn(_cursor=pts[-1], _open=pts)
+        segments = [("line", pts[i], pts[i + 1]) for i in range(len(pts) - 1)]
+        return self._spawn(_cursor=pts[-1], _open=pts, _open_segments=segments)
 
     def threePointArc(self, point1, point2):
         """Arc from the cursor through ``point1`` to ``point2``."""
         start = self._cursor
         mid = _xy2(point1)
         end = _xy2(point2)
-        wire = _Wire([("arc", start, mid, end)], kind="path")
         pts = list(self._open or [start])
         pts.append(end)
-        return self._spawn(_pending=self._pending + [wire], _cursor=end, _open=pts)
+        return self._spawn(_cursor=end, _open=pts,
+                           _open_segments=self._open_segments + [("arc", start, mid, end)])
 
     def radiusArc(self, endPoint, radius):
         """Arc from the cursor to ``endPoint`` with signed radius (CCW if positive)."""
         end = _xy2(endPoint)
         mid = _radius_arc_mid(self._cursor, end, radius)
         return self.threePointArc(mid, end)
+
+    def _mirror_open(self, axis):
+        if not self._open_segments:
+            raise ValueError("mirror requires an open 2D path")
+        flip = (lambda p: (-p[0], p[1])) if axis == "Y" else (lambda p: (p[0], -p[1]))
+        start = self._open[0]
+        end = self._cursor
+        segments = list(self._open_segments)
+        reflected_end = flip(end)
+        if _dist2(end, reflected_end) > 1e-18:
+            segments.append(("line", end, reflected_end))
+        for seg in reversed(self._open_segments):
+            if seg[0] == "line":
+                segments.append(("line", flip(seg[2]), flip(seg[1])))
+            elif seg[0] == "arc":
+                segments.append(("arc", flip(seg[3]), flip(seg[2]), flip(seg[1])))
+            else:
+                raise NotImplementedError("mirror only supports line and arc paths")
+        reflected_start = flip(start)
+        if _dist2(reflected_start, start) > 1e-18:
+            segments.append(("line", reflected_start, start))
+        return self._spawn(_pending=self._pending + [_Wire(segments)],
+                           _open=None, _open_segments=[], _cursor=start)
+
+    def mirrorX(self):
+        """Complete an open 2D path by reflecting it across local X."""
+        return self._mirror_open("X")
+
+    def mirrorY(self):
+        """Complete an open 2D path by reflecting it across local Y."""
+        return self._mirror_open("Y")
 
     def slot2D(self, length, diameter, angle=0):
         """Stadium outline. ``angle`` is degrees in the workplane."""
@@ -873,7 +1015,8 @@ class Workplane(object):
 
     def pushPoints(self, pntList):
         """Set 2D locations for the next primitive (rect/circle/box)."""
-        return self._spawn(_locations=[_xy2(p) for p in pntList])
+        cx, cy = self._center2d
+        return self._spawn(_locations=[(cx + x, cy + y) for x, y in (_xy2(p) for p in pntList)])
 
     def rarray(self, xSpacing, ySpacing, xCount, yCount, center=True):
         """Rectangular array of locations in the workplane."""
@@ -1041,12 +1184,20 @@ class Workplane(object):
         return faces, edges
 
     def revolve(self, angleDegrees=360, axisStart=None, axisEnd=None, combine=True, clean=True):
-        """Revolve pending wires. Default axis is workplane X through the origin."""
-        wires = [wire.swapped_xy() for wire in self._wires()]
+        """Revolve pending wires. Default axis is workplane Y through the origin."""
+        source = self._active_frame()
         origin, x_axis, y_axis = self._revolve_axes(axisStart, axisEnd)
         z_axis = _unit(_cross(x_axis, y_axis))
         y_axis = _unit(_cross(z_axis, x_axis))
         frame = Frame(origin, x_axis, y_axis, z_axis)
+
+        def to_revolve(point):
+            delta = _world_from_local(source, (point[0], point[1], 0.0)) - origin
+            if abs(_dot(delta, z_axis)) > 1e-8:
+                raise ValueError("revolve profile and axis must share a plane")
+            return (_dot(delta, x_axis), _dot(delta, y_axis))
+
+        wires = [wire.mapped_xy(to_revolve) for wire in self._wires()]
         name = self._new_name("rev")
         sk = self._profile_sketch(wires, name + "_sk", frame=frame)
         solid = self.part.revolve(sk, math.radians(float(angleDegrees)), name=name)
@@ -1060,15 +1211,14 @@ class Workplane(object):
         frame = self._active_frame()
         start = self._axis_point(axis_start)
         end = self._axis_point(axis_end)
-        x_axis = _unit(end - start)
-        if _norm(x_axis) < 1e-12:
+        direction = end - start
+        if _norm(direction) < 1e-12:
             raise ValueError("revolve axis is degenerate")
-        hint = frame.x
-        if abs(_dot(hint, x_axis)) > 0.95:
-            hint = frame.z
+        x_axis = _unit(direction)
+        if abs(_dot(x_axis, frame.z)) > 1e-9:
+            raise ValueError("revolve axis must lie in the profile plane")
+        hint = frame.x if abs(_dot(frame.x, x_axis)) <= 0.95 else frame.y
         y_axis = hint - x_axis * _dot(hint, x_axis)
-        if _norm(y_axis) < 1e-9:
-            y_axis = frame.y - x_axis * _dot(frame.y, x_axis)
         return start, x_axis, _unit(y_axis)
 
     def _axis_point(self, point):
@@ -1076,8 +1226,8 @@ class Workplane(object):
         if point is None:
             return vec3(frame.origin)
         if len(point) == 2:
-            return _world_from_local(frame, (float(point[0]), float(point[1]), 0.0))
-        return _as_vec3(point)
+            point = (point[0], point[1], 0.0)
+        return _world_from_local(frame, point)
 
     def sweep(self, path, combine=True, clean=True):
         """Sweep pending profile along ``path`` (a Workplane with an open 2D path)."""
@@ -1124,7 +1274,7 @@ class Workplane(object):
         if self._solid is None or other is None:
             raise ValueError("cut needs two solids")
         return self._cleared(
-            _solid=self.part.cut(self._solid, other, name=self._solid.name),
+            _solid=self.part.subtract(self._solid, other, name=self._solid.name),
             _faces=list(self._faces),
             _edges=list(self._edges),
         )
@@ -1177,7 +1327,7 @@ class Workplane(object):
             cutter = self.part.extrude(sk, height, name=name)
         else:
             cutter = self.part.extrude_two_sides(sk, 0.0, abs(height), name=name)
-        cut = self.part.cut(self._solid, cutter, name=self._solid.name)
+        cut = self.part.subtract(self._solid, cutter, name=self._solid.name)
         return self._cleared(_solid=cut, _faces=list(self._faces), _edges=list(self._edges))
 
     def hole(self, diameter, depth=None, clean=True):
@@ -1192,15 +1342,94 @@ class Workplane(object):
         wp = self.hole(diameter, depth=depth)
         return wp.circle(0.5 * float(cboreDiameter)).cutBlind(float(cboreDepth))
 
-    def faces(self, selector=None):
-        """Select registered faces (``>Z``, ``|Z``, named patches)."""
-        chosen = _select_faces(self._faces, selector)
-        return self._spawn(_selected_faces=chosen, _selected_edges=[])
+    def faces(self, selector=None, tag=None):
+        """Select faces, including planar sides created by arbitrary profiles."""
+        if tag is None:
+            faces = list(self._faces)
+        else:
+            try:
+                saved = self._tags[str(tag)]
+            except KeyError:
+                raise ValueError("unknown workplane tag {0!r}".format(tag))
+            faces = list(saved[1]) if isinstance(saved, tuple) else []
+        if tag is None and self._solid is not None and self.part is not None:
+            known = {item["name"] for item in faces}
+            for name in self._solid.patch_names:
+                short = name.split(":")[-1]
+                if short in known:
+                    continue
+                try:
+                    frame = self.part.plane_frame(name)
+                except Exception:
+                    continue
+                if frame is not None:
+                    faces.append({"name": name, "center": frame.origin,
+                                  "normal": frame.z, "kind": "plane"})
+        chosen = _select_faces(faces, selector)
+        return self._spawn(_selected_faces=chosen, _selected_edges=[], _selected_vertices=[])
 
     def edges(self, selector=None):
         """Select registered edges (``|Z``, ``#Z``, named patches)."""
-        chosen = _select_edges(self._edges, selector)
-        return self._spawn(_selected_edges=chosen, _selected_faces=[])
+        frame = self._active_frame()
+        edges = list(self._edges)
+        if self._selected_faces:
+            face_names = {face["name"] for face in self._selected_faces}
+            edges = [edge for edge in edges if any(
+                face_name in edge["name"] for face_name in face_names)]
+        chosen = _select_edges(edges, selector)
+        return self._spawn(_frame=frame, _selected_edges=chosen, _selected_faces=[])
+
+    def toPending(self):
+        """Convert selected straight edges into pending planar wire profiles.
+
+        Edge curves are recovered from the solid mesh, so this is exact for
+        straight feature edges represented by their mesh vertices.
+        """
+        if not self._selected_edges:
+            raise ValueError("toPending() needs selected edges")
+        if self._solid is None:
+            raise ValueError("toPending() needs a solid")
+        frame = self._active_frame()
+        points, _ = self._solid.mesh()
+        tolerance = max(self._tolerance, 1e-7)
+        segments = []
+        for edge in self._selected_edges:
+            if edge.get("kind") != "line":
+                raise NotImplementedError("toPending() currently supports straight edges")
+            center = vec3(edge["center"])
+            direction = _unit(edge["direction"])
+            on_edge = []
+            for point in points:
+                delta = vec3(point) - center
+                along = _dot(delta, direction)
+                if _norm(delta - direction * along) <= tolerance:
+                    on_edge.append((along, vec3(point)))
+            if len(on_edge) < 2:
+                raise ValueError("could not recover edge endpoints from the solid mesh")
+            start, end = min(on_edge, key=lambda item: item[0])[1], max(
+                on_edge, key=lambda item: item[0])[1]
+            segments.append((self._to_local_xy(start, frame), self._to_local_xy(end, frame)))
+
+        wires = []
+        while segments:
+            first = segments.pop(0)
+            path = [first[0], first[1]]
+            while segments and _dist2(path[-1], path[0]) > tolerance * tolerance:
+                match = next((i for i, seg in enumerate(segments)
+                              if _dist2(seg[0], path[-1]) <= tolerance * tolerance or
+                              _dist2(seg[1], path[-1]) <= tolerance * tolerance), None)
+                if match is None:
+                    break
+                start, end = segments.pop(match)
+                path.append(end if _dist2(start, path[-1]) <= tolerance * tolerance else start)
+            wires.append(_Wire.from_points(path, closed=_dist2(path[-1], path[0]) <= tolerance * tolerance))
+        return self._spawn(_frame=frame, _pending=self._pending + wires,
+                           _selected_edges=[], _selected_faces=[])
+
+    @staticmethod
+    def _to_local_xy(point, frame):
+        delta = vec3(point) - vec3(frame.origin)
+        return (_dot(delta, vec3(frame.x)), _dot(delta, vec3(frame.y)))
 
     def fillet(self, radius):
         """Fillet currently selected edges."""
@@ -1226,13 +1455,21 @@ class Workplane(object):
 
     def val(self):
         """The current camber Solid (raises if none)."""
+        if self._stack_solids:
+            return self._stack_solids[0]
         if self._solid is None:
             raise ValueError("Workplane has no solid; extrude or box first")
         return self._solid
 
     def vals(self):
-        """List of solids (empty or one item)."""
-        return [] if self._solid is None else [self._solid]
+        """Solids on the current stack."""
+        return list(self._stack_solids) if self._stack_solids else (
+            [] if self._solid is None else [self._solid])
+
+    def all(self):
+        """One Workplane per solid on the current stack."""
+        return [self._cleared(_solid=solid, _faces=[], _edges=[])
+                for solid in self.vals()]
 
     def largestDimension(self):
         """Diagonal of the Part AABB used when this Workplane created a Part."""
@@ -1256,8 +1493,28 @@ class Workplane(object):
         return self.intersect(other)
 
     def vertices(self, selector=None):
-        """Not implemented (needs BRep topology)."""
-        raise NotImplementedError("vertices() needs BRep topology")
+        """Select vertices on the selected planar face."""
+        if self._construction_vertices:
+            if selector:
+                raise ValueError("construction vertex selectors are not yet supported")
+            return self._spawn(_locations=list(self._construction_vertices))
+        if self._solid is None or not self._selected_faces:
+            raise NotImplementedError("vertices() currently needs a selected planar face")
+        face = self._selected_faces[0]
+        center, normal = vec3(face["center"]), _unit(face["normal"])
+        points, _ = self._solid.mesh()
+        candidates = [p for p in points if abs(_dot(p - center, normal)) < max(self._tolerance, 1e-6)]
+        if not candidates:
+            raise ValueError("selected face has no mesh vertices")
+        if selector:
+            match = re.fullmatch(r"([<>])([XYZ]{1,3})", str(selector).strip().upper())
+            if not match:
+                raise ValueError("unsupported vertex selector {0!r}".format(selector))
+            sign = -1 if match.group(1) == "<" else 1
+            axes = match.group(2)
+            point = max(candidates, key=lambda p: sign * sum(getattr(p, axis.lower()) for axis in axes))
+            candidates = [point]
+        return self._spawn(_selected_vertices=candidates)
 
     def wires(self, selector=None):
         """Not implemented (needs BRep topology)."""
@@ -1272,28 +1529,164 @@ class Workplane(object):
         return self
 
     def translate(self, vec):
-        """Not implemented (kernel has no solid transform yet)."""
-        raise NotImplementedError("solid translate needs a kernel change")
+        """Return an independent translated solid."""
+        if self._solid is None:
+            raise ValueError("translate needs a solid")
+        moved = self.part.pattern_linear(self._solid, 2, _as_vec3(vec))[1]
+        return self._cleared(_solid=moved, _faces=[], _edges=[])
 
     def rotate(self, axisStart, axisEnd, angleDegrees):
-        """Not implemented (kernel has no solid transform yet)."""
-        raise NotImplementedError("solid rotate needs a kernel change")
+        """Return an independent rotation about a world-space axis."""
+        if self._solid is None:
+            raise ValueError("rotate needs a solid")
+        start, end = _as_vec3(axisStart), _as_vec3(axisEnd)
+        if _norm(end - start) < 1e-12:
+            raise ValueError("rotate axis is degenerate")
+        axis = _plane_from_normal(start, end - start, self._frame.x)
+        moved = self.part.pattern_circular(
+            self._solid, 2, axis=axis, angle=math.radians(float(angleDegrees)))[1]
+        return self._cleared(_solid=moved, _faces=[], _edges=[])
 
     def mirror(self, mirrorPlane="XY", basePointVector=(0, 0, 0), union=False):
-        """Not implemented (kernel has no solid transform yet)."""
-        raise NotImplementedError("solid mirror needs a kernel change")
+        """Reflect a solid across a named plane; optionally union the source."""
+        if self._solid is None:
+            raise ValueError("mirror needs a solid")
+        if isinstance(mirrorPlane, Workplane):
+            if not mirrorPlane._selected_faces:
+                raise ValueError("mirror workplane must have a selected face")
+            face = mirrorPlane._selected_faces[0]
+            try:
+                plane = self.part.plane_frame(face["name"])
+            except Exception:
+                plane = None
+            if plane is None:
+                plane = _plane_from_normal(face["center"], face["normal"], self._frame.x)
+        else:
+            plane = mirrorPlane if isinstance(mirrorPlane, Frame) else named_plane(mirrorPlane, basePointVector)
+        mirrored = self.part.mirror(self._solid, plane=plane)
+        if union:
+            mirrored = self.part.union(self._solid, mirrored)
+        return self._cleared(_solid=mirrored, _faces=[], _edges=[])
 
     def shell(self, thickness):
-        """Not implemented (no offset-solid in the kernel yet)."""
-        raise NotImplementedError("shell / offset-solid needs a kernel change")
+        """Shell inward; selected faces, if any, become openings."""
+        thickness = float(thickness)
+        if thickness >= 0:
+            raise NotImplementedError("CadQuery outward shell thickness is not supported")
+        if self._solid is None:
+            raise ValueError("shell needs a solid")
+        faces = [face["name"] for face in self._selected_faces]
+        shelled = self.part.shell(self._solid, -thickness, faces=faces)
+        return self._cleared(_solid=shelled, _faces=[], _edges=[])
+
+    def split(self, keepTop=False, keepBottom=False):
+        """Split at this workplane; keep either or both closed halves."""
+        if not keepTop and not keepBottom:
+            raise ValueError("split() must keep at least one half")
+        if self._solid is None:
+            raise ValueError("split() needs a solid")
+
+        frame = self._active_frame()
+        mesh_points, triangles = self._solid.mesh()
+        used = {index for triangle in triangles for index in triangle}
+        if not used:
+            raise ValueError("split() needs a nonempty solid")
+        points = [mesh_points[index] for index in used]
+        bounds = [(min(getattr(point, axis) for point in points),
+                   max(getattr(point, axis) for point in points))
+                  for axis in ("x", "y", "z")]
+        box_corners = [vec3(x, y, z)
+                       for x in bounds[0] for y in bounds[1] for z in bounds[2]]
+        projected = [self._to_local_xy(point, frame) for point in box_corners]
+        u0, u1 = min(p[0] for p in projected), max(p[0] for p in projected)
+        v0, v1 = min(p[1] for p in projected), max(p[1] for p in projected)
+        distances = [_dot(point - vec3(frame.origin), vec3(frame.z)) for point in box_corners]
+        if min(distances) >= 0 or max(distances) <= 0:
+            raise ValueError("split plane must cross the solid")
+        margin = max(self._tolerance * 4, (u1 - u0 + v1 - v0) * 0.01)
+        sketch = self.part.sketch(frame=frame, name=self._new_name("split_profile"))
+        sketch.add_rectangle((u0 - margin, v0 - margin), (u1 + margin, v1 + margin))
+        top = bottom = None
+        if keepTop:
+            cutter = self.part.extrude(sketch, max(distances) + margin,
+                                       name=self._new_name("split_top_tool"))
+            top = self.part.intersect(self._solid, cutter, name=self._new_name("split_top"))
+        if keepBottom:
+            cutter = self.part.extrude_two_sides(
+                sketch, 0, -min(distances) + margin,
+                name=self._new_name("split_bottom_tool"))
+            bottom = self.part.intersect(self._solid, cutter, name=self._new_name("split_bottom"))
+        if top is not None and bottom is not None:
+            return self._cleared(_stack_solids=[top, bottom], _faces=[], _edges=[])
+        return self._cleared(_solid=top or bottom, _faces=[], _edges=[])
 
     def offset2D(self, d, kind="arc", forConstruction=False):
-        """Not implemented on Workplane; use camber.Sketch.offset instead."""
-        raise NotImplementedError("2D offset needs a kernel change")
+        """Offset pending closed profiles; ``kind`` is ``arc`` or ``intersection``."""
+        wires = self._wires()
+        if not wires:
+            raise ValueError("offset2D() needs a pending closed profile")
+        joins = {"arc": "round", "round": "round",
+                 "intersection": "miter", "miter": "miter"}
+        join = joins.get(str(kind).lower())
+        if join is None:
+            raise ValueError("kind must be 'arc' or 'intersection'")
+
+        results, vertices = [], []
+        for wire in wires:
+            if wire.kind == "circle":
+                center, radius = wire.segments[0][1], wire.segments[0][2]
+                new_radius = float(radius) + float(d)
+                if new_radius <= 0:
+                    raise ValueError("offset collapses a circle")
+                results.append(_Wire.circle(center, new_radius))
+                continue
+            if (not wire.segments or wire.segments[0][0] != "line" or
+                    wire.segments[-1][0] != "line" or
+                    _dist2(wire.segments[0][1], wire.segments[-1][2]) > self._tolerance ** 2):
+                raise ValueError("offset2D() needs closed profiles")
+            sketch = self._ensure_part().sketch(
+                frame=self._active_frame(), name=self._new_name("offset"))
+            curves = wire.draw(sketch)
+            before = 1  # This sketch contains exactly one closed source wire.
+            side = "out" if float(d) >= 0 else "in"
+            if _wire_signed_area(wire) < 0:
+                side = "in" if side == "out" else "out"
+            sketch.offset(curves, abs(float(d)), side=side, join=join)
+            polylines = sketch.polylines()[before:]
+            if not polylines:
+                raise ValueError("offset produced no profile")
+            for polyline in polylines:
+                points = [(float(point.x), float(point.y)) for point in polyline]
+                if len(points) < 3:
+                    continue
+                if _dist2(points[0], points[-1]) > 1e-16:
+                    points.append(points[0])
+                vertices.extend(points[:-1])
+                results.append(_Wire.from_points(points, closed=True))
+        if not results:
+            raise ValueError("offset produced no profile")
+        if forConstruction:
+            return self._spawn(_pending=[], _construction_vertices=vertices,
+                               _locations=list(vertices), _open=None, _open_segments=[],
+                               _selected_edges=[], _selected_faces=[])
+        return self._spawn(_pending=results,
+                           _open=None, _open_segments=[],
+                           _selected_edges=[], _selected_faces=[])
 
     def spline(self, listOfXY, tangents=None, periodic=False, includeCurrent=False):
-        """Not implemented on Workplane; use camber.Sketch.add_spline instead."""
-        raise NotImplementedError("spline sketch needs a kernel change")
+        """Add a cubic Hermite spline to the current 2D path."""
+        if tangents is not None or periodic:
+            raise NotImplementedError("tangents and periodic splines are not yet supported")
+        points = [_xy2(p) for p in listOfXY]
+        if includeCurrent:
+            points.insert(0, self._cursor)
+        if len(points) < 2:
+            raise ValueError("spline needs at least two points")
+        if self._open_segments and _dist2(self._cursor, points[0]) > 1e-18:
+            raise ValueError("spline must begin at the current 2D point")
+        open_points = list(self._open or [points[0]]) + points[1:]
+        return self._spawn(_cursor=points[-1], _open=open_points,
+                           _open_segments=self._open_segments + [("spline", points)])
 
     def each(self, callback, useLocalCoordinates=False, combine=True, clean=True):
         """Not implemented."""

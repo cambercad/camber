@@ -142,6 +142,22 @@ class ViewerImguiLifecycleTests(unittest.TestCase):
             draw_scene.assert_not_called()
             self.assertEqual(self.external, self.imgui.get_current_context())
 
+    def test_window_close_event_destroys_window_with_render_toggles_enabled(self):
+        viewer = self.viewer()
+        viewer._wireframe = True
+        viewer._solid_transparent = True
+        viewer._transparency = "pretty"
+        window = viewer.window
+        window._allow_dispatch_event = True  # pyglet enables this in its event loop.
+
+        window.dispatch_event("on_close")
+
+        self.assertTrue(viewer._closed)
+        self.assertIsNone(window.context)
+        self.assertIsNone(viewer._imgui_context)
+        self.assertEqual(self.external, self.imgui.get_current_context())
+        viewer.on_draw()  # A queued draw after close must be harmless.
+
     def test_draw_exception_restores_external_context(self):
         viewer = self.viewer()
         viewer._tick = lambda: (_ for _ in ()).throw(RuntimeError("UI failed"))

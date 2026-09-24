@@ -46,7 +46,7 @@ public class FrameJointFilletTests
             (new Vec3D(685,0,585),32,25),(new Vec3D(831,0,725),27,24)];
         var downOutside=Tube("frame_down_tube",stations);
         var downInside=Tube("frame_down_tube_inner",stations.Select(s => (s.center,s.depth-3,s.width-3)).ToArray());
-        var down=api.Boolean(downOutside,downInside,CSG.BooleanOp.Difference,"frame_down_tube");
+        var down=api.Boolean(downOutside,downInside,CSG.BooleanOp.Subtract,"frame_down_tube");
         var seatTube=Tube("frame_seat_tube",[(bb,23,22),(new Vec3D(337,0,490),23,18),
             (new Vec3D(288,0,670),19,16),(seat,17,16)]);
         var bbSketch=new PlotterSketcherCoordSys("bottom_bracket",new CoordinateSystem(new Vec3D(404,34,267),

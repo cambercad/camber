@@ -38,9 +38,9 @@ public class PlanarFaceLineageTests : IDisposable
     {
         var api = Api();
         var result = Blank(api);
-        if (optional && !reversed) result = api.Boolean(result, Slot(api, "optional_slot", 1), BooleanOp.Difference);
-        result = api.Boolean(result, Slot(api, "main_slot", mainStart), BooleanOp.Difference);
-        if (optional && reversed) result = api.Boolean(result, Slot(api, "optional_slot", 1), BooleanOp.Difference);
+        if (optional && !reversed) result = api.Boolean(result, Slot(api, "optional_slot", 1), BooleanOp.Subtract);
+        result = api.Boolean(result, Slot(api, "main_slot", mainStart), BooleanOp.Subtract);
+        if (optional && reversed) result = api.Boolean(result, Slot(api, "optional_slot", 1), BooleanOp.Subtract);
         AssertRight(result, mainStart + 1);
         var body = api.GetAssembly("reference_check").AddPart(result, new Vec3D(0));
         Assert.Throws<NameCollisionException>(() => body.AddPlaneDatum("base-ExtrudeTop"));
@@ -53,9 +53,9 @@ public class PlanarFaceLineageTests : IDisposable
     {
         var api = Api(); var result = Blank(api);
         var hole = Hole(api, "hole", 9);
-        if (before) result = api.Boolean(result, hole, BooleanOp.Difference);
-        result = api.Boolean(result, Slot(api, "main_slot", 4), BooleanOp.Difference);
-        if (!before) result = api.Boolean(result, hole, BooleanOp.Difference);
+        if (before) result = api.Boolean(result, hole, BooleanOp.Subtract);
+        result = api.Boolean(result, Slot(api, "main_slot", 4), BooleanOp.Subtract);
+        if (!before) result = api.Boolean(result, hole, BooleanOp.Subtract);
         AssertRight(result);
     }
 
@@ -63,9 +63,9 @@ public class PlanarFaceLineageTests : IDisposable
     public void CompoundTwoHolesOnSeparateRegionsAreNotSeparators()
     {
         var api = Api();
-        var result = api.Boolean(Blank(api), Slot(api, "main_slot", 4), BooleanOp.Difference);
+        var result = api.Boolean(Blank(api), Slot(api, "main_slot", 4), BooleanOp.Subtract);
         var tool = api.Boolean(Hole(api, "left_hole", 2), Hole(api, "right_hole", 9), BooleanOp.Union, "compound_holes");
-        result = api.Boolean(result, tool, BooleanOp.Difference);
+        result = api.Boolean(result, tool, BooleanOp.Subtract);
         AssertRight(result);
     }
 
@@ -74,7 +74,7 @@ public class PlanarFaceLineageTests : IDisposable
     {
         var api = Api();
         var tool = api.Boolean(Slot(api, "main_slot", 4), Hole(api, "hole", 9), BooleanOp.Union, "compound_tool");
-        AssertRight(api.Boolean(Blank(api), tool, BooleanOp.Difference));
+        AssertRight(api.Boolean(Blank(api), tool, BooleanOp.Subtract));
     }
 
     [Fact]
@@ -83,8 +83,8 @@ public class PlanarFaceLineageTests : IDisposable
         var api = Api();
         var outer = api.CreateCylinder(new CoordinateSystem(new Vec3D(6, 2, -1)), 1.5, 4, .02, "annulus_outer");
         var inner = api.CreateCylinder(new CoordinateSystem(new Vec3D(6, 2, -2)), .7, 6, .02, "annulus_inner");
-        var tool = api.Boolean(outer, inner, BooleanOp.Difference, "annulus");
-        var result = api.Boolean(Blank(api), tool, BooleanOp.Difference);
+        var tool = api.Boolean(outer, inner, BooleanOp.Subtract, "annulus");
+        var result = api.Boolean(Blank(api), tool, BooleanOp.Subtract);
         result.EnsureCoplanarPostProcessed();
         var faces = result.FaceLineages.Where(pair => pair.Value.Roots.SequenceEqual(new[] { "base-ExtrudeTop" })).ToArray();
         Assert.Equal(2, faces.Length);
@@ -107,7 +107,7 @@ public class PlanarFaceLineageTests : IDisposable
                 slot.FaceLineages[pair.Key] = new FaceLineage(new[] { pair.Value.Replace("instance" + x, "repeated_slot") });
             tool = tool == null ? slot : api.Boolean(tool, slot, BooleanOp.Union);
         }
-        var result = api.Boolean(Blank(api), tool, BooleanOp.Difference);
+        var result = api.Boolean(Blank(api), tool, BooleanOp.Subtract);
         result.EnsureCoplanarPostProcessed();
         MeshPipelineTestHelpers.AssertWatertightAllowTouch(result.Mesh);
         var ambiguous = "base-ExtrudeTop{repeated_slot-Line2&repeated_slot-Line4}";
@@ -146,7 +146,7 @@ public class PlanarFaceLineageTests : IDisposable
         var right = api.CreateCuboid(new Vec3D(6, 0, 0), new Vec3D(12, 4, 2), "right");
         var blank = api.Boolean(left, right, BooleanOp.Union);
         blank.EnsureCoplanarPostProcessed();
-        var result = api.Boolean(blank, Slot(api, "main_slot", 4), BooleanOp.Difference);
+        var result = api.Boolean(blank, Slot(api, "main_slot", 4), BooleanOp.Subtract);
         result.EnsureCoplanarPostProcessed();
         var reference = "left-ExtrudeTop&right-ExtrudeTop{main_slot-Line2}";
         Assert.True(result.TryGetSurface(reference, out _));
@@ -161,7 +161,7 @@ public class PlanarFaceLineageTests : IDisposable
     public void ProvenanceNamesWorkInEdgesQualifiedDatumsAndMirroredCopies()
     {
         var api = Api();
-        var result = api.Boolean(Blank(api), Slot(api, "main_slot", 4), BooleanOp.Difference, "finished");
+        var result = api.Boolean(Blank(api), Slot(api, "main_slot", 4), BooleanOp.Subtract, "finished");
         AssertRight(result);
         var graph = new EdgeGraph(result.Mesh.Triangles, result.Mesh.GetTriangleGroups(), result.Mesh.Positions,
             result.Mesh.PrecisionPositions, result.groupIdToExtendedName);
@@ -184,13 +184,13 @@ public class PlanarFaceLineageTests : IDisposable
     public void CopyKeepsRenamedProvenanceAfterLaterUnrelatedHole(bool mirror)
     {
         var api = Api();
-        var result = api.Boolean(Blank(api), Slot(api, "main_slot", 4), BooleanOp.Difference, "base");
+        var result = api.Boolean(Blank(api), Slot(api, "main_slot", 4), BooleanOp.Subtract, "base");
         result.EnsureCoplanarPostProcessed();
         var copy = mirror ? api.Mirror(result, CoordinateSystem.Default, "copy") : api.CopyMeshAsInstance(result, "copy");
         string reference = "copy-ExtrudeTop{main_slot-Line2}";
         Assert.True(copy.TryGetSurface(reference, out _));
         var hole = api.CreateCylinder(new CoordinateSystem(new Vec3D(9, 2, -4)), .3, 8, .02, "later_hole");
-        var after = api.Boolean(copy, hole, BooleanOp.Difference);
+        var after = api.Boolean(copy, hole, BooleanOp.Subtract);
         after.EnsureCoplanarPostProcessed();
         Assert.True(after.TryGetSurface(reference, out _));
         MeshPipelineTestHelpers.AssertWatertightAllowTouch(after.Mesh);
@@ -200,7 +200,7 @@ public class PlanarFaceLineageTests : IDisposable
     public void SupportPairRequiresOneEdgeAndDoesNotRelaxFiniteFaceDatums()
     {
         var api = Api();
-        var result = api.Boolean(Blank(api), Slot(api, "main_slot", 4), BooleanOp.Difference);
+        var result = api.Boolean(Blank(api), Slot(api, "main_slot", 4), BooleanOp.Subtract);
         result.EnsureCoplanarPostProcessed();
         var unique = FaceLineageEdges.Resolve(result, new[] { "[base-ExtrudeTop,main_slot-Line2]" });
         Assert.Single(unique);
@@ -221,7 +221,7 @@ public class PlanarFaceLineageTests : IDisposable
     public void IndexedAncestorSupportPairCannotRetargetCurrentEdge(int index)
     {
         var api = Api();
-        var result = api.Boolean(Blank(api), Slot(api, "main_slot", 4), BooleanOp.Difference);
+        var result = api.Boolean(Blank(api), Slot(api, "main_slot", 4), BooleanOp.Subtract);
         result.EnsureCoplanarPostProcessed();
         const string supportPair = "[base-ExtrudeTop,main_slot-Line2]";
         Assert.Single(FaceLineageEdges.Resolve(result, new[] { supportPair }));
@@ -233,10 +233,10 @@ public class PlanarFaceLineageTests : IDisposable
     public void ExplicitFeatureRenameRemapsLineageBeforeLaterCut()
     {
         var api = Api();
-        var result = api.Boolean(Blank(api), Slot(api, "main_slot", 4), BooleanOp.Difference, "base");
+        var result = api.Boolean(Blank(api), Slot(api, "main_slot", 4), BooleanOp.Subtract, "base");
         result.EnsureCoplanarPostProcessed();
         result.Rename("renamed");
-        var after = api.Boolean(result, Hole(api, "hole", 9), BooleanOp.Difference);
+        var after = api.Boolean(result, Hole(api, "hole", 9), BooleanOp.Subtract);
         after.EnsureCoplanarPostProcessed();
         Assert.True(after.TryGetSurface("renamed-ExtrudeTop{main_slot-Line2}", out _));
     }
@@ -252,7 +252,7 @@ public class PlanarFaceLineageTests : IDisposable
         holes.AddCircle(new Vec2D(20, 20), 5);
         holes.AddCircle(new Vec2D(180, 20), 5);
         var tool = api.ExtrudeTwoSides(holes, 5, 5, name: "plate_cutter");
-        var result = api.Boolean(blank, tool, BooleanOp.Difference, "plateA");
+        var result = api.Boolean(blank, tool, BooleanOp.Subtract, "plateA");
         result.EnsureCoplanarPostProcessed();
         Assert.Contains("plate_cutter-Circle1", result.groupIdToExtendedName.Values);
         var body = api.GetAssembly("holes").AddPart(result, new Vec3D(0));
@@ -261,7 +261,7 @@ public class PlanarFaceLineageTests : IDisposable
         var laterHole = api.GetPlotterSketcher(Geo.DefaultPlanes.OriginXY, "later_hole");
         laterHole.AddCircle(new Vec2D(100, 20), 3);
         var laterTool = api.ExtrudeTwoSides(laterHole, 5, 5, name: "later_cutter");
-        var later = api.Boolean(result, laterTool, BooleanOp.Difference, "plateB");
+        var later = api.Boolean(result, laterTool, BooleanOp.Subtract, "plateB");
         later.EnsureCoplanarPostProcessed();
         int circle = later.extendedNameToGroupId["plate_cutter-Circle1"];
         Assert.False(later.FaceLineages[circle].Split);

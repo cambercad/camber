@@ -83,7 +83,7 @@ Not a certified thread form.")]
                 maxDeviation,
                 meshName + "_nut_core");
 
-            var fullThread = Boolean(coreCylinder, fullThreadBoltNegative, BooleanOp.Difference, meshName + "_nut_core_minus_thread");
+            var fullThread = Boolean(coreCylinder, fullThreadBoltNegative, BooleanOp.Subtract, meshName + "_nut_core_minus_thread");
 
             double eps = 2 * Converter.SmallestUnit();
             Vec3D cuboidSize = new Vec3D(2 * outerRadius + 0.001, 2 * outerRadius + 0.001, pitch + 0.001);
@@ -98,8 +98,8 @@ Not a certified thread form.")]
                 cuboidSize,
                 meshName + "_nut_end_cut_helper");
 
-            AnchorMesh tmp = Boolean(fullThread, startCutHelper, BooleanOp.Difference, meshName + "_nut_start_cut");
-            AnchorMesh trimmed = Boolean(tmp, endCutHelper, BooleanOp.Difference, meshName + "_nut_trim");
+            AnchorMesh tmp = Boolean(fullThread, startCutHelper, BooleanOp.Subtract, meshName + "_nut_start_cut");
+            AnchorMesh trimmed = Boolean(tmp, endCutHelper, BooleanOp.Subtract, meshName + "_nut_trim");
             if (!includeBoreChamfers)
                 return trimmed;
 
@@ -243,8 +243,8 @@ Same threaded-plug solid as CreateMetricThreadForNutNegative. Not a certified th
                 cuboidSize,
                 meshName + "_end_cut_helper");
 
-            AnchorMesh tmp = Boolean(solid, startCutHelper, BooleanOp.Difference, meshName + "_start_cut");
-            return Boolean(tmp, endCutHelper, BooleanOp.Difference, meshName);
+            AnchorMesh tmp = Boolean(solid, startCutHelper, BooleanOp.Subtract, meshName + "_start_cut");
+            return Boolean(tmp, endCutHelper, BooleanOp.Subtract, meshName);
         }
 
         private AnchorMesh CreateHollowCylinder(

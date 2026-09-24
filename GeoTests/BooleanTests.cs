@@ -71,7 +71,7 @@ public class BooleanTests : IDisposable
     public void Boolean_Difference_XShift_VolumeIsCorrect(double shiftX)
     {
         var (api, a, b) = MakePair(shiftX);
-        var result = api.Boolean(a, b, BooleanOp.Difference, "ab");
+        var result = api.Boolean(a, b, BooleanOp.Subtract, "ab");
 
         double expected = 1.0 - Overlap(shiftX);
         double vol      = MeshVolume(result);
@@ -173,7 +173,7 @@ public class BooleanTests : IDisposable
         var api = new GeoAPI(new Box3D(new Vec3D(0), new Vec3D(5)), 1e-4);
         var a   = api.CreateCuboid(new CoordinateSystem(new Vec3D(0, 0, 0)), new Vec3D(3, 3, 3), "a"); // vol=27
         var b   = api.CreateCuboid(new CoordinateSystem(new Vec3D(1, 1, 1)), new Vec3D(1, 1, 1), "b"); // vol=1, inside a
-        var result = api.Boolean(a, b, BooleanOp.Difference, "ab");
+        var result = api.Boolean(a, b, BooleanOp.Subtract, "ab");
         double vol = MeshVolume(result);
         Console.WriteLine($"[B-inside-A Diff] vol={vol:F6}  expected=26");
         AssertVolume(26.0, vol, "B-inside-A Difference");
@@ -209,7 +209,7 @@ public class BooleanTests : IDisposable
         var c   = api.CreateCuboid(new CoordinateSystem(new Vec3D(0.6, 0, 0)), new Vec3D(1, 1, 1), "c");
 
         var ab   = api.Boolean(a,  b, BooleanOp.Union,      "ab");
-        var abc  = api.Boolean(ab, c, BooleanOp.Difference, "abc");
+        var abc  = api.Boolean(ab, c, BooleanOp.Subtract, "abc");
 
         // A∪B spans [0, 1.3] × [0,1] × [0,1] = vol 1.3
         // C=[0.6,1.6]³ overlap with A∪B = [0.6,1.3]×[0,1]×[0,1] = 0.7
@@ -241,7 +241,7 @@ public class BooleanTests : IDisposable
     public void Boolean_Difference_NoOverlap_ReturnsA()
     {
         var (api, a, b) = MakePair(shiftX: 2.0); // B at [2,3]³, A at [0,1]³
-        var result = api.Boolean(a, b, BooleanOp.Difference, "ab");
+        var result = api.Boolean(a, b, BooleanOp.Subtract, "ab");
         double vol = MeshVolume(result);
         Console.WriteLine($"[Diff no-overlap] vol={vol:F6}  expected=1");
         AssertVolume(1.0, vol, "Difference no-overlap");
@@ -278,7 +278,7 @@ public class BooleanTests : IDisposable
         var cube   = api.CreateCuboid(new CoordinateSystem(new Vec3D(0.5, 0, 0)), new Vec3D(1, 1, 1), "cube");
 
         double volSphere = MeshVolume(sphere);
-        var    result    = api.Boolean(sphere, cube, BooleanOp.Difference, "diff");
+        var    result    = api.Boolean(sphere, cube, BooleanOp.Subtract, "diff");
         double volResult = MeshVolume(result);
         Console.WriteLine($"[SphereMinus] sphere={volSphere:F4}  result={volResult:F4}");
 
@@ -408,8 +408,8 @@ public class BooleanTests : IDisposable
 
         var rUnion  = api.Boolean(a, b, BooleanOp.Union,     label + "_u");
         var rIsect  = api.Boolean(a, b, BooleanOp.Intersect, label + "_i");
-        var rDiffAB = api.Boolean(a, b, BooleanOp.Difference, label + "_ab");
-        var rDiffBA = api.Boolean(b, a, BooleanOp.Difference, label + "_ba");
+        var rDiffAB = api.Boolean(a, b, BooleanOp.Subtract, label + "_ab");
+        var rDiffBA = api.Boolean(b, a, BooleanOp.Subtract, label + "_ba");
 
         double volU  = MeshVolume(rUnion);
         double volI  = MeshVolume(rIsect);
@@ -561,6 +561,22 @@ public class BooleanTests : IDisposable
     }
 
     [Fact]
+    public void BatchSubtract_PatternedTools_RemoveTheirUnionInOneStep()
+    {
+        var api = new GeoAPI(new Box3D(new Vec3D(-2), new Vec3D(14)), 1e-4);
+        var basis = api.CreateCuboid(new Vec3D(0, 0, 0), new Vec3D(10, 6, 2), "basis");
+        var tool = api.CreateCuboid(new Vec3D(1, 1, -1), new Vec3D(3, 3, 3), "tool");
+        var cutters = api.PatternLinear(tool, 2, new Vec3D(5, 0, 0), "cutters").ToList();
+
+        var result = api.BatchSubtract(basis, cutters, "perforated");
+
+        AssertVolume(104.0, MeshVolume(result), "patterned subtraction");
+        AssertVolume(120.0, MeshVolume(basis), "unchanged basis");
+        Assert.True(MeshAnalysis.IsWatertightMesh(result.Mesh.PrecisionPositions, result.Mesh.Triangles));
+        Assert.Same(basis, api.BatchSubtract(basis, new List<AnchorMesh>()));
+    }
+
+    [Fact]
     public void Boolean_PlusShape_Union_VolumeIsFive()
     {
         // barX: [0,3]×[0,1]×[0,1], barY: [1,2]×[0,3]×[0,1] → overlap 1 → union vol = 3+3−1 = 5
@@ -624,7 +640,7 @@ public class BooleanTests : IDisposable
         // Single difference vs union of holes avoids sequential Debug failures in constrained
         // triangulation after the revolve coordinate-frame fix (orthogonal cuts).
         var holesUnion = api.BatchUnion(new List<AnchorMesh> { cylX, cylY, cylZ });
-        var result = api.Boolean(rounded, holesUnion, BooleanOp.Difference, "csgClassic");
+        var result = api.Boolean(rounded, holesUnion, BooleanOp.Subtract, "csgClassic");
 
         double volRounded = MeshVolume(rounded);
         double volResult = MeshVolume(result);

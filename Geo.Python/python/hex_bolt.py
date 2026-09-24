@@ -5,7 +5,7 @@ are those metre constants, not millimetres.
 """
 import math
 
-from camber import BOOLEAN_DIFFERENCE, BOOLEAN_UNION, Frame, Part, vec3
+from camber import BOOLEAN_SUBTRACT, BOOLEAN_UNION, Frame, Part, vec3
 
 metric_designation = "M10"
 shank_length_m = 0.035
@@ -126,7 +126,7 @@ def create_hex_head_bolt(part, designation, shank_length_m, max_deviation, name=
     with_chamfer = part.boolean(
         body,
         part.revolve(chamfer_sketch, TWO_PI, name=name + "_topChamferCut", max_deviation=max_deviation),
-        BOOLEAN_DIFFERENCE,
+        BOOLEAN_SUBTRACT,
         name=name + "_chamfer",
     )
 
@@ -151,7 +151,7 @@ def create_hex_head_bolt(part, designation, shank_length_m, max_deviation, name=
     with_tip = part.boolean(
         with_chamfer,
         part.revolve(tip_chamfer_sketch, TWO_PI, name=name + "_tipChamferCut", max_deviation=max_deviation),
-        BOOLEAN_DIFFERENCE,
+        BOOLEAN_SUBTRACT,
         name=name + "_tipChamfer",
     )
 
@@ -161,7 +161,7 @@ def create_hex_head_bolt(part, designation, shank_length_m, max_deviation, name=
         thread_axis_cs, d_maj, pitch, L, name=name + "_threadNeg",
         max_deviation=max_deviation, right_handed=True, outer_radius=shank_radius + 0.002,
     )
-    return part.boolean(with_tip, thread_negative, BOOLEAN_DIFFERENCE, name=name)
+    return part.boolean(with_tip, thread_negative, BOOLEAN_SUBTRACT, name=name)
 
 
 if __name__ == "__main__":

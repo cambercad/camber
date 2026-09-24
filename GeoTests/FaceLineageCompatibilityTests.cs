@@ -16,7 +16,7 @@ public class FaceLineageCompatibilityTests : IDisposable
         var api = new GeoAPI(new Box3D(new Vec3D(-10), new Vec3D(20)), .01);
         var left = api.CreateCuboid(new Vec3D(0), new Vec3D(6, 4, 2), "left");
         var slot = api.CreateCuboid(new Vec3D(2, -1, -1), new Vec3D(3, 5, 3), "slot");
-        var cut = api.Boolean(left, slot, BooleanOp.Difference);
+        var cut = api.Boolean(left, slot, BooleanOp.Subtract);
         cut.EnsureCoplanarPostProcessed();
         var right = api.CreateCuboid(new Vec3D(6, 0, 0), new Vec3D(12, 4, 2), "right");
         var fused = api.Boolean(cut, right, BooleanOp.Union, "left");

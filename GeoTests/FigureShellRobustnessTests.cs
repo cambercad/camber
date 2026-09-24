@@ -34,7 +34,7 @@ public class FigureShellRobustnessTests : IDisposable
             outer.EnsureCoplanarPostProcessed();
             inner.EnsureCoplanarPostProcessed();
         }
-        var shell = api.Boolean(outer, inner, BooleanOp.Difference, "shell");
+        var shell = api.Boolean(outer, inner, BooleanOp.Subtract, "shell");
         shell.EnsureCoplanarPostProcessed();
         Assert.True(MeshAnalysis.IsWatertightMesh(shell.Mesh.PrecisionPositions, shell.Mesh.Triangles));
         double volume = MeshAnalysis.ComputeSignedMeshVolume(shell.Mesh.Positions, shell.Mesh.Triangles);

@@ -24,7 +24,7 @@ public class ConcavePocketEndpointTests : IDisposable
         var api = new GeoAPI(new Box3D(new Vec3D(-50, -50, -15), new Vec3D(350, 300, 130)), .04);
         var block = api.CreateCuboid(new Vec3D(-30, -22, -10), new Vec3D(30, 22, 4), "block");
         var cutter = api.CreateCuboid(new Vec3D(-8, -6, -5), new Vec3D(8, 6, 10), "pocket");
-        var body = api.Boolean(block, cutter, BooleanOp.Difference, "body");
+        var body = api.Boolean(block, cutter, BooleanOp.Subtract, "body");
         var graph = new EdgeGraph(body.Mesh.Triangles, body.Mesh.GetTriangleGroups(),
             body.Mesh.Positions, body.Mesh.PrecisionPositions, body.groupIdToExtendedName);
         var bottomEdges = graph.Edges.Where(e => e.Name.Contains("pocket-ExtrudeBottom") &&

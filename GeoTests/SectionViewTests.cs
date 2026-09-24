@@ -48,7 +48,7 @@ public class SectionViewTests : IDisposable
     {
         var api=Api();var outer=api.CreateCylinder(CoordinateSystem.Default,2,4,.02,"outer");
         var bore=api.CreateCylinder(new CoordinateSystem(new Vec3D(0,0,-1)),1,6,.02,"bore");
-        var tube=api.Boolean(outer,bore,CSG.BooleanOp.Difference,"tube");
+        var tube=api.Boolean(outer,bore,CSG.BooleanOp.Subtract,"tube");
         var section=new SectionView(new[]{tube},api.Converter,new CoordinateSystem(new Vec3D(0,0,2)));
         Assert.Null(section.Raycast(new Vec3D(0,0,5),new Vec3D(0,0,-1)));
         var wall=section.Raycast(new Vec3D(1.5,0,5),new Vec3D(0,0,-1));

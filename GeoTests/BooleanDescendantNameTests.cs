@@ -18,8 +18,8 @@ public class BooleanDescendantNameTests : IDisposable
         var source = api.CreateCuboid(new Vec3D(0),new Vec3D(6,4,2),"source");
         var firstCut = api.CreateCuboid(new Vec3D(1,-1,-1),new Vec3D(2,5,3),"firstCut");
         var secondCut = api.CreateCuboid(new Vec3D(3,-1,-1),new Vec3D(4,5,3),"secondCut");
-        var a = api.Boolean(source,firstCut,BooleanOp.Difference,"firstBranch");
-        var b = api.Boolean(source,secondCut,BooleanOp.Difference,"secondBranch");
+        var a = api.Boolean(source,firstCut,BooleanOp.Subtract,"firstBranch");
+        var b = api.Boolean(source,secondCut,BooleanOp.Subtract,"secondBranch");
         a.EnsureCoplanarPostProcessed(); b.EnsureCoplanarPostProcessed();
         // Structural split names distinguish these two cutters naturally. Model
         // an explicit duplicate display label to retain this test's independent

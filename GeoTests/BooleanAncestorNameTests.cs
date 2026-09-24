@@ -16,7 +16,7 @@ public class BooleanAncestorNameTests : IDisposable
         var api = new GeoAPI(new Box3D(new Vec3D(-2),new Vec3D(8)),.01);
         var source = api.CreateCuboid(new Vec3D(0),new Vec3D(6,4,2),"source");
         var cutter = api.CreateCuboid(new Vec3D(1,-1,-1),new Vec3D(2,5,3),"cutter");
-        var descendant = api.Boolean(source,cutter,BooleanOp.Difference,"descendant");
+        var descendant = api.Boolean(source,cutter,BooleanOp.Subtract,"descendant");
         descendant.EnsureCoplanarPostProcessed();
         var original = new Dictionary<string,int>(source.extendedNameToGroupId);
         var qualified = new Dictionary<string,int>(descendant.extendedNameToGroupId);
@@ -30,7 +30,7 @@ public class BooleanAncestorNameTests : IDisposable
         Assert.Equal(original,source.extendedNameToGroupId);
         Assert.Equal(qualified,descendant.extendedNameToGroupId);
         // A subsequent difference must also consume the merged mapping safely.
-        var empty = api.Boolean(result,descendant,BooleanOp.Difference,"empty");
+        var empty = api.Boolean(result,descendant,BooleanOp.Subtract,"empty");
         Assert.Empty(empty.Mesh.Triangles);
     }
 }

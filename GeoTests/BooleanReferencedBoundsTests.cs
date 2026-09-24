@@ -8,7 +8,7 @@ public class BooleanReferencedBoundsTests
 {
     [Theory]
     [InlineData(BooleanOp.Union,368)]
-    [InlineData(BooleanOp.Difference,152)]
+    [InlineData(BooleanOp.Subtract,152)]
     [InlineData(BooleanOp.Intersect,64)]
     public void BoundsPreparationPreservesExactVolumesAndIgnoresUnusedVertices(BooleanOp operation,int sixTimesVolume)
     {

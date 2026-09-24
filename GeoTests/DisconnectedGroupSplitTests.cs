@@ -212,7 +212,7 @@ public class DisconnectedGroupSplitTests : IDisposable
         var body = api.Boolean(sphere, cube, BooleanOp.Intersect, "body");
 
         var holeZ = api.CreateCylinder(new CoordinateSystem(new Vec3D(0, 0, -12)), 5.0, 24.0, 0.05, "hole_z");
-        body = api.Boolean(body, holeZ, BooleanOp.Difference, "body");
+        body = api.Boolean(body, holeZ, BooleanOp.Subtract, "body");
         var holeX = api.CreateCylinder(
             new CoordinateSystem(
                 new Vec3D(-12, 0, 0),
@@ -220,7 +220,7 @@ public class DisconnectedGroupSplitTests : IDisposable
                 new Vec3D(0, 0, 1),
                 new Vec3D(1, 0, 0)),
             5.0, 24.0, 0.05, "hole_x");
-        body = api.Boolean(body, holeX, BooleanOp.Difference, "body");
+        body = api.Boolean(body, holeX, BooleanOp.Subtract, "body");
         var holeY = api.CreateCylinder(
             new CoordinateSystem(
                 new Vec3D(0, -12, 0),
@@ -228,7 +228,7 @@ public class DisconnectedGroupSplitTests : IDisposable
                 new Vec3D(1, 0, 0),
                 new Vec3D(0, 1, 0)),
             5.0, 24.0, 0.05, "hole_y");
-        body = api.Boolean(body, holeY, BooleanOp.Difference, "body");
+        body = api.Boolean(body, holeY, BooleanOp.Subtract, "body");
 
         body.EnsureCoplanarPostProcessed();
 

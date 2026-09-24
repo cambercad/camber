@@ -19,7 +19,7 @@ from .geom import (
     triangulate,
 )
 from .api import (
-    BOOLEAN_DIFFERENCE,
+    BOOLEAN_SUBTRACT,
     BOOLEAN_INTERSECT,
     BOOLEAN_UNION,
     Assembly,
@@ -63,7 +63,7 @@ __all__ = [
     "AssemblySolveResult", "MateResidual", "Interference", "Assembly", "AssemblyLeaf", "AssemblyOccurrence", "AssemblyPart", "AssemblyPointDatum", "AssemblyAxisDatum", "AssemblyPlaneDatum",
     "vec2", "vec3", "show", "render_views", "frame_from_axis",
     "section", "Section", "Measurement",
-    "BOOLEAN_UNION", "BOOLEAN_DIFFERENCE", "BOOLEAN_INTERSECT",
+    "BOOLEAN_UNION", "BOOLEAN_SUBTRACT", "BOOLEAN_INTERSECT",
     "RayHit", "triangulate", "signed_area", "is_ccw", "point_in_polygon",
     "convex_hull", "tessellate_bezier", "text_outlines",
     "set_progress_log", "progress_log_enabled",

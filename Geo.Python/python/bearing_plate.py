@@ -28,7 +28,7 @@ def build_holed_plate(profile_name, hole_sketch_name, solid_name, cutter_name, r
     holes_sk.add_circle((plate_w - hole_inset, hole_y), hole_radius, name="Circle2")
     cutter = part.extrude_two_sides(
         holes_sk, plate_thickness * 0.5, plate_thickness * 0.5, name=cutter_name)
-    return part.cut(solid, cutter, name=result_name)
+    return part.subtract(solid, cutter, name=result_name)
 
 
 def build_square_post(prefix, size, height, result_name):

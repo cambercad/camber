@@ -115,7 +115,7 @@ public class SketchMeshProjectionTests : IDisposable
         MeshPipelineTestHelpers.AssertWatertightAllowTouch(cutter.Mesh);
 
         double hostVol = MeshPipelineTestHelpers.AbsVolume(cyl.Mesh);
-        var diff = api.Boolean(cyl, cutter, BooleanOp.Difference, "diff");
+        var diff = api.Boolean(cyl, cutter, BooleanOp.Subtract, "diff");
         double diffVol = MeshPipelineTestHelpers.AbsVolume(diff.Mesh);
         double cutterVol = MeshPipelineTestHelpers.AbsVolume(cutter.Mesh);
         // Cutter may extend slightly outside; volume drop should be positive and below cutter volume.

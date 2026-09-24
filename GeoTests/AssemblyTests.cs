@@ -34,7 +34,7 @@ public class AssemblyTests : IDisposable
         holeSk.AddCircle(holeCenter, holeRadius);
         var cutter = api.ExtrudeTwoSides(holeSk, thickness * 0.5, thickness * 0.5, name: name + "_cutter");
 
-        return api.Boolean(solid, cutter, BooleanOp.Difference, name);
+        return api.Boolean(solid, cutter, BooleanOp.Subtract, name);
     }
 
     private static string FindPlanarTopPatch(AnchorMesh mesh)
@@ -540,7 +540,7 @@ public class AssemblyTests : IDisposable
         holeSk.AddCircle(new Vec2D(width - holeInset, height * 0.5), 5);
         var cutter = api.ExtrudeTwoSides(holeSk, thickness * 0.5, thickness * 0.5, name: prefix + "_cutter");
 
-        return api.Boolean(solid, cutter, BooleanOp.Difference, resultName);
+        return api.Boolean(solid, cutter, BooleanOp.Subtract, resultName);
     }
 
     private static Vec3D MeshCentroid(AnchorMesh mesh)

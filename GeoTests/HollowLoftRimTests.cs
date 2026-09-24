@@ -35,7 +35,7 @@ public class HollowLoftRimTests : IDisposable
             return p.Loft(sections,new LoftOptions {CorrespondenceMode=LoftCorrespondenceMode.MatchingVertices,FirstCurves=Enumerable.Repeat("bottom",5).ToArray()},name,.04);
         }
         var outer=Loft("duct",false);var inner=Loft("passage",true);
-        var body=p.Boolean(outer,inner,BooleanOp.Difference,"open_duct");
+        var body=p.Boolean(outer,inner,BooleanOp.Subtract,"open_duct");
         var edges=new[]{"bottom","right","top","left"}.Select(s=>$"[passage-Side-{s},duct-EndCap]").ToList();
         double before=MeshAnalysis.ComputeSignedMeshVolume(body.Mesh.Positions,body.Mesh.Triangles);
         var result=chamfer?p.Chamfer(body,new List<string>{edges[index]},.6,.04,"rim")

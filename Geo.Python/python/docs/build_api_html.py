@@ -41,13 +41,13 @@ SECTIONS = [
         "convex_hull", "tessellate_bezier", "text_outlines",
     ]),
     ("Viewer", ["show"]),
-    ("Constants", ["BOOLEAN_UNION", "BOOLEAN_DIFFERENCE", "BOOLEAN_INTERSECT"]),
+    ("Constants", ["BOOLEAN_UNION", "BOOLEAN_SUBTRACT", "BOOLEAN_INTERSECT"]),
 ]
 
 
 CONST_DOCS = {
     "BOOLEAN_UNION": "CSG union. Same as Solid + Solid / Part.union.",
-    "BOOLEAN_DIFFERENCE": "CSG difference. Same as Solid - Solid / Part.cut.",
+    "BOOLEAN_SUBTRACT": "CSG subtraction. Same as Solid - Solid / Part.subtract.",
     "BOOLEAN_INTERSECT": "CSG intersection. Same as Solid & Solid / Part.intersect.",
 }
 
