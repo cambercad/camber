@@ -11,6 +11,7 @@ Set-Location $root
 
 Write-Host "Publishing Native AOT shared library for $Runtime..."
 dotnet publish Geo.Python.csproj -c $Configuration -r $Runtime --self-contained
+if ($LASTEXITCODE -ne 0) { throw "Native publish failed." }
 
 $pkg = Join-Path $root "python_project_root"
 if (-not (Test-Path $pkg)) {
@@ -32,7 +33,11 @@ Copy-Item -Recurse (Join-Path $root "python\camber") $camberDst
 $readme = Join-Path $repoRoot "README.md"
 python (Join-Path $root "patch_wheel_metadata.py") $pkg $readme $WheelVersion
 
-python -m pip install --upgrade pip setuptools wheel cffi
+python -c "import setuptools, wheel, cffi"
+if ($LASTEXITCODE -ne 0) {
+    python -m pip install setuptools wheel cffi
+    if ($LASTEXITCODE -ne 0) { throw "Install setuptools, wheel, and cffi before building the wheel." }
+}
 
 # Stage pip output, then keep only cambercad-*.whl in repo-root dist/ (PyPI-ready layout).
 $stage = Join-Path $root "_wheel_stage"
@@ -41,7 +46,8 @@ if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
-python -m pip wheel --no-deps $pkg -w $stage
+python -m pip wheel --no-index --no-build-isolation --no-deps $pkg -w $stage
+if ($LASTEXITCODE -ne 0) { throw "Wheel build failed. Install setuptools, wheel, and cffi in the build venv." }
 
 $plat = switch -Wildcard ($Runtime) {
     "win-x64" { "win_amd64" }

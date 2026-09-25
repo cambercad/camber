@@ -33,7 +33,7 @@ _CONSTRAINT_REF_COLORS = (
     (0.10, 0.78, 0.78),
 )
 _PICK_DRAG_PX = 5.0
-_CAD = {"press": None, "orbiting": False}
+_CAD = {"press": None, "orbiting": False, "orbit_held": False, "rotation_pivot": None}
 _OVERLAY = {"height": 800.0, "wpp": None, "edge_r": None, "point_r": None}
 _LOADED_MATERIALS = set()
 
@@ -132,6 +132,8 @@ def init_viewer(ps, title="Camber", ground="shadow_only"):
     _try_set(ps, "set_do_default_mouse_interaction", False)
     _CAD["press"] = None
     _CAD["orbiting"] = False
+    _CAD["orbit_held"] = False
+    _CAD["rotation_pivot"] = None
     _try_set(ps, "set_background_color", (250.0 / 255.0, 250.0 / 255.0, 252.0 / 255.0))
     _try_set(ps, "set_ground_plane_mode", ground)
     _try_set(ps, "set_shadow_darkness", 0.28)
@@ -1498,7 +1500,7 @@ def _try_set_vertex_normals(mesh, normals):
             pass
 
 
-def tick_cad_camera(ps, imgui, io=None, want_mouse=False):
+def tick_cad_camera(ps, imgui, io=None, want_mouse=False, orbit_pivot=None):
     """Middle-drag orbit (or L+R), Shift+middle / right-drag pan, wheel zoom at cursor.
 
     Matches GeoScriptViewer: unconstrained screen-axis orbit. Camera-orbit signs are the
@@ -1506,9 +1508,6 @@ def tick_cad_camera(ps, imgui, io=None, want_mouse=False):
     """
     if io is None:
         io = imgui.GetIO()
-    if want_mouse:
-        _CAD["orbiting"] = False
-        return
     height = _display_height(io)
     if height < 1.0:
         height = 1.0
@@ -1517,6 +1516,15 @@ def tick_cad_camera(ps, imgui, io=None, want_mouse=False):
     right = _mouse_down(imgui, io, 1)
     shift = _io_flag(io, "KeyShift")
     orbit = middle or (left and right)
+    orbit_started = orbit and not _CAD["orbit_held"]
+    _CAD["orbit_held"] = orbit
+    if want_mouse:
+        _CAD["orbiting"] = False
+        return
+    if orbit_started and orbit_pivot is not None:
+        point = orbit_pivot()
+        if point is not None:
+            _CAD["rotation_pivot"] = point
     pan = (orbit and shift) or (right and middle) or (right and not left and not middle)
     dx, dy = _mouse_delta(io)
     wheel = _mouse_wheel(io)
@@ -1528,7 +1536,7 @@ def tick_cad_camera(ps, imgui, io=None, want_mouse=False):
         if pan:
             _cad_pan(ps, ndx, ndy)
         else:
-            _cad_orbit(ps, ndx, ndy)
+            _cad_orbit(ps, ndx, ndy, _CAD["rotation_pivot"])
     if not orbit and not pan:
         _CAD["orbiting"] = False
     if abs(wheel) > 0.0:
@@ -1562,9 +1570,9 @@ def _cad_commit(ps, pos, center, up):
                 pass
 
 
-def _cad_orbit(ps, ndx, ndy):
+def _cad_orbit(ps, ndx, ndy, pivot=None):
     cam = getattr(ps, "camera", None)
-    if cam is not None:
+    if cam is not None and pivot is None:
         cam.orbit(ndx, ndy)
         return
     pos, center, look, up, right = _cad_frame(ps)
@@ -1573,11 +1581,15 @@ def _cad_orbit(ps, ndx, ndy):
     speed = 5.0
     yaw = -ndx * speed
     pitch = -ndy * speed
-    rel = _vsub(pos, center)
+    origin = center if pivot is None else pivot
+    rel = _vsub(pos, origin)
+    center_rel = _vsub(center, origin)
     rel = _rodrigues(rel, up, yaw)
+    center_rel = _rodrigues(center_rel, up, yaw)
     rel = _rodrigues(rel, right, pitch)
+    center_rel = _rodrigues(center_rel, right, pitch)
     new_up = _rodrigues(up, right, pitch)
-    _cad_commit(ps, _vadd(center, rel), center, new_up)
+    _cad_commit(ps, _vadd(origin, rel), _vadd(origin, center_rel), new_up)
 
 
 def _cad_look_at(pos, center, look):

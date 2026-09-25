@@ -361,8 +361,33 @@ def _viz_radius(overlay, curves, action, index):
 
 def _viz_angle(overlay, curves, action, index):
     _ = index
-    line1 = _curve(curves, action["curves"][0])
-    line2 = _curve(curves, action["curves"][1])
+    first = _curve(curves, action["curves"][0])
+    second = _curve(curves, action["curves"][1])
+    if {first.get("kind"), second.get("kind")} == {"line", "arc"}:
+        line = first if first["kind"] == "line" else second
+        arc = first if first["kind"] == "arc" else second
+        line_start, line_end = _line_ends(line)
+        arc_start, arc_end = arc["start"], arc["end"]
+        start_distance = min(_dist(line_start, arc_start), _dist(line_end, arc_start))
+        end_distance = min(_dist(line_start, arc_end), _dist(line_end, arc_end))
+        endpoint = arc_start if start_distance <= end_distance else arc_end
+        center, _radius = _arc_center_radius(arc)
+        radial = _unit(_vsub(endpoint, center))
+        tangent = (-radial[1], radial[0])
+        tangent_length = max(_line_len(line), _radius, _MINIMUM_OFFSET)
+        tangent_line = {
+            "kind": "line",
+            "p0": endpoint,
+            "p1": _vadd(endpoint, _vmul(tangent, tangent_length)),
+        }
+        _draw_angle_between_lines(overlay, line, tangent_line, action["value"])
+        return
+    if first.get("kind") != "line" or second.get("kind") != "line":
+        return
+    _draw_angle_between_lines(overlay, first, second, action["value"])
+
+
+def _draw_angle_between_lines(overlay, line1, line2, value):
     s1, e1 = _line_ends(line1)
     s2, e2 = _line_ends(line2)
     d1 = _vsub(e1, s1)
@@ -392,7 +417,7 @@ def _viz_angle(overlay, curves, action, index):
         sweep -= 2.0 * math.pi
     while sweep < -math.pi:
         sweep += 2.0 * math.pi
-    wanted = abs(math.radians(float(action["value"])))
+    wanted = abs(math.radians(float(value)))
     alt = sweep - 2.0 * math.pi if sweep >= 0.0 else sweep + 2.0 * math.pi
     if abs(abs(alt) - wanted) < abs(abs(sweep) - wanted):
         sweep = alt
@@ -413,7 +438,7 @@ def _viz_angle(overlay, curves, action, index):
         )
     mid_ang = a_start + sweep * 0.5
     label = _vadd(apex, (math.cos(mid_ang) * radius * 1.15, math.sin(mid_ang) * radius * 1.15))
-    overlay.label(format_angle_deg(action["value"]), label, KIND_DIM)
+    overlay.label(format_angle_deg(value), label, KIND_DIM)
 
 
 def _distance_2d(overlay, p1, p2, distance, anchor_offset, index):

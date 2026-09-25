@@ -23,6 +23,8 @@ internal sealed class ShellOperation
                 throw new ArgumentException($"Shell face '{face}' does not exist on '{source.Name}'.", nameof(faces));
             if (!selected.Add(id)) throw new ArgumentException($"Shell face '{face}' was selected more than once.", nameof(faces));
         }
+        var openingPatches = selected.Select(id => source.groupIdToExtendedName[id])
+            .ToHashSet(StringComparer.Ordinal);
         var builder = new ShellTopologyBuilder(api.Converter, ShellSurfaceRegistry.AnalyticV1);
         int ReserveGroups(int count)
         {
@@ -89,7 +91,7 @@ internal sealed class ShellOperation
             {
                 var sharp = builder.BuildOffset(solid, new HashSet<int>(), -thickness, 0,
                     ReserveGroups(solid.groupIdToExtendedName.Count), exterior: true);
-                return rounded ? RoundExterior(solid, sharp) : sharp;
+                return rounded ? RoundExterior(solid, sharp, openingPatches) : sharp;
             }
             catch (ArgumentException ex) when (solid.UnionOperands != null &&
                 ex.Message.StartsWith("Shell offset changes topology or uses an unsupported surface junction", StringComparison.Ordinal))
@@ -139,10 +141,16 @@ internal sealed class ShellOperation
                 deferCoplanarPostProcess: true, isVolume: true);
         }
 
-        AnchorMesh RoundExterior(AnchorMesh original, AnchorMesh solid)
+        AnchorMesh RoundExterior(AnchorMesh original, AnchorMesh solid, HashSet<string> openPatches)
         {
             solid.EnsureCoplanarPostProcessed();
-            var edges = solid.GroupEdges.Select(edge => edge.Name).ToList();
+            // Edges bordering removed faces become part of the shell opening.
+            // Keep that boundary sharp and round only joins between retained
+            // exterior faces, matching CadQuery's shell behavior.
+            var edges = solid.GroupEdges
+                .Where(edge => !openPatches.Contains(solid.groupIdToExtendedName[edge.GroupIdA]) &&
+                    !openPatches.Contains(solid.groupIdToExtendedName[edge.GroupIdB]))
+                .Select(edge => edge.Name).ToList();
             if (edges.Count == 0) return solid;
             int groupIdOffset = GeoAPI.GetBaseGroupIndex();
             var result = new EdgeBlending().BlendEdges(solid, edges, thickness, api.Converter,

@@ -81,7 +81,7 @@ namespace Geo
 
         // https://github.com/BrunoLevy/geogram/discussions/230
         //https://github.com/BrunoLevy/geogram/discussions/261
-        protected static M BooleanOperation<M>(M a, M b, BooleanOp op, CoordinateConverter converter, List<List<IntersectionSegmentEx>> intersectionStrips = null, Action<BooleanFragments> classifiedFragments = null) where M : Mesh<T>, new()
+        protected static M BooleanOperation<M>(M a, M b, BooleanOp op, CoordinateConverter converter, List<List<IntersectionSegmentEx>> intersectionStrips = null, Action<BooleanFragments> classifiedFragments = null, bool retainExteriorTrimCaps = false) where M : Mesh<T>, new()
         {
             if (a == null || b == null)
                 return null;
@@ -89,7 +89,8 @@ namespace Geo
 
             M result = new M();
             Resolver.Resolve(op, a.PrecisionPositions, a.Triangles, b.PrecisionPositions, b.Triangles,
-                out result.PrecisionPositions, out result.Triangles, out List<SourceTriangle> sources, null, intersectionStrips, classifiedFragments);
+                out result.PrecisionPositions, out result.Triangles, out List<SourceTriangle> sources, null,
+                intersectionStrips, classifiedFragments, retainExteriorTrimCaps);
 
             result.TrianglesEx = new List<MeshTriangle<T>>();
 

@@ -793,7 +793,8 @@ class PartOperation(namedtuple("PartOperation", "index kind result inputs entiti
 class AssemblyLeaf(namedtuple("AssemblyLeaf", "path part solid frame bounds")):
     """A recursive assembly leaf in its current world pose.
 
-    ``path`` identifies this occurrence. Prefix a local patch, curve, or point name
+    ``solid`` may also be an open Surface. ``path`` identifies this occurrence.
+    Prefix a local patch, curve, or point name
     with ``path + ':'`` when referring to the occurrence in an assembly.
     """
     __slots__ = ()
@@ -924,7 +925,7 @@ class Assembly(object):
                       vec3(leaf.max_x, leaf.max_y, leaf.max_z))
             result.append(AssemblyLeaf(leaf.path,
                           AssemblyPart(_invoke(leaf, "get_part")),
-                          Solid(_invoke(leaf, "get_solid"), self._part), frame, bounds))
+                          _body(_invoke(leaf, "get_solid"), self._part), frame, bounds))
         return tuple(result)
 
     def bounds(self):
@@ -1264,19 +1265,48 @@ class Part(object):
         """Drop a sketch from the part (does not undo solids already built from it)."""
         _require(self._n, "unregister_sketch")(sketch._n)
 
-    def extrude(self, sketch, height, name=None, both_sides=False, max_deviation=-1, twist=0):
-        """Extrude along the sketch-plane normal. ``height`` world units; ``twist`` rad per unit length."""
+    def extrude(self, sketch, height, name=None, both_sides=False, max_deviation=-1, twist=0,
+                taper_angle=0):
+        """Extrude along the sketch-plane normal.
+
+        ``height`` is in world units; ``twist`` is radians per unit length;
+        ``taper_angle`` is radians and positive angles narrow along extrusion.
+        Taper cannot be combined with ``both_sides`` or ``twist``.
+        """
         n = _name(name)
         md = float(max_deviation)
         tw = float(twist)
         if both_sides:
+            if float(taper_angle) != 0:
+                raise ValueError("tapered extrusion cannot be combined with both_sides")
             return Solid(_require(self._n, "extrude_two_sides")(sketch._n, height, height, md, tw, n), self)
-        return Solid(_require(self._n, "extrude")(sketch._n, height, md, tw, n), self)
+        return Solid(_require(self._n, "extrude")(
+            sketch._n, height, md, tw, n, float(taper_angle)), self)
 
     def extrude_two_sides(self, sketch, plus_z, minus_z=0.0, name=None, max_deviation=-1, twist=0):
         """Extrude ``plus_z`` along +normal and ``minus_z`` along −normal."""
         return Solid(_require(self._n, "extrude_two_sides")(
             sketch._n, plus_z, minus_z, float(max_deviation), float(twist), _name(name)), self)
+
+    def extrude_until_next(self, sketch, target, name=None, max_deviation=-1):
+        """Extrude along the nearer of the two sketch-normal directions to ``target``."""
+        return Solid(_require(self._n, "extrude_until_next")(
+            sketch._n, target._n, float(max_deviation), _name(name)), self)
+
+    def face_surface(self, solid, patch_name, name=None):
+        """Extract a named face as an oriented open surface for exact CSG trimming."""
+        return Surface(_require(self._n, "extract_face_surface")(
+            solid._n, str(patch_name), _name(name)), self)
+
+    def extrude_until_surface(self, sketch, surface, name=None, max_deviation=-1):
+        """Extrude to an open surface that fully spans the sketch projection."""
+        return Solid(_require(self._n, "extrude_until_surface")(
+            sketch._n, surface._n, float(max_deviation), _name(name)), self)
+
+    def extrude_until_face(self, sketch, target, patch_name, name=None, max_deviation=-1):
+        """Extrude to one named face of a target solid."""
+        return Solid(_require(self._n, "extrude_until_face")(
+            sketch._n, target._n, str(patch_name), float(max_deviation), _name(name)), self)
 
     def project_sketch(self, sketch, solid, name=None, max_deviation=-1):
         """Tessellate sketch and project onto solid along the sketch-plane normal."""
@@ -2179,7 +2209,7 @@ class Sketch(object):
         return self
 
     def angle(self, curve_a, curve_b, degrees):
-        """Angle between two lines, in degrees. Returns self."""
+        """Angle between two lines, or a line and an arc tangent, in degrees. Returns self."""
         _require(self._n, "set_angle_degrees")(
             _curve_index(self, curve_a), _curve_index(self, curve_b), float(degrees))
         return self
@@ -2673,6 +2703,10 @@ class _MeshBody(object):
     def patch_names(self):
         """Canonical patch names, identical to the renderer's face names."""
         return tuple(_require(self._n, "patch_name_at")(i) for i in range(int(self._n.patch_count)))
+
+    def patch_frame_at(self, index):
+        """Area-centroid frame of a tessellated patch (normal from its winding)."""
+        return Frame._from_native(_require(self._n, "patch_frame_at")(int(index)))
 
     @property
     def curve_names(self):

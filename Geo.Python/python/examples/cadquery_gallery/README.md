@@ -1,48 +1,35 @@
-# CadQuery examples compatibility walk
+# CadQuery examples parity audit
 
-Source: [CadQuery Examples](https://cadquery.readthedocs.io/en/latest/examples.html),
-in page order. The numbered scripts were exercised independently with
-`camber.cqcompat.Workplane`.
+Source: [CadQuery's examples page](https://cadquery.readthedocs.io/en/latest/examples.html).
+The numbered scripts follow its examples in order, use `camber.cqcompat.Workplane`,
+and call `result.show()` when run directly so the final object opens in the viewer.
 
-Status through the final gallery example:
+All 40 scripts pass independently with the current Windows wheel. This is an
+execution check, not a claim of identical geometry: Camber tessellates
+curved surfaces and `parametricCurve()` samples its Python callback within a
+chord tolerance. In particular, the bottle's shell/round joins and the
+cycloidal gear are tolerance-bounded meshes rather than CadQuery B-reps.
 
-| Result | Examples | Notes |
-| --- | --- | --- |
-| Runs | 01-19, 23, 25-33, 35-38 | Examples 35-38 are compact demonstrations of the same feature paths, not verbatim reproductions of the larger gallery models. |
-| Runs, partial CadQuery parity | 20-22, 34, 39 | Sharp outward joins remain the default; example 34 explicitly requests round joins. Its curved corner is now watertight, though the curved surfaces are tessellated. Example 39's callback curve is sampled rather than fitted as a spline. |
-| Cannot run yet | 24 | `extrude("next")` is not implemented. |
+The third, unnumbered spherical-joint snippet is represented by script 40.
+The native C# API and Python `Part` expose named face extraction and exact CSG
+extrusion to an open face surface; the compatibility layer supports
+`cutBlind(surface)`, compound/ranked face selectors, and the source chain.
+Surface trims must span the complete profile intersection; incomplete trims
+fail explicitly.
 
-These scripts use Camber's compatibility import rather than running the original
-CadQuery files unchanged. A script running is not proof of identical geometry.
-When a numbered script is run directly, it opens the Camber viewer on the
-finished result after its checks. Example 24 currently stops at its unsupported
-`extrude("next")` call, so it has no finished result to display.
+The parametric-enclosure script matches the documented inner-cut height and
+includes four real counterbores. `cskHole()` is supported for its optional
+countersink configuration. Other optional parameter combinations have not all
+been audited.
 
-Estimated order to unblock the remaining examples (easiest to hardest). Times
-are active engineer-days for one developer familiar with the codebase, including
-focused tests and running the affected gallery scripts; they are estimates, not
-commitments.
+Run one example without a viewer (for automated checks):
 
-| Rank | Examples | Missing capability | Estimate | Work needed |
-| --- | --- | --- | --- | --- |
-| Done | 27-28, 31 | 2D profile offset, selected-edge conversion, tagged-face selection | Complete | Implemented in the compatibility layer using Camber's native sketch offset operation. `toPending()` currently handles straight feature edges represented by mesh vertices. |
-| Done | 33 | `split()` | Complete | Uses CSG with a cutter plane footprint covering the live solid's AABB. Surface trim was checked first but produced a non-watertight half for the holed gallery body. Both retained halves are available via `vals()`/`all()`. |
-| Partial | 20-22 | Outward shell | Round joins opt-in | Positive thickness expands the exterior and keeps the original solid as the cavity. `shell(t, kind="arc")` rounds supported box and cylinder joins; the gallery scripts retain sharp joins by default. |
-| Partial | 34 | Union-seam outward shell | Round bottle succeeds | Round outward shelling distributes over Boolean unions. The bottle script requests `kind="arc"`; neighboring blend strips now share exact corner contacts, and the result is watertight. Curved patches remain tessellated. |
-| Done, partial parity | 39 | `parametricCurve()` | Implemented | Evaluates the Python callback and adaptively samples planar points using the Part tolerance or explicit `tol`; current sketch geometry is a polyline, not a native fitted spline. |
-| Done | 25 | `eachpoint()` | Complete | Creates a solid per pushed point, supports local workplane placement, and shows the full stack in the viewer. |
-| 1 | 24 | `extrude("next")` | 3-8 days | The custom-axis revolve is fixed and tested. Determine the next limiting face along the extrusion direction, stop the extrusion at that face, and test the resulting trim against curved as well as planar targets. |
+```powershell
+.venv\Scripts\python.exe -c "import runpy; runpy.run_path('Geo.Python/python/examples/cadquery_gallery/35_parametric_enclosure.py')"
+```
 
-The estimates assume support sufficient for these gallery cases, not complete
-CadQuery parity. `parametricCurve()` currently supports planar callback output
-and sketch wires; it does not fit a native spline or support 3D curves and
-CadQuery's spline-fitting controls. Total: 38 scripts run (5 with known
-geometry/parity differences) and 1 currently stops at a missing feature.
+Run the file normally to open the viewer:
 
-The remaining cases remain as failing reproducers. The ledger covers the gallery through its final
-cycloidal-gear example.
-
-From `Geo.Python/python`, run a script with the repository Python environment
-and `PYTHONPATH` pointing to that directory. Each numbered file is an
-independent check; files marked blocked are expected to stop at the listed
-limitation.
+```powershell
+.venv\Scripts\python.exe Geo.Python/python/examples/cadquery_gallery/35_parametric_enclosure.py
+```

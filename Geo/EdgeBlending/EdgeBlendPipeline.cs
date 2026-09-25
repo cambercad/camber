@@ -449,21 +449,13 @@ namespace Geo
                 graphEdgesToBlend.Add(edge);
             }
 
-            // A closed cylinder/end disk has a point spine when both radii
-            // agree; its consumed disk is replaced by a spherical cap.
-            if (profile is FilletProfile && graphEdgesToBlend.Count == 1 &&
-                CollapsedCylinderFillet.TryCreate(mesh, graphEdgesToBlend[0], profile.OffsetDistance,
-                    cc, maxDiscretizationDeviation, ref groupIdOffset, out var sphereResult, out var sphereMetadata, allocateGroupIds))
-            {
-                int patchGroup = groupIdOffset - 1;
-                string patchName = profile.EdgePatchName(graphEdgesToBlend[0].Name);
-                var names = new Dictionary<int, string>(mesh.groupIdToExtendedName) { [patchGroup] = patchName };
-                var metadata = SurfaceMetaData.CloneDictionary(mesh.surfaceMetaData);
-                metadata[patchName] = sphereMetadata;
-                return new AnchorMesh(mesh.Name + resultNameSuffix, sphereResult, names, metadata,
-                    deferCoplanarPostProcess: false, skipCoplanarFusion: true, isVolume: mesh.IsVolume,
-                    faceLineages: mesh.FaceLineages, ambiguousReferences: mesh.AmbiguousFaceReferences);
-            }
+            // Near-collapsed closed cylinder rims become hemispherical caps.
+            // Independent rims may be processed in sequence; mixed or adjacent
+            // selections fall through to the ordinary blend pipeline unchanged.
+            if (profile is FilletProfile && TryBlendCollapsedCylinderGroup(mesh, graphEdgesToBlend,
+                profile, cc, maxDiscretizationDeviation, ref groupIdOffset, resultNameSuffix,
+                allocateGroupIds, out var collapsedResult))
+                return collapsedResult;
 
             blendEdges = CreateBlendEdges(graphEdgesToBlend, profile.OffsetDistance);
             originalSurfaces = GetOriginalSurfaces(blendTopology, blendEdges);
@@ -641,6 +633,69 @@ namespace Geo
                 result.Add(blendEdge);
             }
             return result;
+        }
+
+        private static bool TryBlendCollapsedCylinderGroup(AnchorMesh mesh, IReadOnlyList<GraphEdge> edges,
+            IEdgeBlendProfile profile, CoordinateConverter cc, double maxDeviation, ref int groupIdOffset,
+            string resultNameSuffix, Func<int, int> allocateGroupIds, out AnchorMesh result)
+        {
+            result = null;
+            int startingGroupId = groupIdOffset;
+            var usedVertices = new HashSet<int>();
+            foreach (var edge in edges)
+            {
+                var edgeVertices = edge.EdgeSegments.SelectMany(segment => new[] { segment.X, segment.Y }).ToHashSet();
+                if (usedVertices.Overlaps(edgeVertices)) return false;
+                usedVertices.UnionWith(edgeVertices);
+            }
+
+            var current = mesh;
+            foreach (var requestedEdge in edges)
+            {
+                var graph = new EdgeGraph(current.Mesh.Triangles, current.Mesh.GetTriangleGroups(),
+                    current.Mesh.Positions, current.Mesh.PrecisionPositions, current.groupIdToExtendedName);
+                if (!graph.TryGetEdge(requestedEdge.Name, out var edge) || edge == null ||
+                    !SameSupportPair(mesh, requestedEdge, current, edge))
+                {
+                    groupIdOffset = startingGroupId;
+                    return false;
+                }
+
+                // The rebuilt graph has not passed through CategorizeEdges; carry
+                // over the already-computed category only when its named supports
+                // are unchanged. This group handles disjoint rims, so earlier
+                // replacements cannot alter this edge's local convexity.
+                edge.BlendType = requestedEdge.BlendType;
+                if (!CollapsedCylinderFillet.TryCreate(current, edge, profile.OffsetDistance, cc, maxDeviation,
+                    ref groupIdOffset, out var sphereResult, out var sphereMetadata, allocateGroupIds))
+                {
+                    groupIdOffset = startingGroupId;
+                    return false;
+                }
+
+                int patchGroup = groupIdOffset - 1;
+                string patchName = profile.EdgePatchName(edge.Name);
+                var names = new Dictionary<int, string>(current.groupIdToExtendedName) { [patchGroup] = patchName };
+                var metadata = SurfaceMetaData.CloneDictionary(current.surfaceMetaData);
+                metadata[patchName] = sphereMetadata;
+                current = new AnchorMesh(current.Name + resultNameSuffix, sphereResult, names, metadata,
+                    deferCoplanarPostProcess: false, skipCoplanarFusion: true, isVolume: current.IsVolume,
+                    faceLineages: current.FaceLineages, ambiguousReferences: current.AmbiguousFaceReferences);
+            }
+
+            result = current;
+            return true;
+        }
+
+        private static bool SameSupportPair(AnchorMesh originalMesh, GraphEdge originalEdge,
+            AnchorMesh currentMesh, GraphEdge currentEdge)
+        {
+            var originalA = originalMesh.groupIdToExtendedName[originalEdge.GroupIdA];
+            var originalB = originalMesh.groupIdToExtendedName[originalEdge.GroupIdB];
+            var currentA = currentMesh.groupIdToExtendedName[currentEdge.GroupIdA];
+            var currentB = currentMesh.groupIdToExtendedName[currentEdge.GroupIdB];
+            return (originalA == currentA && originalB == currentB) ||
+                (originalA == currentB && originalB == currentA);
         }
 
         // Three supports define one corner. Pairwise fillet construction does not

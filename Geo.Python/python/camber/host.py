@@ -1567,6 +1567,9 @@ def run_solid(obj, title="Camber", colors=None, checker=None):
     )
 
     viewer = Viewer(title)
+    _CAD["orbit_held"] = False
+    _CAD["orbiting"] = False
+    _CAD["rotation_pivot"] = None
     packed = _g.pack_scene(_g._as_scene(obj), colors=colors)
     viewer.set_solid(packed)
     viewer.checker = not bool(colors) if checker is None else bool(checker)
@@ -1647,6 +1650,35 @@ def run_solid(obj, title="Camber", colors=None, checker=None):
         return _g.pick_name(
             visible[0], origin, direction, point_r, curve_r, packeds=visible)
 
+    def orbit_pivot_at_mouse():
+        io = imgui.GetIO()
+        pos = getattr(io, "MousePos", None)
+        size = getattr(io, "DisplaySize", None)
+        if pos is None or size is None:
+            return None
+        mx = float(pos[0] if not hasattr(pos, "x") else pos.x)
+        my = float(pos[1] if not hasattr(pos, "y") else pos.y)
+        width = float(size[0] if hasattr(size, "__len__") else size.x)
+        height = float(size[1] if hasattr(size, "__len__") else size.y)
+        if width < 2.0 or height < 2.0:
+            return None
+        origin, direction = viewer.camera.ray(
+            2.0 * mx / width - 1.0, 1.0 - 2.0 * my / height)
+        nearest = None
+        for scene in viewer.visible_part_packeds():
+            face = _g.closest_triangle(
+                origin, direction, scene["mesh_pos"], scene["mesh_idx"],
+                scene.get("triangle_cache"))
+            if face < 0:
+                continue
+            distance = _g.triangle_hit_distance(
+                origin, direction, scene["mesh_pos"], scene["mesh_idx"][face])
+            if distance != float("inf") and (nearest is None or distance < nearest):
+                nearest = distance
+        if nearest is None:
+            return None
+        return tuple(origin[i] + direction[i] * nearest for i in range(3))
+
     def tick():
         io = imgui.GetIO()
         want = _want_mouse(imgui, io)
@@ -1671,7 +1703,7 @@ def run_solid(obj, title="Camber", colors=None, checker=None):
                 apply_colors()
             return
 
-        tick_cad_camera(viewer, imgui, io, want)
+        tick_cad_camera(viewer, imgui, io, want, orbit_pivot_at_mouse)
         if viewer.key_down("F"):
             if not latch["f"]:
                 viewer.camera.fit(*packed["bounds"])

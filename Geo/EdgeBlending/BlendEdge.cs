@@ -1044,7 +1044,9 @@ namespace Geo
                     BooleanOp.AAsSurfaceBAsTrimVolumeKeepOutside, cc);
 
             // Apply blend surface to volume
-            MeshNormalUV trimmed = MeshNormalUV.BooleanOperation(volume, blendSurface, operation, cc);
+            MeshNormalUV trimmed = blendType == EdgeBlendType.Concave
+                ? MeshNormalUV.BooleanOperationRetainingExteriorTrimCaps(volume, blendSurface, operation, cc)
+                : MeshNormalUV.BooleanOperation(volume, blendSurface, operation, cc);
             trimmed.RunSanityChecks();
             return trimmed;
         }

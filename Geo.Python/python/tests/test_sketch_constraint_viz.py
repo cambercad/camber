@@ -101,6 +101,18 @@ class GeometricGlyphTests(unittest.TestCase):
         self.assertTrue(_has_seg(overlay.cons_segs, a, corner))
         self.assertTrue(_has_seg(overlay.cons_segs, corner, c))
 
+    def test_line_arc_angle_uses_arc_endpoint_tangent(self):
+        curves = [
+            {"kind": "line", "p0": (0.0, 0.0), "p1": (0.0, 3.0)},
+            {"kind": "arc", "start": (0.0, 3.0), "mid": (1.5, 1.5), "end": (0.0, 0.0)},
+        ]
+        overlay = build_constraint_overlay(
+            curves + [{"kind": "angle", "curves": [0, 1], "value": 45}], curves)
+        self.assertIn(("45.0°", next(xy for text, xy in _labels_of(overlay, "dim")
+                                       if text == "45.0°")),
+                      _labels_of(overlay, "dim"))
+        self.assertGreater(len(overlay.dim_segs), 0)
+
     def test_midpoint_m(self):
         curves = [{"kind": "line", "p0": (0.0, 0.0), "p1": (8.0, 0.0)}]
         actions = [

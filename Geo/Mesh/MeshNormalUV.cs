@@ -217,14 +217,16 @@ namespace Geo
             {
                 MeshAnalysis.IsWatertightMesh(this.Positions, this.Triangles, out var problem);
                 Trace.Write(TraceCommand.Clear);
-                Trace.Write(new Tuple<string, Vec3D, List<Vec3D>>("edges", new Vec3D(1, 0, 0), problem));               
+                Trace.Write(new Tuple<string, Vec3D, List<Vec3D>>("edges", new Vec3D(1, 0, 0), problem));
                 Trace.Write(new Tuple<string, Vec3D, MeshNormalUV>("volume", new Vec3D(0, 0, 0.7), this));
                 Trace.Write(TraceCommand.Fit);
                 Trace.Write(TraceCommand.Hold);
-                throw new Exception();
+                throw new InvalidOperationException(
+                    $"Mesh is not watertight in authoritative coordinates ({problem.Count / 2} invalid display-space edges). " +
+                    (problem.Count >= 2 ? $"First: {problem[0]} -> {problem[1]}." : "No display-space edge diagnostic was available."));
             }
             if (!MeshAnalysis.AreTrianglesConsistentlyOriented(this.PrecisionPositions, this.Triangles))
-                throw new Exception();
+                throw new InvalidOperationException("Mesh triangles are inconsistently oriented in authoritative coordinates.");
         }
 
         // Overload for backward compatibility - converts Vec3D to Rat3Hybrid internally
@@ -388,8 +390,18 @@ namespace Geo
         public static MeshNormalUV BooleanOperation(MeshNormalUV a, MeshNormalUV b, BooleanOp op, 
             CoordinateConverter converter, List<List<IntersectionSegmentEx>> intersectionStrips = null,
             Action<BooleanFragments> classifiedFragments = null)
+            => BooleanOperationCore(a, b, op, converter, intersectionStrips, classifiedFragments, false);
+
+        internal static MeshNormalUV BooleanOperationRetainingExteriorTrimCaps(MeshNormalUV a, MeshNormalUV b,
+            BooleanOp op, CoordinateConverter converter)
+            => BooleanOperationCore(a, b, op, converter, null, null, true);
+
+        private static MeshNormalUV BooleanOperationCore(MeshNormalUV a, MeshNormalUV b, BooleanOp op,
+            CoordinateConverter converter, List<List<IntersectionSegmentEx>> intersectionStrips,
+            Action<BooleanFragments> classifiedFragments, bool retainExteriorTrimCaps)
         {
-            MeshNormalUV result = BooleanOperation<MeshNormalUV>(a, b, op, converter, intersectionStrips, classifiedFragments);
+            MeshNormalUV result = BooleanOperation<MeshNormalUV>(a, b, op, converter, intersectionStrips,
+                classifiedFragments, retainExteriorTrimCaps);
             for (int i = 0; i < result.Triangles.Count; i++)
             {
                 Tri tri = result.Triangles[i];

@@ -27,10 +27,12 @@ from .api import (
     LoftOptions,
     Part,
     Solid,
+    Surface,
 )
 from .vec import vec2, vec3
 
 Vector = vec3
+from .cqassembly import Assembly, Color, Location
 
 _AXES = {
     "X": (1.0, 0.0, 0.0),
@@ -301,6 +303,40 @@ def _select_edges(edges, selector):
 
 def _select_items(items, selector, kind):
     items = list(items or [])
+    text = str(selector).strip() if selector is not None else ""
+    if re.search(r"\s+and\s+", text, re.IGNORECASE):
+        clauses = re.split(r"\s+and\s+", text, flags=re.IGNORECASE)
+        names = None
+        for clause in clauses:
+            matched = {item["name"] for item in _select_items(items, clause.strip(" ()"), kind)}
+            names = matched if names is None else names & matched
+        return [item for item in items if item["name"] in names]
+    if text.lower().startswith("not "):
+        names = {item["name"] for item in _select_items(items, text[4:].strip(" ()"), kind)}
+        return [item for item in items if item["name"] not in names]
+    ranked = re.fullmatch(r"(>>|>|<)([XYZ])\[(\d+)\]", text, re.IGNORECASE)
+    if ranked:
+        axis = _AXES[ranked.group(2).upper()]
+        ordered = sorted(items, key=lambda item: _dot(item["center"], axis),
+                         reverse=ranked.group(1) != "<")
+        index = int(ranked.group(3))
+        tolerance = max((item.get("rank_tolerance", 1e-7) for item in ordered), default=1e-7)
+        ranks = []
+        for item in ordered:
+            value = _dot(item["center"], axis)
+            if not ranks or abs(value - ranks[-1]) > tolerance:
+                ranks.append(value)
+        return ([item for item in ordered
+                 if abs(_dot(item["center"], axis) - ranks[index]) <= tolerance]
+                if index < len(ranks) else [])
+    if re.fullmatch(r">>[XYZ]", text, re.IGNORECASE):
+        axis = _AXES[text[-1].upper()]
+        if not items:
+            return []
+        extreme = max(_dot(item["center"], axis) for item in items)
+        tolerance = max(item.get("rank_tolerance", 1e-7) for item in items)
+        return [item for item in items
+                if abs(_dot(item["center"], axis) - extreme) <= tolerance]
     if selector and re.search(r"\s+or\s+", str(selector), re.IGNORECASE):
         chosen = []
         names = set()
@@ -341,12 +377,14 @@ def _select_items(items, selector, kind):
             chosen = [item for item in chosen if _dot(item[field], axis) < -0.5]
         elif op == "|":
             if kind == "face":
-                chosen = [item for item in chosen if abs(_dot(item["normal"], axis)) < 0.35]
+                chosen = [item for item in chosen if item.get("kind") == "plane" and
+                          abs(_dot(item["normal"], axis)) < 0.35]
             else:
                 chosen = [item for item in chosen if abs(_dot(item["direction"], axis)) > 0.85]
         elif op == "#":
             if kind == "face":
-                chosen = [item for item in chosen if abs(_dot(item["normal"], axis)) > 0.85]
+                chosen = [item for item in chosen if item.get("kind") == "plane" and
+                          abs(_dot(item["normal"], axis)) > 0.85]
             else:
                 chosen = [item for item in chosen if abs(_dot(item["direction"], axis)) < 0.35]
         else:
@@ -423,7 +461,7 @@ def _prism_faces(name, frame, xmin, xmax, ymin, ymax, zmin, zmax):
     return faces, edges
 
 
-def _revolve_caps(name, frame, z0, z1, radius):
+def _revolve_caps(name, frame, z0, z1, radius, side_name="side"):
     cz = 0.5 * (z0 + z1)
     faces = [
         {"name": name + "-ExtrudeTop", "center": _world_from_local(frame, (0.0, 0.0, z1)),
@@ -434,19 +472,23 @@ def _revolve_caps(name, frame, z0, z1, radius):
          "normal": vec3(frame.x), "kind": "cylinder"},
     ]
     edges = [
-        {"name": "[{0}-side,{0}-ExtrudeTop]".format(name),
+        {"name": "[{0}-{1},{0}-ExtrudeTop]".format(name, side_name),
          "direction": vec3(frame.x), "center": _world_from_local(frame, (0.0, 0.0, z1)), "kind": "circle"},
-        {"name": "[{0}-side,{0}-ExtrudeBottom]".format(name),
+        {"name": "[{0}-{1},{0}-ExtrudeBottom]".format(name, side_name),
          "direction": vec3(frame.x), "center": _world_from_local(frame, (0.0, 0.0, z0)), "kind": "circle"},
     ]
     return faces, edges
 
 
 class _Wire(object):
-    def __init__(self, segments, kind="path", name=None):
+    def __init__(self, segments, kind="path", name=None, mode=None, tag=None,
+                 construction=False):
         self.segments = list(segments)
         self.kind = kind
         self.name = name
+        self.mode = mode
+        self.tag = tag
+        self.construction = bool(construction)
 
     @staticmethod
     def circle(center, radius, name=None):
@@ -508,7 +550,8 @@ class _Wire(object):
                 segs.append(("sampled", [(x + dx, y + dy) for x, y in seg[1]]))
             else:
                 segs.append(seg)
-        return _Wire(segs, kind=self.kind, name=self.name)
+        return _Wire(segs, kind=self.kind, name=self.name, mode=self.mode,
+                     tag=self.tag, construction=self.construction)
 
     def mapped_xy(self, map_point):
         """Map a wire through a rigid change of 2D sketch coordinates."""
@@ -541,9 +584,12 @@ class _Wire(object):
                 segs.append(("sampled", [map_point(p) for p in seg[1]]))
             else:
                 segs.append(seg)
-        return _Wire(segs, kind=self.kind, name=self.name)
+        return _Wire(segs, kind=self.kind, name=self.name, mode=self.mode,
+                     tag=self.tag, construction=self.construction)
 
     def draw(self, sketch):
+        if self.construction:
+            return []
         curves = []
         for i, seg in enumerate(self.segments):
             if seg[0] == "circle":
@@ -555,7 +601,8 @@ class _Wire(object):
                 name = seg[3] if len(seg) > 3 else (self.name if i == 0 else None)
                 curves.append(sketch.add_line(seg[1], seg[2], name=name))
             elif seg[0] == "arc":
-                curves.append(sketch.add_arc(seg[1], seg[2], seg[3], name=self.name))
+                name = seg[4] if len(seg) > 4 and seg[4] else self.name
+                curves.append(sketch.add_arc(seg[1], seg[2], seg[3], name=name))
             elif seg[0] == "spline":
                 curves.append(sketch.add_spline(seg[1], name=self.name))
             elif seg[0] == "sampled":
@@ -566,44 +613,678 @@ class _Wire(object):
 class Sketch(object):
     """CadQuery-shaped 2D sketch. ``finalize()`` returns the parent Workplane."""
 
-    def __init__(self, parent):
-        self._parent = parent
+    def __init__(self, parent=None):
+        self._parent = parent if parent is not None else Workplane("XY")
+        self._offset = (0.0, 0.0, 0.0)
         self._wires = []
+        self._selected = None
+        self._selected_vertex_points = None
+        self._tags = {}
         self._cursor = (0.0, 0.0)
         self._open = None
+        self._open_names = []
+        self._open_curves = []
+        self._constraints = []
 
-    def rect(self, xLen, yLen, centered=True, mode="a"):
-        """Add a rectangle at the parent Workplane locations. ``mode`` is unused."""
-        self._wires.extend(_rect_wires(xLen, yLen, centered, self._parent._locations))
+    @staticmethod
+    def _mode(mode):
+        if mode is None:
+            return None
+        names = {"a": "a", "add": "a", "s": "s", "subtract": "s",
+                 "i": "i", "intersect": "i", "r": "r", "remove": "r",
+                 "c": "c", "construction": "c"}
+        try:
+            return names[str(mode).lower()]
+        except KeyError:
+            raise ValueError("sketch mode must be add, subtract, intersect, remove, or construction")
+
+    def _add_wire(self, wire, mode=None, tag=None):
+        wire.mode = self._mode(mode)
+        wire.tag = None if tag is None else str(tag)
+        wire.construction = wire.mode == "c"
+        if wire.construction and not wire.tag:
+            raise ValueError("construction geometry requires a tag")
+        self._wires.append(wire)
+        if wire.tag:
+            self._tags.setdefault(wire.tag, []).append(wire)
+        self._selected = None
+        return wire
+
+    def _active_wires(self, tag=None):
+        if tag is not None:
+            try:
+                return list(self._tags[str(tag)])
+            except KeyError:
+                raise ValueError("unknown sketch tag {0!r}".format(tag))
+        return list(self._wires if self._selected is None else self._selected)
+
+    def reset(self):
+        """Clear the active selector and return to the complete sketch."""
+        self._selected = None
+        self._selected_vertex_points = None
+        self._parent = self._parent._spawn(_locations=[(0.0, 0.0)])
         return self
 
-    def circle(self, radius, mode="a"):
-        """Add a circle at the parent Workplane locations. ``mode`` is unused."""
-        self._wires.extend(_circle_wires(radius, self._parent._locations))
+    def copy(self):
+        result = Sketch(self._parent)
+        result._wires = list(self._wires)
+        result._selected_vertex_points = (None if self._selected_vertex_points is None
+                                          else list(self._selected_vertex_points))
+        result._offset = self._offset
+        result._tags = {key: list(value) for key, value in self._tags.items()}
+        result._cursor = self._cursor
+        result._open = None if self._open is None else list(self._open)
+        result._open_names = list(self._open_names)
+        result._open_curves = list(self._open_curves)
+        result._constraints = list(self._constraints)
+        return result
+
+    def constrain(self, *args):
+        """Record a named sketch constraint for the native Camber solver."""
+        if len(args) not in (3, 4):
+            raise TypeError("constrain expects (curve, constraint, value) or (curve, other, constraint, value)")
+        if len(args) == 3:
+            first, kind, value = args
+            second = None
+        else:
+            first, second, kind, value = args
+        key = str(kind).replace("_", "").replace(" ", "").lower()
+        self._constraints.append((str(first), None if second is None else str(second), key, value))
         return self
 
-    def ellipse(self, x_radius, y_radius, rotation_angle=0.0, mode="a"):
+    def solve(self):
+        """Solve recorded constraints using Camber's native 2D sketch solver."""
+        if not self._constraints:
+            return self
+        wires = list(self._wires)
+        if self._open_curves:
+            wires.append(_Wire(self._open_curves))
+        if not wires:
+            raise ValueError("solve needs sketch geometry")
+        part = self._parent._ensure_part()
+        native = part.sketch(frame=self._parent._frame, constrained=True,
+                             name=part._generate_name("cq_constraint"))
+        curve_names = {}
+        for wire in wires:
+            for curve in wire.draw(native):
+                curve_names[curve.name] = curve
+        coincident_pairs = {}
+        for first, second, kind, value in self._constraints:
+            if first not in curve_names or (second is not None and second not in curve_names):
+                raise ValueError("constraint references an unknown named sketch curve")
+            if kind in ("fixed", "fixedpoint"):
+                native.fix(first + "@0.000")
+            elif kind == "coincident":
+                if second is None:
+                    raise ValueError("Coincident constraint needs two curves")
+                curve_pair = tuple(sorted((first, second)))
+                used_pairs = coincident_pairs.setdefault(curve_pair, set())
+                endpoints = [first + "@0.000", first + "@1.000",
+                             second + "@0.000", second + "@1.000"]
+                positions = [native.eval_xy(point) for point in endpoints]
+                pairs = []
+                for i in range(2):
+                    for j in range(2, 4):
+                        point_a, point_b = endpoints[i], endpoints[j]
+                        pair_key = tuple(sorted((point_a, point_b)))
+                        if pair_key in used_pairs:
+                            continue
+                        distance = math.hypot(positions[i][0] - positions[j][0],
+                                              positions[i][1] - positions[j][1])
+                        pairs.append((distance, point_a, point_b, pair_key))
+                if not pairs:
+                    raise ValueError("Coincident constraints already use every endpoint pair for these curves")
+                _, point_a, point_b, pair_key = min(pairs, key=lambda pair: pair[0])
+                used_pairs.add(pair_key)
+                native.coincident(point_a, point_b)
+            elif kind == "angle":
+                if second is None:
+                    raise ValueError("Angle constraint needs two curves")
+                first_kind = curve_names[first].kind
+                second_kind = curve_names[second].kind
+                if first_kind == second_kind == "line":
+                    native.angle(first, second, float(value))
+                elif {first_kind, second_kind} == {"line", "arc"}:
+                    native.angle(first, second, float(value))
+                else:
+                    raise NotImplementedError("Angle supports lines and line/arc pairs")
+            else:
+                raise NotImplementedError("constraint kind {0!r} is not yet supported".format(kind))
+        native.solve()
+        actions = native._solved_actions()
+        updated = []
+        for action in actions:
+            if action["kind"] == "line":
+                updated.append(("line", action["p0"], action["p1"], action["name"]))
+            elif action["kind"] == "arc":
+                updated.append(("arc", action["start"], action["mid"], action["end"], action["name"]))
+        if self._open_curves:
+            self._open_curves = updated
+            self._open = [updated[0][1]]
+            for segment in updated:
+                self._open.append(segment[2] if segment[0] == "line" else segment[3])
+            self._cursor = self._open[-1]
+        elif self._wires:
+            self._wires = [_Wire(updated)]
+        return self
+
+    def wires(self, selector=None):
+        """Select closed contours for distribution or offset operations."""
+        def is_closed(wire):
+            if wire.kind == "circle":
+                return True
+            if not wire.segments:
+                return False
+            first = wire.segments[0][1]
+            last_segment = wire.segments[-1]
+            last = last_segment[3] if last_segment[0] == "arc" else last_segment[2]
+            return _dist2(first, last) <= max(self._parent._tolerance, 1e-8) ** 2
+        selected = [wire for wire in self._active_wires() if is_closed(wire)]
+        if selector:
+            raise NotImplementedError("sketch wire selectors are not yet supported")
+        self._selected = selected
+        return self
+
+    def distribute(self, count):
+        """Place locations evenly along the selected wire perimeter."""
+        if isinstance(count, bool) or int(count) != count or int(count) < 1:
+            raise ValueError("distribute count must be a positive integer")
+        wires = self._active_wires()
+        if not wires:
+            raise ValueError("distribute needs selected sketch wires")
+        wire = wires[0]
+        n = int(count)
+        if wire.kind == "circle":
+            center, radius = wire.segments[0][1:]
+            locations = [(center[0] + radius * math.cos(2 * math.pi * i / n),
+                          center[1] + radius * math.sin(2 * math.pi * i / n))
+                         for i in range(n)]
+        else:
+            samples = []
+            for segment in wire.segments:
+                if segment[0] == "line":
+                    samples.append((segment[1], segment[2]))
+                elif segment[0] == "arc":
+                    # Uniform arc sampling is adequate here because this method
+                    # places points by perimeter length, not for boundary meshing.
+                    a, m, b = segment[1:4]
+                    samples.extend(((a, m), (m, b)))
+                else:
+                    raise NotImplementedError("distribute supports line and arc contours")
+            lengths = [math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in samples]
+            total = sum(lengths)
+            if total <= 1e-12:
+                raise ValueError("cannot distribute points on a zero-length wire")
+            locations = []
+            for i in range(n):
+                target = total * i / n
+                for (a, b), length in zip(samples, lengths):
+                    if target <= length or (a, b) == samples[-1]:
+                        t = 0.0 if length <= 1e-15 else target / length
+                        locations.append((a[0] + (b[0] - a[0]) * t,
+                                          a[1] + (b[1] - a[1]) * t))
+                        break
+                    target -= length
+        self._parent = self._parent._spawn(_locations=locations)
+        return self
+
+    def offset(self, distance, mode="a"):
+        """Offset selected closed contours using Camber's native sketch offset."""
+        selected = self._active_wires()
+        if not selected:
+            raise ValueError("offset needs selected sketch wires")
+        wp = self._parent._spawn(_pending=selected, _locations=[(0.0, 0.0)])
+        offset_wp = wp.offset2D(float(distance))
+        result = self.copy()
+        new_wires = list(offset_wp._pending)
+        mode = self._mode(mode)
+        if mode == "r":
+            result._wires = [wire for wire in result._wires if wire not in selected]
+            for wire in new_wires:
+                wire.mode = "a"
+            result._wires.extend(new_wires)
+            result._selected = new_wires
+        else:
+            for wire in new_wires:
+                result._add_wire(wire, mode)
+        return result
+
+    def trapezoid(self, width, height, angle=90, mode="a", tag=None):
+        """Add an isosceles trapezoid; ``angle`` is the base angle in degrees."""
+        width, height, angle = float(width), float(height), float(angle)
+        if not all(math.isfinite(v) for v in (width, height, angle)) or width <= 0 or height <= 0 or not 0 < angle < 180:
+            raise ValueError("trapezoid needs positive dimensions and an angle between 0 and 180 degrees")
+        inset = height / math.tan(math.radians(angle))
+        top = width - 2.0 * inset
+        if top <= 0:
+            raise ValueError("trapezoid angle and dimensions produce a collapsed top edge")
+        for ox, oy in self._parent._locations:
+            self._add_wire(_Wire.from_points([
+                (ox - width / 2.0, oy - height / 2.0),
+                (ox + width / 2.0, oy - height / 2.0),
+                (ox + top / 2.0, oy + height / 2.0),
+                (ox - top / 2.0, oy + height / 2.0),
+            ], closed=True), mode, tag)
+        return self
+
+    def regularPolygon(self, radius, nSides, angle=0, mode="a", tag=None):
+        """Add a regular polygon by circumradius, matching CadQuery's sketch API."""
+        radius, angle = float(radius), float(angle)
+        if isinstance(nSides, bool) or int(nSides) != nSides or int(nSides) < 3:
+            raise ValueError("regularPolygon needs an integer side count >= 3")
+        if not math.isfinite(radius) or radius <= 0 or not math.isfinite(angle):
+            raise ValueError("regularPolygon radius must be positive and angle finite")
+        wires = []
+        for ox, oy in self._parent._locations:
+            points = []
+            for i in range(int(nSides)):
+                theta = math.radians(angle) + 2 * math.pi * i / int(nSides)
+                points.append((ox + radius * math.cos(theta), oy + radius * math.sin(theta)))
+            wires.append(_Wire.from_points(points, closed=True))
+        for wire in wires:
+            self._add_wire(wire, mode, tag)
+        return self
+
+    def segment(self, point1, point2=None, tag=None):
+        """Add a line segment; with one point, continue from the previous endpoint."""
+        end = _xy2(point1)
+        if point2 is None:
+            if self._open is None:
+                self._open = [end]
+                self._open_names = [tag]
+                self._open_curves = []
+                self._cursor = end
+                return self
+            start = self._cursor
+        else:
+            start = _xy2(point1)
+            end = _xy2(point2)
+            if self._open is None:
+                self._open = [start]
+                self._open_names = []
+                self._open_curves = []
+        if self._open is None:
+            raise ValueError("segment requires at least one endpoint")
+        self._open.append(end)
+        self._open_names.append(tag)
+        self._open_curves.append(("line", start, end) + ((tag,) if tag else ()))
+        self._cursor = end
+        return self
+
+    def close(self):
+        """Close the current edge chain and store it as one sketch wire."""
+        if self._open is None or len(self._open) < 3:
+            raise ValueError("close requires at least three points in the current chain")
+        segments = list(self._open_curves)
+        if _dist2(self._cursor, self._open[0]) > 1e-18:
+            segments.append(("line", self._cursor, self._open[0]))
+        self._add_wire(_Wire(segments))
+        self._cursor = self._open[0]
+        self._open = None
+        self._open_names = []
+        self._open_curves = []
+        return self
+
+    def assemble(self, tag=None):
+        """Store the current edge chain for later face-based operations."""
+        if self._open is not None:
+            self.close()
+        if tag and self._wires:
+            tagged = self._tags.setdefault(str(tag), [])
+            for wire in self._wires:
+                if wire not in tagged:
+                    wire.tag = str(tag)
+                    tagged.append(wire)
+        return self
+
+    def arc(self, *args):
+        """Add an arc by center/radius/angles or by start/mid/end points."""
+        if len(args) in (3, 4) and isinstance(args[1], (tuple, list)):
+            start, middle, end = map(_xy2, args[:3])
+            name = args[3] if len(args) == 4 else None
+            arc_segment = ("arc", start, middle, end, name) if name else ("arc", start, middle, end)
+            if self._open is not None:
+                if _dist2(self._cursor, start) > max(self._parent._tolerance, 1e-8) ** 2:
+                    raise ValueError("arc start must meet the current segment endpoint")
+                self._open_curves.append(arc_segment)
+                self._open.append(end)
+            else:
+                self._add_wire(_Wire([arc_segment]), tag=name)
+            self._cursor = end
+            return self
+        if len(args) != 4:
+            raise TypeError("arc expects (center, radius, startAngle, endAngle) or (start, mid, end, name)")
+        center = _xy2(args[0])
+        radius, start, end = float(args[1]), float(args[2]), float(args[3])
+        if not all(math.isfinite(v) for v in (*center, radius, start, end)) or radius <= 0 or start == end:
+            raise ValueError("arc needs a positive radius and finite, distinct angles")
+        sweep = end - start
+        if abs(sweep) >= 360.0 - 1e-10:
+            self._add_wire(_Wire.circle(center, radius))
+            return self
+        count = max(2, int(math.ceil(abs(sweep) / 5.0)))
+        points = []
+        for i in range(count + 1):
+            theta = math.radians(start + sweep * i / count)
+            points.append((center[0] + radius * math.cos(theta),
+                           center[1] + radius * math.sin(theta)))
+        self._add_wire(_Wire.from_points(points, closed=False))
+        return self
+
+    def hull(self):
+        """Replace the current circles/segments with their sampled convex hull."""
+        points = []
+        if self._open is not None:
+            points.extend(self._open)
+        for wire in self._wires:
+            for segment in wire.segments:
+                if segment[0] == "circle":
+                    center, radius = segment[1], segment[2]
+                    points.extend((center[0] + radius * math.cos(2 * math.pi * i / 96),
+                                   center[1] + radius * math.sin(2 * math.pi * i / 96))
+                                  for i in range(96))
+                elif segment[0] == "line":
+                    points.extend((segment[1], segment[2]))
+                elif segment[0] == "arc":
+                    points.extend(segment[1:4])
+        points = sorted(set(points))
+        if len(points) < 3:
+            raise ValueError("hull requires at least three non-collinear points")
+
+        def cross(o, a, b):
+            return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+        lower, upper = [], []
+        for point in points:
+            while len(lower) >= 2 and cross(lower[-2], lower[-1], point) <= 1e-12:
+                lower.pop()
+            lower.append(point)
+        for point in reversed(points):
+            while len(upper) >= 2 and cross(upper[-2], upper[-1], point) <= 1e-12:
+                upper.pop()
+            upper.append(point)
+        hull = lower[:-1] + upper[:-1]
+        if len(hull) < 3:
+            raise ValueError("hull requires non-collinear geometry")
+        self._wires = [_Wire.from_points(hull, closed=True)]
+        self._tags = {}
+        self._open = None
+        return self
+
+    def rect(self, xLen, yLen, centered=True, mode="a", tag=None, angle=0):
+        """Add a rectangle, optionally rotated in the sketch plane."""
+        angle = float(angle)
+        if not math.isfinite(angle):
+            raise ValueError("rectangle angle must be finite")
+        wires = _rect_wires(xLen, yLen, centered, self._parent._locations)
+        if angle:
+            ca, sa = math.cos(math.radians(angle)), math.sin(math.radians(angle))
+            wires = [wire.mapped_xy(lambda point: (point[0] * ca - point[1] * sa,
+                                                    point[0] * sa + point[1] * ca))
+                     for wire in wires]
+        for wire in wires:
+            self._add_wire(wire, mode, tag)
+        return self
+
+    def circle(self, radius, mode="a", tag=None):
+        """Add a circle at the parent Workplane locations."""
+        for wire in _circle_wires(radius, self._parent._locations):
+            self._add_wire(wire, mode, tag)
+        return self
+
+    def ellipse(self, x_radius, y_radius, rotation_angle=0.0, mode="a", tag=None):
         """Add a closed ellipse at each parent Workplane location."""
-        self._wires.extend(_ellipse_wires(
-            x_radius, y_radius, rotation_angle, self._parent._locations))
+        for wire in _ellipse_wires(x_radius, y_radius, rotation_angle, self._parent._locations):
+            self._add_wire(wire, mode, tag)
         return self
+
+    def rarray(self, xSpacing, ySpacing, xCount, yCount, center=True):
+        """Set sketch locations to a centered rectangular array."""
+        self._parent = self._parent.rarray(xSpacing, ySpacing, xCount, yCount, center)
+        return self
+
+    def slot(self, length, diameter, mode="a", angle=0, tag=None):
+        """Add a closed, round-ended slot at each current sketch location."""
+        length, diameter, angle = float(length), float(diameter), float(angle)
+        if not all(math.isfinite(value) for value in (length, diameter, angle)) or diameter <= 0 or length < diameter:
+            raise ValueError("slot needs finite dimensions with length >= positive diameter")
+        half, radius = length * .5, diameter * .5
+        straight = half - radius
+        ca, sa = math.cos(math.radians(angle)), math.sin(math.radians(angle))
+        for ox, oy in self._parent._locations:
+            def point(x, y):
+                return (ox + x * ca - y * sa, oy + x * sa + y * ca)
+            segments = [
+                ("line", point(-straight, -radius), point(straight, -radius)),
+                ("arc", point(straight, -radius), point(half, 0), point(straight, radius)),
+                ("line", point(straight, radius), point(-straight, radius)),
+                ("arc", point(-straight, radius), point(-half, 0), point(-straight, -radius)),
+            ]
+            self._add_wire(_Wire(segments), mode, tag)
+        return self
+
+    def clean(self):
+        """Compatibility no-op: the profile builder already normalizes loops."""
+        return self
+
+    def face(self, other, mode="a"):
+        """Combine another sketch's planar regions using a boolean mode."""
+        if not isinstance(other, Sketch):
+            raise TypeError("face() expects another cqcompat Sketch")
+        mode = self._mode(mode)
+        for wire in other._wires:
+            clone = _Wire(list(wire.segments), kind=wire.kind, name=wire.name,
+                          mode=mode, tag=wire.tag, construction=wire.construction)
+            self._add_wire(clone, mode, wire.tag)
+        return self
+
+    def __sub__(self, other):
+        return self.copy().face(other, mode="s")
+
+    def __add__(self, other):
+        return self.copy().face(other, mode="a")
+
+    def __and__(self, other):
+        return self.copy().face(other, mode="i")
 
     def push(self, locs):
         """Set 2D locations (same as Workplane.pushPoints)."""
         self._parent = self._parent._spawn(_locations=[_xy2(p) for p in locs])
         return self
 
+    def vertices(self, selector=None, tag=None):
+        """Select contour vertices; subsequent primitives are placed at them."""
+        wires = self._active_wires(tag)
+        vertex_wires = [wire for wire in wires
+                        if any(segment[0] in ("line", "arc") for segment in wire.segments)]
+        points = []
+        for wire in vertex_wires:
+            for segment in wire.segments:
+                if segment[0] == "line":
+                    points.extend((segment[1], segment[2]))
+                elif segment[0] == "arc":
+                    points.extend((segment[1], segment[3]))
+        unique = []
+        tolerance = max(self._parent._tolerance, 1e-8)
+        for point in points:
+            if not any(_dist2(point, prior) <= tolerance * tolerance for prior in unique):
+                unique.append(point)
+        if selector:
+            match = re.fullmatch(r"([<>])([XY]{1,2})", str(selector).strip().upper())
+            if not match:
+                raise ValueError("unsupported sketch vertex selector {0!r}".format(selector))
+            sign = -1 if match.group(1) == "<" else 1
+            axes = match.group(2)
+            coordinate = lambda p: sum(p[0 if axis == "X" else 1] for axis in axes)
+            extreme = max((sign * coordinate(p) for p in unique), default=None)
+            if extreme is not None:
+                unique = [p for p in unique if abs(sign * coordinate(p) - extreme) <= tolerance]
+        self._parent = self._parent._spawn(_locations=unique)
+        self._selected = vertex_wires
+        self._selected_vertex_points = list(unique)
+        return self
+
+    def edges(self, selector=None, tag=None):
+        """Select sketch edges and set locations to their midpoints."""
+        wires = self._active_wires(tag)
+        items = []
+        for wi, wire in enumerate(wires):
+            for si, segment in enumerate(wire.segments):
+                if segment[0] == "line":
+                    a, b = segment[1], segment[2]
+                    dx, dy = b[0] - a[0], b[1] - a[1]
+                    length = math.hypot(dx, dy)
+                    if length <= 1e-12:
+                        continue
+                    kind = "line"
+                else:
+                    continue
+                items.append({"name": "edge{0}-{1}".format(wi, si),
+                              "center": ((a[0] + b[0]) * .5, (a[1] + b[1]) * .5, 0.0),
+                              "direction": (dx / length, dy / length, 0.0), "kind": kind,
+                              "wire": wire})
+        chosen = _select_edges(items, selector)
+        self._parent = self._parent._spawn(
+            _locations=[item["center"] for item in chosen])
+        self._selected = list(dict.fromkeys(item["wire"] for item in chosen))
+        return self
+
+    def moved(self, x=0, y=0, z=0):
+        """Return a copy placed by local XYZ offsets from this sketch plane."""
+        result = self.copy()
+        result._parent = self._parent._spawn(
+            _frame=_frame_plus_local(self._parent._frame, (float(x), float(y), float(z))))
+        result._offset = tuple(self._offset[i] + float(value)
+                               for i, value in enumerate((x, y, z)))
+        return result
+
     def finalize(self):
         """Return a Workplane with this sketch's wires pending."""
-        return self._parent._spawn(_pending=self._parent._pending + self._wires)
+        wires = [wire for wire in self._wires if not wire.construction]
+        return self._parent._spawn(_pending=self._parent._pending + wires)
 
     def fillet(self, radius):
-        """Not implemented on cqcompat.Sketch."""
-        raise NotImplementedError("2D sketch fillet needs a kernel change")
+        """Round selected polygon vertices with tangent circular arcs."""
+        radius = float(radius)
+        if not math.isfinite(radius) or radius <= 0:
+            raise ValueError("sketch fillet radius must be positive and finite")
+        selected = self._active_wires()
+        replacements = []
+        for wire in selected:
+            if len(wire.segments) < 3 or any(seg[0] != "line" for seg in wire.segments):
+                raise NotImplementedError("2D fillet currently supports closed polygon wires")
+            points = [wire.segments[0][1]] + [seg[2] for seg in wire.segments]
+            if _dist2(points[0], points[-1]) > 1e-16:
+                raise ValueError("2D fillet requires a closed contour")
+            corners = []
+            count = len(points) - 1
+            for i in range(count):
+                prev, vertex, nxt = points[(i - 1) % count], points[i], points[(i + 1) % count]
+                tolerance = max(self._parent._tolerance, 1e-8)
+                if (self._selected_vertex_points is not None and
+                        not any(_dist2(vertex, point) <= tolerance * tolerance
+                                for point in self._selected_vertex_points)):
+                    corners.append(None)
+                    continue
+                def unit2(vector):
+                    length = math.hypot(vector[0], vector[1])
+                    if length <= 1e-15:
+                        raise ValueError("cannot fillet a zero-length edge")
+                    return (vector[0] / length, vector[1] / length)
+                incoming = unit2((vertex[0] - prev[0], vertex[1] - prev[1]))
+                outgoing = unit2((nxt[0] - vertex[0], nxt[1] - vertex[1]))
+                cross = incoming[0] * outgoing[1] - incoming[1] * outgoing[0]
+                dot = max(-1.0, min(1.0, incoming[0] * outgoing[0] + incoming[1] * outgoing[1]))
+                angle = math.acos(dot)
+                if abs(cross) < 1e-10 or angle < 1e-8:
+                    raise ValueError("cannot fillet a straight or reversing vertex")
+                distance = radius / math.tan(angle * .5)
+                if distance >= min(_dist2(prev, vertex), _dist2(vertex, nxt)) * .5:
+                    raise ValueError("fillet radius does not fit the adjacent edges")
+                start = (vertex[0] - incoming[0] * distance,
+                         vertex[1] - incoming[1] * distance)
+                end = (vertex[0] + outgoing[0] * distance,
+                       vertex[1] + outgoing[1] * distance)
+                sign = 1.0 if cross > 0 else -1.0
+                center = (start[0] - sign * incoming[1] * radius,
+                          start[1] + sign * incoming[0] * radius)
+                r0 = (start[0] - center[0], start[1] - center[1])
+                r1 = (end[0] - center[0], end[1] - center[1])
+                middle_dir = unit2((r0[0] / radius + r1[0] / radius,
+                                    r0[1] / radius + r1[1] / radius))
+                middle = (center[0] + radius * middle_dir[0],
+                          center[1] + radius * middle_dir[1])
+                corners.append((start, middle, end))
+            segments = []
+            for i, corner in enumerate(corners):
+                start = corner[0] if corner else points[i]
+                prior = corners[i - 1]
+                prior_end = prior[2] if prior else points[i - 1]
+                if _dist2(prior_end, start) > 1e-18:
+                    segments.append(("line", prior_end, start))
+                if corner:
+                    segments.append(("arc", corner[0], corner[1], corner[2]))
+            replacements.append(_Wire(segments, kind="path", name=wire.name,
+                                      mode=wire.mode, tag=wire.tag))
+        replacements_by_source = {id(source): replacement
+                                  for source, replacement in zip(selected, replacements)}
+        self._wires = [replacements_by_source.get(id(wire), wire) for wire in self._wires]
+        for tag, tagged in self._tags.items():
+            self._tags[tag] = [next((new for old, new in zip(selected, replacements) if old is item), item)
+                               for item in tagged]
+        self._selected = replacements
+        return self
 
-    def vertices(self, selector=None):
-        """Not implemented on cqcompat.Sketch."""
-        raise NotImplementedError("sketch vertices are not exposed by camber")
+    def chamfer(self, length):
+        """Cut equal-length corners from selected closed polygon wires."""
+        length = float(length)
+        if not math.isfinite(length) or length <= 0:
+            raise ValueError("sketch chamfer length must be positive and finite")
+        selected = self._active_wires()
+        replacements = []
+        for wire in selected:
+            if len(wire.segments) < 3 or any(seg[0] != "line" for seg in wire.segments):
+                raise NotImplementedError("2D chamfer currently supports closed polygon wires")
+            points = [wire.segments[0][1]] + [seg[2] for seg in wire.segments]
+            if _dist2(points[0], points[-1]) > 1e-16:
+                raise ValueError("2D chamfer requires a closed contour")
+            count = len(points) - 1
+            corners = []
+            for i in range(count):
+                prev, vertex, nxt = points[(i - 1) % count], points[i], points[(i + 1) % count]
+                tolerance = max(self._parent._tolerance, 1e-8)
+                if (self._selected_vertex_points is not None and
+                        not any(_dist2(vertex, point) <= tolerance * tolerance
+                                for point in self._selected_vertex_points)):
+                    corners.append(None)
+                    continue
+                def toward(other):
+                    dx, dy = other[0] - vertex[0], other[1] - vertex[1]
+                    edge_len = math.hypot(dx, dy)
+                    if edge_len <= 1e-15:
+                        raise ValueError("cannot chamfer a zero-length edge")
+                    if length >= edge_len:
+                        raise ValueError("chamfer length does not fit the adjacent edge")
+                    return (vertex[0] + dx * length / edge_len,
+                            vertex[1] + dy * length / edge_len)
+                corners.append((toward(prev), toward(nxt)))
+            segments = []
+            for i, corner in enumerate(corners):
+                before = corner[0] if corner else points[i]
+                after = corner[1] if corner else points[i]
+                previous = corners[i - 1]
+                previous_after = previous[1] if previous else points[i - 1]
+                if _dist2(previous_after, before) > 1e-18:
+                    segments.append(("line", previous_after, before))
+                if corner:
+                    segments.append(("line", before, after))
+            replacements.append(_Wire(segments, kind="path", name=wire.name,
+                                      mode=wire.mode, tag=wire.tag))
+        replacements_by_source = {id(source): replacement
+                                  for source, replacement in zip(selected, replacements)}
+        self._wires = [replacements_by_source.get(id(wire), wire) for wire in self._wires]
+        self._selected = replacements
+        return self
 
 
 def _rect_wires(x_len, y_len, centered, locations, names=None):
@@ -611,8 +1292,16 @@ def _rect_wires(x_len, y_len, centered, locations, names=None):
     xmin, xmax = sx, sx + float(x_len)
     ymin, ymax = sy, sy + float(y_len)
     wires = []
-    for ox, oy in locations:
-        wires.append(_Wire.rect(xmin + ox, xmax + ox, ymin + oy, ymax + oy, names=names))
+    for index, (ox, oy) in enumerate(locations):
+        if names:
+            side_names = names
+        elif len(locations) == 1:
+            side_names = ("south", "east", "north", "west")
+        else:
+            side_names = tuple("rect{0}-{1}".format(index + 1, side)
+                               for side in ("south", "east", "north", "west"))
+        wires.append(_Wire.rect(xmin + ox, xmax + ox, ymin + oy, ymax + oy,
+                                names=side_names))
     return wires
 
 
@@ -629,6 +1318,8 @@ def _ellipse_wires(x_radius, y_radius, rotation_angle, locations):
 
 
 def _named_rect_sides(wires):
+    if len(wires) != 1:
+        return False
     for wire in wires:
         names = [seg[3] for seg in wire.segments if seg[0] == "line" and len(seg) > 3]
         if len(names) == 4:
@@ -692,7 +1383,7 @@ class Workplane(object):
         """
         self._size = float(size)
         self._tolerance = float(tolerance)
-        if obj is not None and isinstance(obj, Solid):
+        if obj is not None and isinstance(obj, (Solid, Surface)):
             part = obj._part
         if isinstance(inPlane, Workplane):
             self._copy_from(inPlane)
@@ -766,7 +1457,7 @@ class Workplane(object):
     def _as_solid(self, obj):
         if obj is None:
             return None
-        if isinstance(obj, Solid):
+        if isinstance(obj, (Solid, Surface)):
             return obj
         if isinstance(obj, Workplane):
             return obj._solid
@@ -890,7 +1581,7 @@ class Workplane(object):
             pending = list(self._pending)
             if pending:
                 sections.append((self._frame, pending))
-            frame = _frame_plus_local(frame, (0.0, 0.0, offset))
+            frame = _frame_plus_local(frame, (self._center2d[0], self._center2d[1], offset))
             if invert:
                 frame = Frame(frame.origin, -vec3(frame.x), vec3(frame.y), -vec3(frame.z))
             return self._spawn(
@@ -994,12 +1685,12 @@ class Workplane(object):
     def moveTo(self, x, y):
         """Set the 2D cursor and start a new open path."""
         pt = self._path_point((x, y))
-        return self._spawn(_cursor=pt, _open=[pt], _open_segments=[])
+        return self._spawn(_cursor=pt, _open=[pt], _open_segments=[], _locations=[pt])
 
     def move(self, xDist, yDist):
         """Relative move of the 2D cursor."""
         point = (self._cursor[0] + float(xDist), self._cursor[1] + float(yDist))
-        return self._spawn(_cursor=point, _open=[point], _open_segments=[])
+        return self._spawn(_cursor=point, _open=[point], _open_segments=[], _locations=[point])
 
     def lineTo(self, x, y):
         """Line from the cursor to an absolute 2D point."""
@@ -1211,9 +1902,18 @@ class Workplane(object):
         wires = []
         for item in sketches:
             if isinstance(item, Sketch):
-                wires.extend(item._wires)
+                wires.extend(wire for wire in item._wires if not wire.construction)
             else:
                 raise TypeError("placeSketch expects camber.cqcompat.Sketch instances")
+        if len(sketches) > 1:
+            sections = [(_frame_plus_local(self._active_frame(), item._offset),
+                         [wire for wire in item._wires if not wire.construction])
+                        for item in sketches]
+            return self._spawn(_sections=self._sections + sections, _pending=[])
+        if len(sketches) == 1:
+            frame = _frame_plus_local(self._active_frame(), sketches[0]._offset)
+            return self._spawn(_frame=frame,
+                               _pending=self._pending + wires)
         return self._spawn(_pending=self._pending + wires)
 
     def box(self, length, width, height, centered=True, combine=True, clean=True):
@@ -1285,11 +1985,73 @@ class Workplane(object):
             solids.append(self._ensure_part().sphere(origin, float(radius), name=self._new_name("sph")))
         return self._union_many(solids, [], [], combine, "sphere")
 
+    def parametricSurface(self, func, N=40, start=0, stop=1):
+        """Sample one open parametric surface for display and assembly mates.
+
+        ``N`` is the number of segments in each parameter direction. This is
+        an explicitly sampled surface, not an analytic/NURBS face.
+        """
+        if not callable(func) or isinstance(N, bool) or int(N) != N or not 2 <= N <= 1000:
+            raise ValueError("parametricSurface needs a callable and 2 <= N <= 1000")
+        start, stop, N = float(start), float(stop), int(N)
+        if not math.isfinite(start) or not math.isfinite(stop) or start == stop:
+            raise ValueError("parametricSurface parameter range must be finite and nonzero")
+        frame = self._active_frame()
+
+        def evaluate(u, v):
+            point = vec3(func(u, v))
+            if any(not math.isfinite(c) for c in point):
+                raise ValueError("parametricSurface callback returned a non-finite point")
+            return _world_from_local(frame, point)
+
+        step = (stop - start) / N
+        points = [evaluate(start + i * step, start + j * step)
+                  for i in range(N + 1) for j in range(N + 1)]
+        triangles = []
+        for i in range(N):
+            for j in range(N):
+                a = i * (N + 1) + j
+                b = (i + 1) * (N + 1) + j
+                triangles.extend(((a, b, b + 1), (a, b + 1, a + 1)))
+        midpoint = (start + stop) / 2
+        du = evaluate(midpoint + step / 2, midpoint) - evaluate(midpoint - step / 2, midpoint)
+        dv = evaluate(midpoint, midpoint + step / 2) - evaluate(midpoint, midpoint - step / 2)
+        normal = _unit(_cross(du, dv))
+        if _norm(normal) < 1e-12:
+            raise ValueError("parametricSurface is singular at its center")
+        surface = self._ensure_part().solid_from_mesh(points, triangles,
+                                                       name=self._new_name("surface"))
+        if not isinstance(surface, Surface):
+            raise ValueError("parametricSurface must remain open")
+        faces = [{"name": surface.patch_names[0].split(":")[-1],
+                  "center": evaluate(midpoint, midpoint),
+                  "normal": normal, "kind": "curved"}]
+        return self._cleared(_solid=surface, _faces=faces, _edges=[])
+
     def extrude(self, until, combine=True, clean=True, both=False, taper=0):
-        """Extrude pending 2D wires. ``taper`` is not implemented."""
-        if taper:
-            raise NotImplementedError("tapered extrude needs a kernel change")
-        return self._extrude_pending(float(until), combine=combine, both=both, twist=0.0)
+        """Extrude pending 2D wires; ``taper`` is a draft angle in degrees."""
+        taper_degrees = float(taper)
+        if not math.isfinite(taper_degrees):
+            raise ValueError("extrude taper must be a finite angle in degrees")
+        taper_angle = math.radians(taper_degrees)
+        if isinstance(until, str):
+            if until.lower() != "next":
+                raise NotImplementedError("only extrude('next') is supported for face-terminated extrusions")
+            if taper_angle:
+                raise NotImplementedError("tapered extrude('next') is not supported")
+            if both:
+                raise ValueError("extrude('next') cannot be combined with both=True")
+            if self._solid is None:
+                raise ValueError("extrude('next') needs an existing target solid")
+            wires = self._wires()
+            name = self._new_name("ext")
+            sk = self._profile_sketch(wires, name + "_sk")
+            solid = self.part.extrude_until_next(sk, self._solid, name=name)
+            return self._apply_combine(solid, [], [], combine)
+        if both and taper_angle:
+            raise ValueError("tapered extrude cannot be combined with both=True")
+        return self._extrude_pending(float(until), combine=combine, both=both, twist=0.0,
+                                     taper_angle=taper_angle)
 
     def twistExtrude(self, distance, angleDegrees, combine=True, clean=True):
         """Extrude with twist (degrees along the height)."""
@@ -1300,15 +2062,45 @@ class Workplane(object):
         twist = math.radians(float(angleDegrees)) / distance
         return self._extrude_pending(distance, combine=combine, both=False, twist=twist)
 
-    def _extrude_pending(self, height, combine, both, twist):
+    def _extrude_pending(self, height, combine, both, twist, taper_angle=0.0):
         wires = self._wires()
         name = self._new_name("ext")
+        if any(wire.mode is not None for wire in wires):
+            solid = None
+            for index, wire in enumerate(wires):
+                if wire.construction:
+                    continue
+                mode = wire.mode or "a"
+                wire_name = name if index == 0 else self._new_name("ext_profile")
+                sk = self._profile_sketch([wire], wire_name + "_sk")
+                if both:
+                    operand = self.part.extrude(sk, abs(height), name=wire_name, both_sides=True,
+                                                twist=twist)
+                else:
+                    operand = self.part.extrude(sk, height, name=wire_name, twist=twist,
+                                                taper_angle=taper_angle)
+                if solid is None:
+                    if mode in ("s", "i"):
+                        raise ValueError("a subtract/intersect sketch mode needs an existing profile")
+                    solid = operand
+                elif mode == "r":
+                    solid = operand
+                elif mode == "s":
+                    solid = self.part.subtract(solid, operand, name=name)
+                elif mode == "i":
+                    solid = self.part.intersect(solid, operand, name=name)
+                else:
+                    solid = self.part.union(solid, operand, name=name)
+            if solid is None:
+                raise ValueError("sketch contains no profile geometry to extrude")
+            return self._apply_combine(solid, [], [], combine)
         sk = self._profile_sketch(wires, name + "_sk")
         if both:
             solid = self.part.extrude(sk, abs(height), name=name, both_sides=True, twist=twist)
             z0, z1 = -abs(height), abs(height)
         else:
-            solid = self.part.extrude(sk, height, name=name, twist=twist)
+            solid = self.part.extrude(sk, height, name=name, twist=twist,
+                                      taper_angle=taper_angle)
             if height >= 0:
                 z0, z1 = 0.0, height
             else:
@@ -1329,8 +2121,10 @@ class Workplane(object):
              "normal": -vec3(frame.z), "kind": "plane"},
         ]
         edges = []
+        circle_index = 0
         for wire in wires:
             if wire.kind == "circle":
+                circle_index += 1
                 radius = wire.segments[0][2]
                 center = wire.segments[0][1]
                 faces.append({
@@ -1340,7 +2134,10 @@ class Workplane(object):
                     "normal": vec3(frame.x),
                     "kind": "cylinder",
                 })
-                edges.extend(_revolve_caps(name, frame, z0, z1, radius)[1])
+                edges.extend(_revolve_caps(
+                    name, frame, z0, z1, radius,
+                    side_name="Circle{0}".format(circle_index),
+                )[1])
         return faces, edges
 
     def revolve(self, angleDegrees=360, axisStart=None, axisEnd=None, combine=True, clean=True):
@@ -1467,9 +2264,22 @@ class Workplane(object):
         )
 
     def cutBlind(self, until, clean=True, both=False, taper=0):
-        """Cut pending wires to a depth, or through to the far side with ``'last'``."""
-        if taper:
-            raise NotImplementedError("tapered cutBlind needs a kernel change")
+        """Cut pending profiles to a depth; ``taper`` is in degrees."""
+        taper_degrees = float(taper)
+        if not math.isfinite(taper_degrees):
+            raise ValueError("cutBlind taper must be a finite angle in degrees")
+        if isinstance(until, Surface):
+            if taper_degrees:
+                raise NotImplementedError("tapered cutBlind to a surface is not supported")
+            if both or self._solid is None or self._stack_solids:
+                raise ValueError("cutBlind(surface) needs one target solid and cannot use both=True")
+            frame = self._active_frame()
+            inward = Frame(frame.origin, frame.x, -vec3(frame.y), -vec3(frame.z))
+            name = self._new_name("cut")
+            sketch = self._profile_sketch(self._wires(), name + "_sk", frame=inward)
+            cutter = self.part.extrude_until_surface(sketch, until, name=name + "_tool")
+            solid = self.part.subtract(self._solid, cutter, name=self._solid.name)
+            return self._cleared(_solid=solid, _faces=list(self._faces), _edges=list(self._edges))
         if isinstance(until, str):
             if until.lower() != "last":
                 raise ValueError("cutBlind string extent must be 'last'")
@@ -1482,50 +2292,185 @@ class Workplane(object):
                         for solid in solids for point in solid.mesh()[0])
             if depth <= 0:
                 raise ValueError("cutBlind('last') has no solid in the workplane normal direction")
-            return self._cut_pending(depth, both=False)
-        return self._cut_pending(float(until), both=both)
+            return self._cut_pending(depth, both=False, taper_degrees=taper_degrees)
+        return self._cut_pending(float(until), both=both, taper_degrees=taper_degrees)
 
     def cutThruAll(self, clean=True, taper=0):
-        """Cut pending wires through the part AABB. ``taper`` is not implemented."""
-        if taper:
-            raise NotImplementedError("tapered cutThruAll needs a kernel change")
-        return self._cut_pending(2.0 * self._size, both=True)
+        """Cut pending wires through the part AABB, optionally with draft in degrees."""
+        return self._cut_pending(2.0 * self._size, both=True, taper_degrees=float(taper))
 
-    def _cut_pending(self, height, both):
+    def _cut_pending(self, height, both, taper_degrees=0.0):
         solids = self.vals()
         if not solids:
             raise ValueError("cut needs an existing solid")
         wires = self._wires()
         frame = self._active_frame()
+        if taper_degrees:
+            return self._cut_pending_tapered(solids, wires, frame, height, both, taper_degrees)
         results = []
         for solid in solids:
             part = solid._part
             name = part._generate_name("cut")
-            sk = part.sketch(frame=frame, name=name + "_sk")
-            self._draw_wires(sk, wires)
-            if both:
-                cutter = part.extrude_two_sides(sk, abs(height), abs(height), name=name)
-            elif height >= 0:
-                cutter = part.extrude(sk, height, name=name)
+            if any(wire.mode is not None for wire in wires):
+                cutter = None
+                for index, wire in enumerate(wires):
+                    if wire.construction:
+                        continue
+                    operation = wire.mode or "a"
+                    tool_name = name if index == 0 else part._generate_name("cut_profile")
+                    sk = part.sketch(frame=frame, name=tool_name + "_sk")
+                    wire.draw(sk)
+                    if both:
+                        operand = part.extrude_two_sides(sk, abs(height), abs(height), name=tool_name)
+                    elif height >= 0:
+                        operand = part.extrude(sk, height, name=tool_name)
+                    else:
+                        operand = part.extrude_two_sides(sk, 0.0, abs(height), name=tool_name)
+                    if cutter is None:
+                        if operation in ("s", "i"):
+                            raise ValueError("a subtract/intersect sketch mode needs an existing profile")
+                        cutter = operand
+                    elif operation == "r":
+                        cutter = operand
+                    elif operation == "s":
+                        cutter = part.subtract(cutter, operand, name=name + "_profile")
+                    elif operation == "i":
+                        cutter = part.intersect(cutter, operand, name=name + "_profile")
+                    else:
+                        cutter = part.union(cutter, operand, name=name + "_profile")
+                if cutter is None:
+                    raise ValueError("sketch contains no cutting profiles")
             else:
-                cutter = part.extrude_two_sides(sk, 0.0, abs(height), name=name)
+                sk = part.sketch(frame=frame, name=name + "_sk")
+                self._draw_wires(sk, wires)
+                if both:
+                    cutter = part.extrude_two_sides(sk, abs(height), abs(height), name=name)
+                elif height >= 0:
+                    cutter = part.extrude(sk, height, name=name)
+                else:
+                    cutter = part.extrude_two_sides(sk, 0.0, abs(height), name=name)
             results.append(part.subtract(solid, cutter, name=solid.name))
         return self._cleared(
             _solid=results[0] if len(results) == 1 else None,
             _stack_solids=[] if len(results) == 1 else results,
             _faces=list(self._faces), _edges=list(self._edges))
 
+    def _cut_pending_tapered(self, solids, wires, frame, height, both, taper_degrees):
+        """Build a drafted cutter per closed contour, then subtract using exact CSG."""
+        if not math.isfinite(taper_degrees):
+            raise ValueError("cut taper must be a finite angle in degrees")
+        angle = math.radians(taper_degrees)
+        results = []
+        for solid in solids:
+            part = solid._part
+            name = part._generate_name("cut")
+            cutter = None
+            operands = []
+            profiles = [wire for wire in wires if not wire.construction]
+            additive_only = all((wire.mode or "a") == "a" for wire in profiles)
+            for wire in profiles:
+                if not self._is_closed_cut_wire(wire):
+                    raise ValueError("tapered cuts require closed profile wires")
+                mode = wire.mode or "a"
+                if not additive_only and cutter is None and mode in ("s", "i"):
+                    raise ValueError("a subtract/intersect sketch mode needs an existing profile")
+                tool_name = name if not operands else part._generate_name("cut_profile")
+                sk = self._profile_sketch([wire], tool_name + "_sk", frame=frame)
+                operand = self._tapered_cut_operand(part, sk, wire, frame, height, both,
+                                                    angle, tool_name)
+                operands.append(operand)
+                if additive_only:
+                    continue
+                if cutter is None or mode == "r":
+                    cutter = operand
+                elif mode == "s":
+                    cutter = part.subtract(cutter, operand, name=name + "_profile")
+                elif mode == "i":
+                    cutter = part.intersect(cutter, operand, name=name + "_profile")
+                else:
+                    cutter = part.union(cutter, operand, name=name + "_profile")
+            if not profiles:
+                raise ValueError("sketch contains no cutting profiles")
+            if additive_only:
+                result = part.batch_subtract(solid, operands, name=solid.name)
+            else:
+                if cutter is None:
+                    raise ValueError("sketch contains no cutting profiles")
+                result = part.subtract(solid, cutter, name=solid.name)
+            results.append(result)
+        return self._cleared(
+            _solid=results[0] if len(results) == 1 else None,
+            _stack_solids=[] if len(results) == 1 else results,
+            _faces=list(self._faces), _edges=list(self._edges))
+
+    @staticmethod
+    def _is_closed_cut_wire(wire):
+        if wire.kind in ("circle", "ellipse"):
+            return True
+        if not wire.segments:
+            return False
+        def endpoint(segment, start):
+            if segment[0] == "line":
+                return segment[1] if start else segment[2]
+            if segment[0] == "arc":
+                return segment[1] if start else segment[3]
+            if segment[0] in ("spline", "sampled") and segment[1]:
+                return segment[1][0] if start else segment[1][-1]
+            return None
+
+        first = endpoint(wire.segments[0], True)
+        last = endpoint(wire.segments[-1], False)
+        if first is None or last is None:
+            return False
+        return _dist2(first, last) <= 1e-16
+
+    @staticmethod
+    def _tapered_cut_operand(part, sketch, wire, frame, height, both, angle, name):
+        if not both:
+            return part.extrude(sketch, height, name=name, taper_angle=angle)
+        positive = part.extrude(sketch, abs(height), name=name + "_positive",
+                                taper_angle=angle)
+        reverse_frame = Frame(frame.origin, frame.x, -vec3(frame.y), -vec3(frame.z))
+        reverse_sketch = part.sketch(frame=reverse_frame, name=name + "_negative_sk")
+        wire.mapped_xy(lambda point: (point[0], -point[1])).draw(reverse_sketch)
+        negative = part.extrude(reverse_sketch, abs(height), name=name + "_negative",
+                                taper_angle=angle)
+        return part.union(positive, negative, name=name + "_symmetric")
+
     def hole(self, diameter, depth=None, clean=True):
         """Circular hole. ``depth=None`` means thru-all."""
         wp = self.circle(0.5 * float(diameter))
         if depth is None:
             return wp.cutThruAll()
-        return wp.cutBlind(float(depth))
+        return wp.cutBlind(-abs(float(depth)))
 
     def cboreHole(self, diameter, cboreDiameter, cboreDepth, depth=None, clean=True):
         """Counterbore: thru/blind hole then a larger blind cut."""
-        wp = self.hole(diameter, depth=depth)
-        return wp.circle(0.5 * float(cboreDiameter)).cutBlind(float(cboreDepth))
+        holed = self.hole(diameter, depth=depth)
+        return self._spawn(_solid=holed._solid, _stack_solids=holed._stack_solids).circle(
+            0.5 * float(cboreDiameter)).cutBlind(-abs(float(cboreDepth)))
+
+    def cskHole(self, diameter, cskDiameter, cskAngle, depth=None, clean=True):
+        """Drill each selected point and cut its conical countersink."""
+        diameter, cskDiameter, cskAngle = map(float, (diameter, cskDiameter, cskAngle))
+        if diameter <= 0 or cskDiameter <= diameter or not 0 < cskAngle < 180:
+            raise ValueError("cskHole needs 0 < diameter < cskDiameter and 0 < cskAngle < 180")
+        sink_depth = (cskDiameter - diameter) / (2 * math.tan(math.radians(cskAngle) / 2))
+        holed = self.hole(diameter, depth=depth)
+        part = self._ensure_part()
+        frame = self._active_frame()
+        cutters = []
+        for x, y in self._locations:
+            name = self._new_name("csk")
+            at_point = _frame_plus_local(frame, (x, y, 0))
+            outer = part.sketch(frame=at_point, name=name + "_outer")
+            outer.add_circle((0, 0), cskDiameter / 2)
+            inner = part.sketch(frame=_frame_plus_local(at_point, (0, 0, -sink_depth)),
+                                name=name + "_inner")
+            inner.add_circle((0, 0), diameter / 2)
+            cutters.append(part.loft([outer, inner], name=name))
+        solid = part.batch_subtract(holed.val(), cutters, name=holed.val().name)
+        return self._cleared(_solid=solid, _faces=list(self._faces), _edges=list(self._edges))
 
     def faces(self, selector=None, tag=None):
         """Select faces, including planar sides created by arbitrary profiles."""
@@ -1539,17 +2484,20 @@ class Workplane(object):
             faces = list(saved[1]) if isinstance(saved, tuple) else []
         if tag is None and self._solid is not None and self.part is not None:
             known = {item["name"] for item in faces}
-            for name in self._solid.patch_names:
+            for index, name in enumerate(self._solid.patch_names):
                 short = name.split(":")[-1]
                 if short in known:
                     continue
                 try:
                     frame = self.part.plane_frame(name)
                 except Exception:
-                    continue
-                if frame is not None:
-                    faces.append({"name": name, "center": frame.origin,
-                                  "normal": frame.z, "kind": "plane"})
+                    frame = None
+                kind = "plane" if frame is not None else "curved"
+                if frame is None:
+                    frame = self._solid.patch_frame_at(index)
+                faces.append({"name": name, "center": frame.origin,
+                              "normal": frame.z, "kind": kind})
+        faces = [dict(face, rank_tolerance=self._tolerance) for face in faces]
         chosen = _select_faces(faces, selector)
         return self._spawn(_selected_faces=chosen, _selected_edges=[], _selected_vertices=[])
 
@@ -1640,6 +2588,8 @@ class Workplane(object):
 
     def val(self):
         """The current camber Solid (raises if none)."""
+        if self._selected_faces and self._solid is not None:
+            return self.part.face_surface(self._solid, self._selected_faces[0]["name"])
         if self._stack_solids:
             return self._stack_solids[0]
         if self._solid is None:
@@ -1781,7 +2731,7 @@ class Workplane(object):
             mirrored = self.part.union(self._solid, mirrored)
         return self._cleared(_solid=mirrored, _faces=[], _edges=[])
 
-    def shell(self, thickness, kind="intersection"):
+    def shell(self, thickness, kind="arc"):
         """Shell inward for negative thickness, outward for positive thickness.
 
         ``kind="arc"`` requests round outward joins; ``"intersection"``
@@ -1795,8 +2745,9 @@ class Workplane(object):
         if self._solid is None:
             raise ValueError("shell needs a solid")
         faces = [face["name"] for face in self._selected_faces]
+        join = "round" if thickness > 0 and kind == "arc" else "sharp"
         shelled = self.part.shell(self._solid, abs(thickness), faces=faces,
-                                  outward=thickness > 0, join="round" if kind == "arc" else "sharp")
+                                  outward=thickness > 0, join=join)
         return self._cleared(_solid=shelled, _faces=[], _edges=[])
 
     def split(self, keepTop=False, keepBottom=False):

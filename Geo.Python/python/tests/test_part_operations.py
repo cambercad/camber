@@ -1,3 +1,4 @@
+import math
 import unittest
 
 import camber
@@ -7,6 +8,51 @@ from camber.view import _load_operations, _operation_row_text
 
 
 class PartOperationTests(unittest.TestCase):
+    def test_extrude_taper_angle_uses_signed_draft_and_records_normal_extrude(self):
+        set_progress_log(False)
+        part = Part((-10, -10, -2), (10, 10, 4), tolerance=.005)
+        sketch = part.sketch("xy", name="draft_profile")
+        sketch.add_rectangle((-3, -2.5), (3, 2.5))
+
+        drafted = part.extrude(sketch, 1, taper_angle=math.pi / 18, name="drafted")
+
+        self.assertTrue(drafted.is_watertight())
+        points, _ = drafted.mesh()
+        top = [point for point in points if point.z > .99]
+        offset = math.tan(math.pi / 18)
+        self.assertAlmostEqual(-3 + offset, min(point.x for point in top), places=2)
+        self.assertAlmostEqual(3 - offset, max(point.x for point in top), places=2)
+        self.assertEqual("Extrude", part.operations[-1].kind)
+        self.assertIn("taperAngle=", part.operations[-1].details)
+
+    def test_tapered_extrude_rejects_a_collapsed_profile(self):
+        set_progress_log(False)
+        part = Part((-10, -10, -2), (10, 10, 12), tolerance=.01)
+        sketch = part.sketch("xy", name="small_profile")
+        sketch.add_rectangle((-0.5, -0.5), (0.5, 0.5))
+
+        with self.assertRaises(Exception):
+            part.extrude(sketch, 10, taper_angle=math.pi / 4)
+
+
+    def test_extrude_until_named_face_uses_native_surface_trim(self):
+        set_progress_log(False)
+        part = Part((-6, -6, -6), (12, 12, 12), tolerance=.001)
+        target = part.cuboid((-2, -2, 5), (2, 2, 10), name="target")
+        bottom = next(name for name in target.patch_names if name.endswith("ExtrudeBottom"))
+        sketch = part.sketch("xy", name="profile")
+        sketch.add_rectangle((-.5, -.5), (.5, .5))
+
+        surface = part.face_surface(target, bottom)
+        direct = part.extrude_until_surface(sketch, surface)
+        by_name = part.extrude_until_face(sketch, target, bottom)
+
+        self.assertFalse(surface.is_volume)
+        self.assertTrue(direct.is_watertight())
+        self.assertTrue(by_name.is_watertight())
+        self.assertAlmostEqual(5, direct.volume(), delta=.01)
+        self.assertAlmostEqual(5, by_name.volume(), delta=.01)
+
     def test_feature_ledger_records_successful_model_operations(self):
         set_progress_log(False)
         part = Part((-10, -10, -10), (10, 10, 10), tolerance=.01)

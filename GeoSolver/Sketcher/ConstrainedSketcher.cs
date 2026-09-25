@@ -412,6 +412,15 @@ Constrains the (signed) angle between line1's and line2's direction vectors.")]
                 SolveConstraints();
         }
 
+        [APIDescription(@"SetAngle(line: CLine2D, arc: CArc2D, angleRadians: float)
+Constrains a line and circular arc to meet at this angle, measured against the arc tangent at the nearest endpoint pair.")]
+        public void SetAngle(CLine2D line, CArc2D arc, double angleRadians)
+        {
+            constraints.Add(new AngleBetweenLineAndArc2d(line, arc, angleRadians));
+            if (_solveAfterEveryConstraint)
+                SolveConstraints();
+        }
+
 
         [APIDescription(@"SetPointOnLine(point: CVec2D, line: CLine2D)
 Constrains `point` to lie anywhere on the infinite line through `line.CStart` and `line.CEnd`.")]
@@ -439,6 +448,13 @@ Same as SetAngle but `angleDegrees` is in degrees.")]
         public void SetAngleDegrees(CLine2D line1, CLine2D line2, double angleDegrees)
         {
             SetAngle(line1, line2, angleDegrees * Math.PI / 180.0);
+        }
+
+        [APIDescription(@"SetAngleDegrees(line: CLine2D, arc: CArc2D, angleDegrees: float)
+Same as SetAngle for a line and arc, with degrees as the angle unit.")]
+        public void SetAngleDegrees(CLine2D line, CArc2D arc, double angleDegrees)
+        {
+            SetAngle(line, arc, angleDegrees * Math.PI / 180.0);
         }
 
         /// <summary>

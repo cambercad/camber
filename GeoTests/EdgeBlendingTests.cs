@@ -40,22 +40,16 @@ public class EdgeBlendingTests
                             string.Join(", ", mesh.groupIdToExtendedName.OrderBy(k => k.Key).Select(k => k.Value)));
     }
 
-    /// <summary>
-    /// EdgeBlending matches by exact edge-name string. Try common formats: "[A,B]", "[B,A]", optional "_i" suffix.
-    /// </summary>
-    private static List<string> EdgeNameCandidates(string groupA, string groupB)
+    private static List<string> EdgeNameCandidates(AnchorMesh mesh, string groupA, string groupB)
     {
-        var candidates = new List<string>
-        {
-            $"[{groupA},{groupB}]",
-            $"[{groupB},{groupA}]",
-        };
-        for (int i = 0; i < 8; i++)
-        {
-            candidates.Add($"[{groupA},{groupB}]_{i}");
-            candidates.Add($"[{groupB},{groupA}]_{i}");
-        }
-        return candidates;
+        int groupIdA = mesh.extendedNameToGroupId[groupA];
+        int groupIdB = mesh.extendedNameToGroupId[groupB];
+        var graph = new EdgeGraph(mesh.Mesh.Triangles, mesh.Mesh.GetTriangleGroups(),
+            mesh.Mesh.Positions, mesh.Mesh.PrecisionPositions, mesh.groupIdToExtendedName);
+        var names = new List<string>();
+        foreach (var edge in graph.GetEdgesBetweenGroups(groupIdA, groupIdB))
+            names.Add(edge.Name);
+        return names;
     }
 
     public static string ResolveBlendableEdgeNamePublic(GeoAPI api, AnchorMesh mesh, string groupA, string groupB,
@@ -69,7 +63,7 @@ public class EdgeBlendingTests
         double blendRadius, double maxDiscretizationDeviation)
     {
         Exception? last = null;
-        foreach (var edgeName in EdgeNameCandidates(groupA, groupB))
+        foreach (var edgeName in EdgeNameCandidates(mesh, groupA, groupB))
         {
             try
             {
@@ -92,7 +86,7 @@ public class EdgeBlendingTests
         double blendRadius, double maxDiscretizationDeviation, string name)
     {
         Exception? last = null;
-        foreach (var edgeName in EdgeNameCandidates(groupA, groupB))
+        foreach (var edgeName in EdgeNameCandidates(mesh, groupA, groupB))
         {
             try
             {

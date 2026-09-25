@@ -138,14 +138,47 @@ public class NativePart
             _inner.UnregisterSketch(sketch.Native);
     }
 
-    public NativeSolid Extrude(NativeSketch sketch, double height, double maxDeviation, double twistRatePerExtrudeDistance, string name)
+    public NativeSolid Extrude(NativeSketch sketch, double height, double maxDeviation,
+        double twistRatePerExtrudeDistance, string name, double taperAngle)
     {
-        return Track(_inner.Extrude(sketch.Native, height, maxDeviation, NativeUtil.EmptyToNull(name), twistRatePerExtrudeDistance), "Extrude", new[] { sketch.Native.Name }, details: $"height={height:G6}");
+        var result = _inner.Extrude(sketch.Native, height, maxDeviation,
+            NativeUtil.EmptyToNull(name), twistRatePerExtrudeDistance, taperAngle);
+        string details = $"height={height:G6}";
+        if (taperAngle != 0) details += $", taperAngle={taperAngle:G6} rad";
+        if (twistRatePerExtrudeDistance != 0)
+            details += $", twistRatePerExtrudeDistance={twistRatePerExtrudeDistance:G6} rad/unit";
+        return Track(result, "Extrude", new[] { sketch.Native.Name }, details: details);
     }
 
     public NativeSolid ExtrudeTwoSides(NativeSketch sketch, double heightPositive, double heightNegative, double maxDeviation, double twistRatePerExtrudeDistance, string name)
     {
         return Track(_inner.ExtrudeTwoSides(sketch.Native, heightPositive, heightNegative, maxDeviation, NativeUtil.EmptyToNull(name), twistRatePerExtrudeDistance), "Extrude", new[] { sketch.Native.Name }, details: $"+Z={heightPositive:G6}, -Z={heightNegative:G6}");
+    }
+
+    public NativeSolid ExtrudeUntilNext(NativeSketch sketch, NativeSolid target, double maxDeviation, string name)
+    {
+        return Track(_inner.ExtrudeUntilNext(sketch.Native, target.Native, maxDeviation, NativeUtil.EmptyToNull(name)),
+            "Extrude until next", new[] { sketch.Native.Name, target.Native.Name });
+    }
+
+    public NativeSolid ExtractFaceSurface(NativeSolid solid, string patchName, string name)
+    {
+        return Track(_inner.ExtractFaceSurface(solid.Native, patchName, NativeUtil.EmptyToNull(name)),
+            "Extract face surface", new[] { solid.Native.Name, patchName });
+    }
+
+    public NativeSolid ExtrudeUntilSurface(NativeSketch sketch, NativeSolid surface, double maxDeviation, string name)
+    {
+        return Track(_inner.ExtrudeUntilSurface(sketch.Native, surface.Native, maxDeviation, NativeUtil.EmptyToNull(name)),
+            "Extrude until surface", new[] { sketch.Native.Name, surface.Native.Name });
+    }
+
+    public NativeSolid ExtrudeUntilFace(NativeSketch sketch, NativeSolid target, string patchName,
+        double maxDeviation, string name)
+    {
+        return Track(_inner.ExtrudeUntilFace(sketch.Native, target.Native, patchName,
+                maxDeviation, NativeUtil.EmptyToNull(name)),
+            "Extrude until face", new[] { sketch.Native.Name, target.Native.Name, patchName });
     }
 
     public NativeProjectedSketch ProjectSketchOntoMesh(NativeSketch sketch, NativeSolid target, double maxDeviation, string name)
@@ -1389,9 +1422,28 @@ public class NativeSketch
         ConstraintSketcher().SetDistance(
             ConstraintPoint(curve, point), CVec2D.Constant(x, y), distance);
 
-    public void SetAngleDegrees(int curveA, int curveB, double angleDegrees) =>
-        ConstraintSketcher().SetAngleDegrees(
-            ConstraintCurve<CLine2D>(curveA), ConstraintCurve<CLine2D>(curveB), angleDegrees);
+    public void SetAngleDegrees(int curveA, int curveB, double angleDegrees)
+    {
+        Curve2D a = ConstraintCurve<Curve2D>(curveA);
+        Curve2D b = ConstraintCurve<Curve2D>(curveB);
+        ConstrainedSketcher sketch = ConstraintSketcher();
+        if (a is CLine2D lineA && b is CLine2D lineB)
+        {
+            sketch.SetAngleDegrees(lineA, lineB, angleDegrees);
+            return;
+        }
+        if (a is CLine2D line && b is CArc2D arc)
+        {
+            sketch.SetAngleDegrees(line, arc, angleDegrees);
+            return;
+        }
+        if (a is CArc2D arcA && b is CLine2D lineB2)
+        {
+            sketch.SetAngleDegrees(lineB2, arcA, angleDegrees);
+            return;
+        }
+        throw new ArgumentException("Angle supports line-line and line-arc pairs.");
+    }
 
     public void SolveConstraints()
     {
@@ -1607,6 +1659,44 @@ public class NativeSolid
 
     public int PatchCount => MeshSelectableNames.Patches(Native).Count;
     public string PatchNameAt(int index) => NameAt(MeshSelectableNames.Patches(Native), index);
+    public NativeFrame PatchFrameAt(int index)
+    {
+        string selected = PatchNameAt(index);
+        var mesh = Native.Mesh;
+        var groups = mesh.GetTriangleGroups();
+        int group = -1;
+        int patchIndex = 0;
+        var seenGroups = new HashSet<int>();
+        foreach (int candidate in groups)
+            if (seenGroups.Add(candidate))
+            {
+                if (patchIndex++ == index) { group = candidate; break; }
+            }
+        if (group < 0) throw new ArgumentOutOfRangeException(nameof(index));
+        Vec3D weightedCenter = new Vec3D(0);
+        Vec3D normal = new Vec3D(0);
+        Vec3D firstNormal = new Vec3D(0);
+        double areaWeight = 0;
+        for (int i = 0; i < mesh.Triangles.Count; i++)
+        {
+            if (groups[i] != group) continue;
+            var tri = mesh.Triangles[i];
+            Vec3D a = mesh.Positions[tri.A], b = mesh.Positions[tri.B], c = mesh.Positions[tri.C];
+            Vec3D cross = Vec3DOps.Cross(b - a, c - a);
+            double weight = cross.Length();
+            if (weight < 1e-20) continue;
+            if (firstNormal.Length() < 1e-20) firstNormal = cross;
+            weightedCenter += (a + b + c) * (weight / 3.0);
+            normal += cross;
+            areaWeight += weight;
+        }
+        if (areaWeight == 0) throw new InvalidOperationException($"Patch '{selected}' has no area.");
+        normal = (normal.Length() > 1e-20 ? normal : firstNormal).Normalized();
+        Vec3D reference = Math.Abs(normal.Z) < 0.9 ? new Vec3D(0, 0, 1) : new Vec3D(0, 1, 0);
+        Vec3D x = Vec3DOps.Cross(reference, normal).Normalized();
+        Vec3D y = Vec3DOps.Cross(normal, x).Normalized();
+        return new NativeFrame(new CoordinateSystem(weightedCenter * (1.0 / areaWeight), x, y, normal));
+    }
     public int CurveCount => MeshSelectableNames.Curves(Native).Count;
     public string CurveNameAt(int index) => NameAt(MeshSelectableNames.Curves(Native), index);
     public int PointCount => MeshSelectableNames.Points(Native).Count;

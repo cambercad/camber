@@ -1169,15 +1169,410 @@ Extrudes profileSketch along the curves of guideSketch (lifted to 3D using the g
             return result;
         }
 
-        [APIDescription(@"Extrude(sketch: PlotterSketcherCoordSys, height: float, maxDeviation: float = -1, name: str = None, twistRatePerExtrudeDistance: float = 0) -> AnchorMesh
+        [APIDescription(@"Extrude(sketch: PlotterSketcherCoordSys, height: float, maxDeviation: float = -1, name: str = None, twistRatePerExtrudeDistance: float = 0, taperAngle: float = 0) -> AnchorMesh
 Linear extrusion of the sketch along the sketch's local +Z (the sketch plane normal).
   height: extrusion distance along +Z (single direction; use ExtrudeTwoSides for double-sided).
   maxDeviation: chordal tessellation tolerance for curved sketch geometry (world units); -1 uses the GeoAPI instance default.
   twistRatePerExtrudeDistance: radians of twist per unit Z (0 = no twist).
-Profile must be a closed contour (helper geometry excluded). Patches are named ""<name>-top"", ""<name>-bottom"", and ""<name>-<contourSegmentName>"" for the side walls.")]
-        public AnchorMesh Extrude(PlotterSketcherCoordSys sketch, double height, double maxDeviation = -1, string name = null, double twistRatePerExtrudeDistance = 0)
+  taperAngle: draft angle in radians; positive narrows in the extrusion direction, negative widens. Cannot be combined with twist.
+Taper requires one closed contour (helper geometry excluded); supported sketch curves are offset through the same Clipper-backed sketch-offset pipeline used by Sketch.OffsetStrip. A collapsed or split offset is rejected. Patches are named ""<name>-top"", ""<name>-bottom"", and ""<name>-<contourSegmentName>"" for the side walls.")]
+        public AnchorMesh Extrude(PlotterSketcherCoordSys sketch, double height, double maxDeviation = -1,
+            string name = null, double twistRatePerExtrudeDistance = 0, double taperAngle = 0)
         {
+            if (!double.IsFinite(taperAngle) || Math.Abs(taperAngle) >= Math.PI / 2)
+                throw new ArgumentOutOfRangeException(nameof(taperAngle), "Taper angle must be finite and between -90 and 90 degrees (in radians).");
+            if (Math.Abs(taperAngle) >= 1e-12)
+            {
+                if (twistRatePerExtrudeDistance != 0)
+                    throw new NotSupportedException("Tapered extrusion cannot be combined with twist.");
+                return ExtrudeTaperedCore(sketch, height, taperAngle, maxDeviation, name);
+            }
             return ExtrudeTwoSides(sketch, height, 0, maxDeviation, name, twistRatePerExtrudeDistance);
+        }
+
+        private AnchorMesh ExtrudeTaperedCore(PlotterSketcherCoordSys sketch, double height, double taperAngle,
+            double maxDeviation = -1, string name = null)
+        {
+            if (sketch == null) throw new ArgumentNullException(nameof(sketch));
+            if (!double.IsFinite(height) || height == 0)
+                throw new ArgumentOutOfRangeException(nameof(height), "Tapered extrusion height must be finite and non-zero.");
+            if (!double.IsFinite(taperAngle) || Math.Abs(taperAngle) >= Math.PI / 2)
+                throw new ArgumentOutOfRangeException(nameof(taperAngle), "Taper angle must be finite and between -90 and 90 degrees (in radians).");
+            maxDeviation = ResolveMaxDeviation(maxDeviation);
+            name = name ?? GenerateName("Extrude");
+
+            var strips = sketch.GetCurves();
+            var profileStrips = strips.Select(strip => strip.Where(curve => !curve.IsHelperGeometry).ToList())
+                .Where(strip => strip.Count > 0).ToList();
+            if (profileStrips.Count != 1)
+                throw new ArgumentException("Tapered extrusion currently requires exactly one closed profile contour.", nameof(sketch));
+            var sourceCurves = profileStrips[0];
+            if (sourceCurves.Count == 0)
+                throw new ArgumentException("Tapered extrusion profile is empty.", nameof(sketch));
+            bool linearProfile = sourceCurves.All(curve => curve is Line2D);
+
+            double area2 = 0;
+            foreach (var curve in sourceCurves)
+            {
+                var samples = curve.Tessellate(maxDeviation);
+                for (int i = 0; i + 1 < samples.Count; i++)
+                    area2 += samples[i].Position.X * samples[i + 1].Position.Y
+                        - samples[i + 1].Position.X * samples[i].Position.Y;
+            }
+            if (Math.Abs(area2) <= maxDeviation * maxDeviation)
+                throw new ArgumentException("Tapered extrusion profile must enclose non-zero area.", nameof(sketch));
+
+            double signedOffset = -Math.Sign(area2) * Math.Abs(height) * Math.Tan(taperAngle);
+            var offsetSource = new PlotterSketcherCoordSys(name + "_offset_source", sketch.CoordinateSystem);
+            offsetSource.SetCurves(new List<List<Curve2D>>
+            {
+                sourceCurves.Select(curve => curve.GetCopy()).ToList()
+            });
+            var copiedCurves = offsetSource.GetCurves()[0];
+            double minOffsetTolerance = Math.Min(maxDeviation,
+                Math.Max(converter.SmallestUnit() * 2, 1e-8));
+            double offsetTolerance = maxDeviation;
+            OffsetSketchStrip2D offset = null;
+            while (offset == null)
+            {
+                var options = new SketchStripOffsetOptions(
+                    SketchOffsetJoinType.Miter,
+                    SketchOffsetOpenMode.Parallel,
+                    SketchOffsetEndCap.Butt,
+                    offsetTolerance,
+                    offsetTolerance);
+                try
+                {
+                    offset = offsetSource.OffsetStrip(copiedCurves, signedOffset, options);
+                }
+                catch (InvalidOperationException) when (offsetTolerance > minOffsetTolerance)
+                {
+                    // Start with the requested part/user tolerance. If that
+                    // tessellation cannot represent the valid offset contour,
+                    // refine it only as far as the part's coordinate lattice.
+                    offsetTolerance = Math.Max(minOffsetTolerance, offsetTolerance * 0.5);
+                }
+            }
+            var offsetPieces = offset.CreateSampledCurves();
+            if (!offset.IsClosed || offsetPieces.Count != sourceCurves.Count || offset.Pieces.Count != sourceCurves.Count)
+                throw new InvalidOperationException("Tapered extrusion offset collapsed, split, or no longer maps one-to-one to the source curves.");
+            var piecesBySource = new Curve2D[sourceCurves.Count];
+            for (int i = 0; i < offset.Pieces.Count; i++)
+            {
+                int sourceIndex = offset.Pieces[i].SourceIndex;
+                if ((uint)sourceIndex >= (uint)piecesBySource.Length || piecesBySource[sourceIndex] != null ||
+                    offset.Pieces[i].Side is not (OffsetSketchPieceSide.In or OffsetSketchPieceSide.Out))
+                    throw new InvalidOperationException("Tapered extrusion offset changed curve correspondence; this profile cannot be tapered reliably.");
+                piecesBySource[sourceIndex] = offsetPieces[i];
+            }
+            if (piecesBySource.Any(piece => piece == null))
+                throw new InvalidOperationException("Tapered extrusion offset removed one or more source curves.");
+            for (int i = 0; i < piecesBySource.Length; i++)
+                piecesBySource[i].Name = $"{name}_offset_{i + 1}";
+            if (linearProfile)
+            {
+                for (int i = 0; i < piecesBySource.Length; i++)
+                {
+                    var points = piecesBySource[i].ToReferencePoints();
+                    if (points.Count < 2 || (points[^1] - points[0]).LengthSquared() <= 1e-24)
+                        throw new InvalidOperationException("Tapered extrusion offset collapsed a polygon edge.");
+                    piecesBySource[i] = new Line2D(points[0], points[^1]) { Name = piecesBySource[i].Name };
+                }
+            }
+
+            var topFrame = sketch.CoordinateSystem;
+            topFrame.Origin += topFrame.Z * height;
+            var top = new PlotterSketcherCoordSys(name + "_offset_section", topFrame);
+            top.SetCurves(new List<List<Curve2D>> { piecesBySource.ToList() });
+            var optionsLoft = new LoftOptions
+            {
+                Style = LoftStyle.Ruled,
+                CapEnds = true,
+                CorrespondenceMode = linearProfile
+                    ? LoftCorrespondenceMode.MatchingVertices
+                    : LoftCorrespondenceMode.MergedArcLengthAnchors,
+                FirstCurves = linearProfile
+                    ? new[] { sourceCurves[0].Name, piecesBySource[0].Name }
+                    : null
+            };
+            var result = Loft(new[] { sketch, top }, optionsLoft, name, maxDeviation);
+            if (!result.IsVolume)
+                throw new InvalidOperationException("Tapered extrusion did not produce a closed volume.");
+            return result;
+        }
+
+        [APIDescription(@"ExtrudeUntilNext(sketch: PlotterSketcherCoordSys, target: AnchorMesh, maxDeviation: float = -1, name: str = None) -> AnchorMesh
+Extrudes along the sketch normal toward the nearest target face, searching both normal directions, subtracts the target, and retains the first free segment from the sketch start.
+The extrusion extent is derived from the target bounds; exact solid subtraction and rational-position component detection define the result.")]
+        public AnchorMesh ExtrudeUntilNext(PlotterSketcherCoordSys sketch, AnchorMesh target,
+            double maxDeviation = -1, string name = null)
+        {
+            if (sketch == null) throw new ArgumentNullException(nameof(sketch));
+            if (target == null) throw new ArgumentNullException(nameof(target));
+            if (!target.IsVolume)
+                throw new ArgumentException("The target must be a watertight volume.", nameof(target));
+
+            target.EnsureCoplanarPostProcessed();
+            maxDeviation = ResolveMaxDeviation(maxDeviation);
+            name = name ?? GenerateName("ExtrudeUntilNext");
+
+            var origin = sketch.CoordinateSystem.Origin;
+            var direction = sketch.CoordinateSystem.Z.Normalized();
+            if (direction.Length() < 1e-12)
+                throw new ArgumentException("The sketch normal is degenerate.", nameof(sketch));
+            bool forwardHit = RayMeshExact.TryCast(target, converter, origin, direction, out var forward);
+            bool backwardHit = RayMeshExact.TryCast(target, converter, origin, -direction, out var backward);
+            if (!forwardHit && !backwardHit)
+                throw new InvalidOperationException($"ExtrudeUntilNext '{name}': no target face lies along either sketch-normal direction.");
+            bool extrudeForward = forwardHit && (!backwardHit ||
+                Vec3DOps.Dot(forward.Point - origin, direction) <= Vec3DOps.Dot(backward.Point - origin, -direction));
+            if (!extrudeForward) direction = -direction;
+            var bounds = MeshBounds(target.Mesh.Positions);
+            double scale = (bounds.Max - bounds.Min).Length();
+            double margin = Math.Max(converter.SmallestUnit() * 8.0, scale * 1e-6);
+            double height = RayBoundsDistance(bounds, origin, direction) + margin;
+            if (!(height > 0) || double.IsInfinity(height) || double.IsNaN(height))
+                throw new InvalidOperationException($"ExtrudeUntilNext '{name}': could not determine a finite extrusion extent.");
+
+            string toolName = name + "_tool";
+            var prism = extrudeForward
+                ? Extrude(sketch, height, maxDeviation, toolName)
+                : ExtrudeTwoSides(sketch, 0, height, maxDeviation, toolName);
+            var freeSegments = Boolean(prism, target, BooleanOp.Subtract, name + "_free");
+            if (freeSegments.Mesh.Triangles.Count == 0)
+                throw new InvalidOperationException($"Extrude-until '{name}': the target consumes the entire extrusion.");
+
+            return KeepFirstExtrusionSegments(freeSegments, origin, direction, height, margin, name);
+        }
+
+        [APIDescription(@"ExtractFaceSurface(solid: AnchorMesh, patchName: str, name: str = None) -> AnchorMesh
+Returns the exact triangles of one named face as an open trimming surface, preserving rational positions and orientation.")]
+        public AnchorMesh ExtractFaceSurface(AnchorMesh solid, string patchName, string name = null)
+        {
+            if (solid == null) throw new ArgumentNullException(nameof(solid));
+            patchName = solid.ResolveLocalPatchNamePublic(patchName);
+            if (patchName == null || !solid.extendedNameToGroupId.TryGetValue(patchName, out int group))
+                throw new ArgumentException($"Unknown face '{patchName}'.", nameof(patchName));
+            name = name ?? GenerateName("FaceSurface");
+            var positions = new List<Rat3Hybrid>();
+            var vertexMap = new Dictionary<int, int>();
+            var sourceTriangles = solid.Mesh.Triangles;
+            var sourceCorners = solid.Mesh.TrianglesEx;
+            var triangles = new List<Tri>();
+            var corners = new List<MeshTriangle<TriangleVertexNormalUV>>();
+            var groups = new List<int>();
+            var sourceGroups = solid.Mesh.GetTriangleGroups();
+            for (int i = 0; i < sourceTriangles.Count; i++)
+            {
+                if (sourceGroups[i] != group) continue;
+                var sourceTriangle = sourceTriangles[i];
+                triangles.Add(new Tri(AddVertex(sourceTriangle.A), AddVertex(sourceTriangle.B),
+                    AddVertex(sourceTriangle.C)));
+                corners.Add(sourceCorners[i]);
+                groups.Add(group);
+            }
+            if (triangles.Count == 0)
+                throw new ArgumentException($"Face '{patchName}' has no triangles.", nameof(patchName));
+            var mesh = new MeshNormalUV(converter, positions, triangles, corners, groups);
+            var metadata = new Dictionary<string, SurfaceMetaData>();
+            if (solid.surfaceMetaData.TryGetValue(patchName, out var data) && data != null)
+                metadata.Add(patchName, data.Clone());
+            var result = new AnchorMesh(name, mesh, new Dictionary<string, int> { [patchName] = group }, metadata,
+                deferCoplanarPostProcess: true, isVolume: false);
+            RegisterMesh(result);
+            return result;
+
+            int AddVertex(int sourceIndex)
+            {
+                if (vertexMap.TryGetValue(sourceIndex, out int mapped)) return mapped;
+                mapped = positions.Count;
+                positions.Add(solid.Mesh.PrecisionPositions[sourceIndex]);
+                vertexMap.Add(sourceIndex, mapped);
+                return mapped;
+            }
+        }
+
+        [APIDescription(@"ExtrudeUntilSurface(sketch: PlotterSketcherCoordSys, surface: AnchorMesh, maxDeviation: float = -1, name: str = None) -> AnchorMesh
+Extrudes to an open face/surface using exact CSG surface trim. The surface must span the entire profile intersection; incomplete trims fail rather than returning an open solid.")]
+        public AnchorMesh ExtrudeUntilSurface(PlotterSketcherCoordSys sketch, AnchorMesh surface,
+            double maxDeviation = -1, string name = null)
+        {
+            if (sketch == null) throw new ArgumentNullException(nameof(sketch));
+            if (surface == null) throw new ArgumentNullException(nameof(surface));
+            if (surface.IsVolume) throw new ArgumentException("The target must be an open surface.", nameof(surface));
+            maxDeviation = ResolveMaxDeviation(maxDeviation);
+            name = name ?? GenerateName("ExtrudeUntilSurface");
+            var origin = sketch.CoordinateSystem.Origin;
+            var direction = sketch.CoordinateSystem.Z.Normalized();
+            if (!RayMeshExact.TryCast(surface, converter, origin, direction, out var hit))
+                throw new InvalidOperationException($"ExtrudeUntilSurface '{name}': no target surface lies along the sketch normal.");
+            var bounds = MeshBounds(surface.Mesh.Positions);
+            double scale = (bounds.Max - bounds.Min).Length();
+            double margin = Math.Max(converter.SmallestUnit() * 8.0, scale * 1e-6);
+            double height = RayBoundsDistance(bounds, origin, direction) + margin;
+            if (!(height > 0) || double.IsInfinity(height) || double.IsNaN(height))
+                throw new InvalidOperationException($"ExtrudeUntilSurface '{name}': could not determine a finite extrusion extent.");
+            var prism = Extrude(sketch, height, maxDeviation, name + "_tool");
+            var op = Vec3DOps.Dot(direction, hit.GeometricNormal) > 0
+                ? BooleanOp.AAsVolumeBAsTrimSurfaceRemoveInTriNormalDirection
+                : BooleanOp.AAsVolumeBAsTrimSurfaceKeepInTriNormalDirection;
+            var trimmed = Boolean(prism, surface, op, name + "_trimmed");
+            var result = TryKeepFirstExtrusionSegments(trimmed, origin, direction, height, margin, name);
+            if (result != null) return result;
+
+            var opposite = op == BooleanOp.AAsVolumeBAsTrimSurfaceKeepInTriNormalDirection
+                ? BooleanOp.AAsVolumeBAsTrimSurfaceRemoveInTriNormalDirection
+                : BooleanOp.AAsVolumeBAsTrimSurfaceKeepInTriNormalDirection;
+            trimmed = Boolean(prism, surface, opposite, name + "_opposite");
+            result = TryKeepFirstExtrusionSegments(trimmed, origin, direction, height, margin, name);
+            if (result != null) return result;
+            throw new InvalidOperationException($"ExtrudeUntilSurface '{name}': neither trim direction produced a watertight segment ending at the surface.");
+        }
+
+        private AnchorMesh TryKeepFirstExtrusionSegments(AnchorMesh mesh, Vec3D origin,
+            Vec3D direction, double height, double margin, string name)
+        {
+            try { return KeepFirstExtrusionSegments(mesh, origin, direction, height, margin, name); }
+            catch (InvalidOperationException) { return null; }
+        }
+
+        [APIDescription(@"ExtrudeUntilFace(sketch: PlotterSketcherCoordSys, target: AnchorMesh, patchName: str, maxDeviation: float = -1, name: str = None) -> AnchorMesh
+Extrudes to one named face of a target solid. The selected face must cover the complete profile intersection.")]
+        public AnchorMesh ExtrudeUntilFace(PlotterSketcherCoordSys sketch, AnchorMesh target,
+            string patchName, double maxDeviation = -1, string name = null)
+        {
+            if (target == null) throw new ArgumentNullException(nameof(target));
+            var face = ExtractFaceSurface(target, patchName, GenerateName("UntilFaceTarget"));
+            return ExtrudeUntilSurface(sketch, face, maxDeviation, name);
+        }
+
+        private AnchorMesh KeepFirstExtrusionSegments(AnchorMesh freeSegments, Vec3D origin,
+            Vec3D direction, double height, double margin, string name)
+        {
+            var components = MeshConnectivity.FindExactPositionComponents(
+                freeSegments.Mesh.PrecisionPositions, freeSegments.Mesh.Triangles);
+            if (components.Count == 0)
+                throw new InvalidOperationException($"Extrude-until '{name}': trimming produced no connected extrusion segment.");
+
+            // Select geometrically, not by cap patch name: CSG can preserve the same
+            // cap group id on fragments at either end of the long extrusion. If the
+            // sketch starts inside the target, its first free interval begins after
+            // the target and is selected by the same rule.
+            var startComponents = new List<List<int>>();
+            double first = double.MaxValue;
+            var firstByComponent = new double[components.Count];
+            for (int i = 0; i < components.Count; i++)
+            {
+                double min = double.MaxValue;
+                foreach (int triangleIndex in components[i])
+                {
+                    var triangle = freeSegments.Mesh.Triangles[triangleIndex];
+                    min = Math.Min(min, Vec3DOps.Dot(freeSegments.Mesh.Positions[triangle.A] - origin, direction));
+                    min = Math.Min(min, Vec3DOps.Dot(freeSegments.Mesh.Positions[triangle.B] - origin, direction));
+                    min = Math.Min(min, Vec3DOps.Dot(freeSegments.Mesh.Positions[triangle.C] - origin, direction));
+                }
+                firstByComponent[i] = min;
+                first = Math.Min(first, min);
+            }
+            double tie = converter.SmallestUnit() * 2.0;
+            for (int i = 0; i < components.Count; i++)
+                if (firstByComponent[i] <= first + tie)
+                    startComponents.Add(components[i]);
+
+            foreach (var component in startComponents)
+            foreach (int index in component)
+            {
+                var triangle = freeSegments.Mesh.Triangles[index];
+                double end = Math.Max(
+                    Vec3DOps.Dot(freeSegments.Mesh.Positions[triangle.A] - origin, direction),
+                    Math.Max(Vec3DOps.Dot(freeSegments.Mesh.Positions[triangle.B] - origin, direction),
+                        Vec3DOps.Dot(freeSegments.Mesh.Positions[triangle.C] - origin, direction)));
+                if (end >= height - margin * 0.5)
+                    throw new InvalidOperationException($"Extrude-until '{name}': retained segment still reaches the far end ({end:G17} of {height:G17}).");
+            }
+
+            return KeepComponents(freeSegments, startComponents, name);
+        }
+
+        private static Box3D MeshBounds(List<Vec3D> points)
+        {
+            if (points == null || points.Count == 0) return Box3D.Empty;
+            var bounds = new Box3D(points[0]);
+            for (int i = 1; i < points.Count; i++) bounds.IncludePoint(points[i]);
+            return bounds;
+        }
+
+        private static double RayBoundsDistance(Box3D bounds, Vec3D origin, Vec3D direction)
+        {
+            double max = 0;
+            for (int x = 0; x < 2; x++)
+            for (int y = 0; y < 2; y++)
+            for (int z = 0; z < 2; z++)
+            {
+                var corner = new Vec3D(x == 0 ? bounds.Min.X : bounds.Max.X,
+                    y == 0 ? bounds.Min.Y : bounds.Max.Y,
+                    z == 0 ? bounds.Min.Z : bounds.Max.Z);
+                max = Math.Max(max, Vec3DOps.Dot(corner - origin, direction));
+            }
+            return max;
+        }
+
+        private AnchorMesh KeepComponents(AnchorMesh source, List<List<int>> components, string name)
+        {
+            int selectedCount = 0;
+            foreach (var component in components) selectedCount += component.Count;
+            if (selectedCount == 0)
+                throw new InvalidOperationException($"Extrude-until '{name}': no free extrusion segment touches the sketch start.");
+
+            var precisePositions = new List<Rat3Hybrid>();
+            var vertexMap = new Dictionary<int, int>();
+            var triangles = new List<Tri>(selectedCount);
+            var corners = new List<MeshTriangle<TriangleVertexNormalUV>>(selectedCount);
+            var groups = new List<int>(selectedCount);
+            var usedGroups = new HashSet<int>();
+            foreach (var component in components)
+            foreach (int index in component)
+            {
+                var sourceTriangle = source.Mesh.Triangles[index];
+                triangles.Add(new Tri(
+                    AddVertex(sourceTriangle.A),
+                    AddVertex(sourceTriangle.B),
+                    AddVertex(sourceTriangle.C)));
+                var corner = source.Mesh.TrianglesEx[index];
+                corners.Add(corner);
+                groups.Add(corner.GroupId);
+                usedGroups.Add(corner.GroupId);
+            }
+            if (!MeshAnalysis.IsWatertightMesh(precisePositions, triangles))
+                throw new InvalidOperationException($"Extrude-until '{name}': the retained segment is not watertight.");
+            var mesh = new MeshNormalUV(converter, precisePositions, triangles, corners, groups);
+            var names = new Dictionary<string, int>();
+            var metadata = new Dictionary<string, SurfaceMetaData>();
+            var lineage = new Dictionary<int, FaceLineage>();
+            foreach (var pair in source.groupIdToExtendedName)
+            {
+                if (!usedGroups.Contains(pair.Key)) continue;
+                names.Add(pair.Value, pair.Key);
+                if (source.surfaceMetaData.TryGetValue(pair.Value, out var data) && data != null)
+                    metadata.Add(pair.Value, data.Clone());
+                if (source.FaceLineages.TryGetValue(pair.Key, out var ancestry))
+                    lineage.Add(pair.Key, ancestry);
+            }
+            var result = new AnchorMesh(name, mesh, names, metadata,
+                deferCoplanarPostProcess: true, preferLexClosedLoopStarts: true, isVolume: true,
+                faceLineages: lineage);
+            RegisterMesh(result);
+            return result;
+
+            int AddVertex(int sourceIndex)
+            {
+                if (vertexMap.TryGetValue(sourceIndex, out int mapped))
+                    return mapped;
+                mapped = precisePositions.Count;
+                precisePositions.Add(source.Mesh.PrecisionPositions[sourceIndex]);
+                vertexMap.Add(sourceIndex, mapped);
+                return mapped;
+            }
         }
 
         /// <summary>
@@ -1425,6 +1820,14 @@ Lofts an ordered list of profile sketches into a mesh. Each sketch contains a si
 
             var mesh = new MeshNormalUV(converter, output.Vertices, output.Normals, output.UVs, output.Triangles, output.TriangleGroups, output.PrecisePositions);
             var surfaceMetaData = NurbsPatchMetadataBuilder.BuildLoftMetadata(sketches, maxDeviation, options, name, output.LoftSideSupportFactory, output.LoftSideDomains);
+            // A finite tessellation cannot prove that a smooth or curved NURBS
+            // support is planar. For ruled lofts made entirely from straight
+            // profile edges, each local patch is bilinear, so exact coplanarity
+            // of its complete mesh grid proves the continuous patch plane.
+            if (options.Style == LoftStyle.Ruled && LoftPlanarMetadataClassifier.HasOnlyLineProfiles(sketches))
+                LoftPlanarMetadataClassifier.ClassifyRuledLineSides(mesh.PrecisionPositions,
+                    mesh.Triangles, mesh.GetTriangleGroups(), triangleGroupToName,
+                    surfaceMetaData, converter, name);
 
             var result = new AnchorMesh(name, mesh, triangleGroupToName, surfaceMetaData);
             RegisterMesh(result);

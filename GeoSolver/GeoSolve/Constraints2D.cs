@@ -1201,6 +1201,69 @@ namespace GeoSolver
     }
 
     /// <summary>
+    /// Constrains a line to meet a circular arc at the requested angle, measured
+    /// against the arc tangent at the endpoint nearest either line endpoint.
+    /// Endpoint choice is captured when the constraint is created.
+    /// </summary>
+    public sealed class AngleBetweenLineAndArc2d : IBaseEquation
+    {
+        public CLine2D Line { get; }
+        public CArc2D Arc { get; }
+        public double AngleRadians { get; }
+        public bool AtArcStart { get; }
+        private readonly double _directionSign;
+
+        public AngleBetweenLineAndArc2d(CLine2D line, CArc2D arc, double angleRadians)
+        {
+            Line = line ?? throw new ArgumentNullException(nameof(line));
+            Arc = arc ?? throw new ArgumentNullException(nameof(arc));
+            if (!double.IsFinite(angleRadians) || angleRadians < 0 || angleRadians > Math.PI)
+                throw new ArgumentOutOfRangeException(nameof(angleRadians), "Angle must be between 0 and pi radians.");
+
+            AngleRadians = angleRadians;
+            // Select the endpoint pair already closest in the user's sketch. The
+            // strict comparison makes ties stable (line start, then arc start).
+            Vec2D lineStart = line.CStart.Evaluate();
+            Vec2D lineEnd = line.CEnd.Evaluate();
+            Vec2D arcStart = arc.CStart.Evaluate();
+            Vec2D arcEnd = arc.CEnd.Evaluate();
+            double startDistance = Math.Min((lineStart - arcStart).LengthSquared(), (lineEnd - arcStart).LengthSquared());
+            double endDistance = Math.Min((lineStart - arcEnd).LengthSquared(), (lineEnd - arcEnd).LengthSquared());
+            AtArcStart = startDistance <= endDistance;
+            CVec2D radial = AtArcStart ? arc.CStartDir : arc.CEndDir;
+            Vec2D lineDirection = line.CEnd.Evaluate() - line.CStart.Evaluate();
+            Vec2D tangent = new(-radial.Ey.Evaluate(), radial.Ex.Evaluate());
+            _directionSign = lineDirection.Dot(tangent) < 0 ? -1 : 1;
+        }
+
+        public void GenerateEquations(List<Expr> equations, double scaling)
+        {
+            Expr dx = Line.CEnd.Ex - Line.CStart.Ex;
+            Expr dy = Line.CEnd.Ey - Line.CStart.Ey;
+            CVec2D radial = AtArcStart ? Arc.CStartDir : Arc.CEndDir;
+            // Rotating the endpoint radius by 90 degrees gives the exact tangent
+            // direction; its sign is immaterial for an unoriented angle.
+            Expr tx = -radial.Ey;
+            Expr ty = radial.Ex;
+            Expr dot = dx * tx + dy * ty;
+            Expr lineLengthSquared = dx * dx + dy * dy;
+            Expr tangentLengthSquared = tx * tx + ty * ty;
+            double cosAngle = Math.Cos(AngleRadians);
+            Expr normalizedDot = dot / Expr.Sqrt(lineLengthSquared * tangentLengthSquared);
+            equations.Add((Expr.Constant(_directionSign) * normalizedDot - Expr.Constant(cosAngle))
+                * Expr.Constant(scaling));
+        }
+
+        public IEnumerator<Param> GetEnumerator()
+        {
+            foreach (Param p in Line) yield return p;
+            foreach (Param p in Arc) yield return p;
+        }
+
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    /// <summary>
     /// Constrains two lines to be colinear (lie on the same infinite line).
     /// </summary>
     public class Colinear2d : IBaseEquation

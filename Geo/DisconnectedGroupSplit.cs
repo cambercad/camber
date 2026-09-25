@@ -22,47 +22,8 @@ namespace Geo
             List<int> groupIdPerTriangle,
             HashSet<(int, int)> nonManifoldEdges)
         {
-            var triSet = new HashSet<int>(triIndices);
-            var visited = new HashSet<int>();
-            var result = new List<List<int>>();
-
-            foreach (int startTriIndex in triIndices)
-            {
-                if (!visited.Add(startTriIndex))
-                    continue;
-
-                var component = new List<int>();
-                var queue = new Queue<int>();
-                queue.Enqueue(startTriIndex);
-
-                while (queue.Count > 0)
-                {
-                    int triIndex = queue.Dequeue();
-                    component.Add(triIndex);
-
-                    var tri = triangles[triIndex];
-                    TryQueueNeighbour(tri.A, tri.B);
-                    TryQueueNeighbour(tri.B, tri.C);
-                    TryQueueNeighbour(tri.C, tri.A);
-
-                    void TryQueueNeighbour(int v1, int v2)
-                    {
-                        if (nonManifoldEdges != null && nonManifoldEdges.Contains(NormalizeEdge(v1, v2)))
-                            return;
-
-                        int neighbour = GetNeighbourAcrossEdge(tri, globalAdjacency[triIndex], v1, v2);
-                        if (neighbour < 0 || !triSet.Contains(neighbour) || groupIdPerTriangle[neighbour] != groupId)
-                            return;
-
-                        if (visited.Add(neighbour))
-                            queue.Enqueue(neighbour);
-                    }
-                }
-
-                result.Add(component);
-            }
-
-            return result;
+            return MeshConnectivity.FindConnectedTriangleComponents(triangles, triIndices, globalAdjacency,
+                groupIdPerTriangle, groupId, nonManifoldEdges);
         }
 
         /// <summary>
@@ -206,21 +167,5 @@ namespace Geo
             }
         }
 
-        private static int GetNeighbourAcrossEdge(Tri tri, TriangleAdjacency adjacency, int v1, int v2)
-        {
-            if (EdgeMatches(tri.A, tri.B, v1, v2))
-                return adjacency.NeighbourAB;
-            if (EdgeMatches(tri.B, tri.C, v1, v2))
-                return adjacency.NeighbourBC;
-            if (EdgeMatches(tri.C, tri.A, v1, v2))
-                return adjacency.NeighbourCA;
-            return -1;
-        }
-
-        private static bool EdgeMatches(int e1, int e2, int v1, int v2) =>
-            (e1 == v1 && e2 == v2) || (e1 == v2 && e2 == v1);
-
-        private static (int, int) NormalizeEdge(int v1, int v2) =>
-            v1 < v2 ? (v1, v2) : (v2, v1);
     }
 }

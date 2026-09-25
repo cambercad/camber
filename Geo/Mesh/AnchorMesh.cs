@@ -1171,7 +1171,7 @@ namespace Geo
             _rigidBodyActive = true;
         }
 
-        internal MeshNormalUV SnapshotRigidPose(Transform transform, int? groupId = null)
+        public MeshNormalUV SnapshotRigidPose(Transform transform, int? groupId = null)
         {
             if (!_rigidBodyActive || _rigidRestExact == null)
                 throw new InvalidOperationException($"Mesh '{Name}' is not an assembly body.");

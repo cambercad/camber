@@ -412,8 +412,11 @@ public class NativeAssemblyLeaf
 
     static (Vec3D Min, Vec3D Max) Bounds(AnchorMesh mesh, Transform pose)
     {
+        // Assembly bodies update their shared display mesh during solves. Bounds
+        // must transform the captured rest pose, not transform those vertices again.
+        var placed = mesh.SnapshotRigidPose(pose);
         var used = new HashSet<int>();
-        foreach (var triangle in mesh.Mesh.Triangles)
+        foreach (var triangle in placed.Triangles)
         {
             used.Add(triangle.A);
             used.Add(triangle.B);
@@ -422,11 +425,11 @@ public class NativeAssemblyLeaf
         if (used.Count == 0) return (pose.Position, pose.Position);
         using var iterator = used.GetEnumerator();
         iterator.MoveNext();
-        Vec3D min = TransformMath.TransformPoint(in pose, mesh.Mesh.Positions[iterator.Current]);
+        Vec3D min = placed.Positions[iterator.Current];
         Vec3D max = min;
         while (iterator.MoveNext())
         {
-            Vec3D point = TransformMath.TransformPoint(in pose, mesh.Mesh.Positions[iterator.Current]);
+            Vec3D point = placed.Positions[iterator.Current];
             min.X = Math.Min(min.X, point.X); min.Y = Math.Min(min.Y, point.Y); min.Z = Math.Min(min.Z, point.Z);
             max.X = Math.Max(max.X, point.X); max.Y = Math.Max(max.Y, point.Y); max.Z = Math.Max(max.Z, point.Z);
         }

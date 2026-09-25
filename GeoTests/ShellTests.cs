@@ -124,9 +124,11 @@ public sealed class ShellTests : IDisposable
 
         Assert.True(MeshAnalysis.IsWatertightMesh(round.Mesh.PrecisionPositions, round.Mesh.Triangles, true));
         Assert.Contains(round.extendedNameToGroupId.Keys, patch => patch.StartsWith("BlendEdge_"));
+        Assert.DoesNotContain(round.extendedNameToGroupId.Keys, patch =>
+            patch.StartsWith("BlendEdge_", StringComparison.Ordinal) && patch.Contains("block-ExtrudeTop", StringComparison.Ordinal));
         Assert.Contains("ShellRim_block-ExtrudeTop", round.extendedNameToGroupId.Keys);
         double volume = MeshAnalysis.ComputeSignedMeshVolume(round.Mesh.Positions, round.Mesh.Triangles);
-        Assert.InRange(volume, 374, 377);
+        Assert.InRange(volume, 383, 385);
         Assert.True(volume < MeshAnalysis.ComputeSignedMeshVolume(sharp.Mesh.Positions, sharp.Mesh.Triangles));
     }
 

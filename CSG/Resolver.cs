@@ -363,7 +363,7 @@ namespace CSG
         public static List<ResolverTriangle> Resolve(BooleanOp op, List<Rat3Hybrid> pointsA, List<Tri> trianglesA, List<Rat3Hybrid> pointsB, List<Tri> trianglesB,
             out List<Rat3Hybrid> resultPoints, out List<Tri> resultTriangles, out List<SourceTriangle> sourceTriangleIndex,
             List<int> map = null, List<List<IntersectionSegmentEx>> intersectionStrips = null,
-            Action<BooleanFragments> classifiedFragments = null)
+            Action<BooleanFragments> classifiedFragments = null, bool retainExteriorTrimCaps = false)
         {
             NewPointCreator newPoints = new NewPointCreator();
             int[] mapA = new int[pointsA.Count];
@@ -392,7 +392,7 @@ namespace CSG
             var mappedTrianglesB = GetMapped(mapB, trianglesB);
 
             var res = Resolve(op, newPoints, mappedTrianglesA, mappedTrianglesB, out resultPoints, out resultTriangles, 
-                out sourceTriangleIndex, intersectionStrips, classifiedFragments);
+                out sourceTriangleIndex, intersectionStrips, classifiedFragments, retainExteriorTrimCaps);
 
             return res;
         }
@@ -413,7 +413,8 @@ namespace CSG
 
         private static List<ResolverTriangle> Resolve(BooleanOp op, NewPointCreator newPoints, List<Tri> trianglesA, List<Tri> trianglesB,
             out List<Rat3Hybrid> resultPoints, out List<Tri> resultTrianglesOut, out List<SourceTriangle> sourceTriangleIndexOut,
-            List<List<IntersectionSegmentEx>> intersectionStrips = null, Action<BooleanFragments> classifiedFragments = null)
+            List<List<IntersectionSegmentEx>> intersectionStrips = null, Action<BooleanFragments> classifiedFragments = null,
+            bool retainExteriorTrimCaps = false)
         {
             Timing timing = new Timing();
 
@@ -942,15 +943,16 @@ namespace CSG
                             {
                                 var clusterB = clustersB[i];
                                 
-                                // Classify B against the closed source volume, including exact coincident faces.
+                                // Ordinary section caps lie inside A. Edge-blend replacement
+                                // patches can lie outside A, but are valid only when their
+                                // complete boundary is the intersection loop.
                                 var probe=resultTrianglesJoined[clusterB[0]];
                                 var location=PointInMesh.PointInsideMesh(newPoints.GetPoint(probe.A),
                                     newPoints.GetPoint(probe.B),newPoints.GetPoint(probe.C),
                                     new Int3Intersector(newPoints,trianglesA),treeA,boundingBoxA);
-                                // Coincident A faces own the boundary once. The A
-                                // normal determines whether its material side is kept.
-                                bool shouldKeepCluster = (location is InsideResult.Inside or InsideResult.Outside) &&
-                                    (location==InsideResult.Outside)==keepInNormalDirection;
+                                bool shouldKeepCluster = location == InsideResult.Inside ||
+                                    (retainExteriorTrimCaps && location == InsideResult.Outside &&
+                                     IsIntersectionBoundedCluster(clusterB, resultTrianglesJoined, insertedSegmentsB));
 
                                 if (!shouldKeepCluster)
                                 {
@@ -964,15 +966,12 @@ namespace CSG
                                 }
                                 else
                                 {
-                                    // Keep this cluster, but check if we need to flip triangle orientation
-                                    // If we're keeping the part in B-normal direction, flip the B triangles
-                                    if (keepInNormalDirection)
+                                    // The cap points out of the retained volume. Keeping
+                                    // the B-normal side reverses the source sheet winding.
+                                    if (keepInNormalDirection && location == InsideResult.Inside)
                                     {
                                         foreach (int triIndex in clusterB)
-                                        {
-                                            //resultTrianglesJoined[triIndex] = FlipOrientation(resultTrianglesJoined[triIndex]);
-                                            resultTrianglesJoined[triIndex] = resultTrianglesJoined[triIndex];
-                                        }
+                                            resultTrianglesJoined[triIndex] = FlipOrientation(resultTrianglesJoined[triIndex]);
                                     }
                                 }
                             }
@@ -1004,6 +1003,35 @@ namespace CSG
 
             LastResolveStats = pairStats;
             return resolverTris;
+        }
+
+        private static bool IsIntersectionBoundedCluster(List<int> cluster, List<Tri> triangles,
+            Dictionary<long, int> intersectionSegments)
+        {
+            var edgeIncidence = new Dictionary<long, int>();
+            foreach (int index in cluster)
+            {
+                var triangle = triangles[index];
+                Add(triangle.A, triangle.B);
+                Add(triangle.B, triangle.C);
+                Add(triangle.C, triangle.A);
+            }
+
+            bool hasBoundary = false;
+            foreach (var edge in edgeIncidence)
+            {
+                if (edge.Value != 1) continue;
+                hasBoundary = true;
+                if (!intersectionSegments.ContainsKey(edge.Key)) return false;
+            }
+            return hasBoundary;
+
+            void Add(int first, int second)
+            {
+                long key = Algorithms.Key(first, second);
+                edgeIncidence.TryGetValue(key, out int count);
+                edgeIncidence[key] = count + 1;
+            }
         }
 
         private static int ShellOrientation(List<int> cluster,List<Tri> triangles,NewPointCreator points)

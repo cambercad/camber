@@ -17,8 +17,6 @@
             if (operatingSpaceSlices < 2)
                 throw new ArgumentOutOfRangeException(nameof(operatingSpaceSlices), "operatingSpaceSlices must be at least 2.");
 
-            int max = operatingSpaceSlices - 1;
-            integerBoundingBox = new Box3I(new Int3(0, 0, 0), new Int3(max, max, max));
             this.operatingSpace = operatingSpace;
 
             Vec3D boxSize = new Vec3D(
@@ -27,10 +25,34 @@
                 operatingSpace.Max.Z - operatingSpace.Min.Z
             );
             offset = operatingSpace.Min; // 0.5*(operatingSpace.Min + operatingSpace.Max);
-            double s = Math.Max(boxSize.X, Math.Max(boxSize.Y, boxSize.Z));
-            toIntegerScaling = (integerBoundingBox.Max.X - integerBoundingBox.Min.X) * (1.0 / s);
+            double longestAxisSize = Math.Max(boxSize.X, Math.Max(boxSize.Y, boxSize.Z));
+            int longestAxisDivisions = operatingSpaceSlices - 1;
+            toIntegerScaling = longestAxisDivisions / longestAxisSize;
+
+            // Use the same uniform scale on every axis. The integer bounds describe
+            // the operating box in that isotropic lattice; shorter axes therefore
+            // have proportionally fewer divisions instead of being stretched to a cube.
+            integerBoundingBox = new Box3I(
+                new Int3(0, 0, 0),
+                new Int3(
+                    GetIntegerExtent(boxSize.X, longestAxisSize, longestAxisDivisions),
+                    GetIntegerExtent(boxSize.Y, longestAxisSize, longestAxisDivisions),
+                    GetIntegerExtent(boxSize.Z, longestAxisSize, longestAxisDivisions)));
 
             toOriginalScaling = 1.0 / toIntegerScaling;
+        }
+
+        private static int GetIntegerExtent(double axisSize, double longestAxisSize, int longestAxisDivisions)
+        {
+            if (axisSize == longestAxisSize)
+                return longestAxisDivisions;
+
+            // Round bounds outward: this is a conservative integer AABB even if the
+            // operating-space endpoint falls between lattice coordinates. A minimum
+            // extent of one preserves the non-degenerate-box invariant at resolutions
+            // too coarse to represent a very thin axis.
+            double extent = Math.Ceiling(axisSize / longestAxisSize * longestAxisDivisions);
+            return Math.Min(longestAxisDivisions, Math.Max(1, checked((int)extent)));
         }
 
         public double SmallestUnit()

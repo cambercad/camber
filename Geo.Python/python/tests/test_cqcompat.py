@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from camber.cqcompat import (
     Workplane,
+    Sketch,
     named_plane,
     _parse_selector as parse_selector,
     _radius_arc_mid as radius_arc_mid,
@@ -35,6 +36,20 @@ def _edge(name, center, direction, kind="line"):
 
 
 class PlaneAndSelectorTests(unittest.TestCase):
+    def test_ranked_compound_selector_groups_within_mesh_tolerance(self):
+        faces = [
+            {"name": "east", "center": (6, 0, 0), "normal": (1, 0, 0),
+             "kind": "plane", "rank_tolerance": .01},
+            {"name": "blend", "center": (5.27, 0, 0), "normal": (1, 0, 0),
+             "kind": "curved", "rank_tolerance": .01},
+            {"name": "sphere", "center": (-.001, 0, 0), "normal": (0, 0, 1),
+             "kind": "curved", "rank_tolerance": .01},
+            {"name": "top", "center": (0, 0, 0), "normal": (0, 0, 1),
+             "kind": "plane", "rank_tolerance": .01},
+        ]
+        selected = select_faces(faces, ">>X[2] and (not |Z) and (not |Y)")
+        self.assertEqual(["sphere"], [face["name"] for face in selected])
+
     def test_named_xy_matches_world_axes(self):
         frame = named_plane("XY")
         self.assertEqual(vec3(frame.x), vec3(1, 0, 0))
@@ -166,6 +181,12 @@ class PendingGeometryTests(unittest.TestCase):
         self.assertEqual(1, len(wp._pending))
         self.assertGreaterEqual(len(wp._pending[0].segments), 3)
 
+    def test_move_and_move_to_place_following_primitives(self):
+        moved = Workplane("XY").move(2, 3).circle(1)
+        moved_to = Workplane("XY").moveTo(-4, 5).circle(1)
+        self.assertEqual([(2, 3)], moved._locations)
+        self.assertEqual([(-4, 5)], moved_to._locations)
+
     def test_rarray_centered_grid(self):
         locs = Workplane("XY").rarray(2, 4, 2, 2)._locations
         self.assertEqual(
@@ -201,6 +222,11 @@ class PendingGeometryTests(unittest.TestCase):
         self.assertEqual(1, len(wp._sections))
         self.assertAlmostEqual(wp._frame.origin.z, 5.0)
         self.assertEqual(1, len(wp._wires()))
+
+    def test_workplane_uses_shifted_center_as_new_origin(self):
+        wp = Workplane("XY", origin=(20, 0, 0)).center(-20, 0).workplane().rect(20, 4)
+        self.assertEqual(vec3(0, 0, 0), vec3(wp._frame.origin))
+        self.assertEqual((-10.0, -2.0), wp._wires()[0].segments[0][1])
 
     def test_selected_face_becomes_active_plane(self):
         wp = Workplane("XY")._spawn(_selected_faces=[{
@@ -304,6 +330,199 @@ class EachPointTests(unittest.TestCase):
 
 @unittest.skipUnless(_NATIVE_AVAILABLE, "requires the installed camber native module")
 class NativeWorkplaneTests(unittest.TestCase):
+    def test_tapered_extrude_uses_degree_angle_and_stays_watertight(self):
+        result = Workplane("XY", tolerance=.005).rect(4, 2).extrude(1, taper=5)
+
+        solid = result.val()
+        self.assertTrue(solid.is_watertight())
+        points, _ = solid.mesh()
+        top = [point for point in points if point.z > .99]
+        offset = math.tan(math.radians(5))
+        self.assertAlmostEqual(-2 + offset, min(point.x for point in top), places=2)
+        self.assertAlmostEqual(2 - offset, max(point.x for point in top), places=2)
+
+    def test_rectangles_at_multiple_locations_have_unique_patch_names(self):
+        result = (Workplane("XY", size=12, tolerance=0.03)
+                  .pushPoints([(-2, -2), (2, -2), (-2, 2), (2, 2)])
+                  .rect(1, 1).extrude(0.5))
+        self.assertTrue(result.val().is_watertight())
+        self.assertGreater(result.val().volume(), 0)
+
+    def test_sketch_regular_polygon_extrudes_as_a_closed_profile(self):
+        sketch = Workplane("XY", size=10, tolerance=0.02).sketch()
+        result = sketch.regularPolygon(2, 3, angle=90).finalize().extrude(1)
+        self.assertTrue(result.val().is_watertight())
+        self.assertGreater(result.val().volume(), 0.0)
+
+    def test_sketch_trapezoid_has_expected_area_when_extruded(self):
+        result = (Workplane("XY", size=10, tolerance=0.02).sketch()
+                  .trapezoid(4, 3, 90).finalize().extrude(1))
+        self.assertTrue(result.val().is_watertight())
+        self.assertAlmostEqual(result.val().volume(), 12.0, delta=0.02)
+
+    def test_cadquery_sketch_face_api_modes_selectors_and_fillet(self):
+        sketch = (Sketch()
+                  .trapezoid(4, 3, 90)
+                  .vertices().circle(0.5, mode="s")
+                  .reset().vertices().fillet(0.25)
+                  .reset().rarray(0.6, 1, 5, 1)
+                  .slot(1.5, 0.4, mode="s", angle=90))
+        result = sketch.finalize().extrude(0.15)
+        self.assertTrue(result.val().is_watertight())
+        self.assertGreater(result.val().volume(), 0.1)
+
+    def test_cadquery_sketch_tags_edges_intersections_and_chamfer(self):
+        sketch = (Sketch().rect(1, 2, mode="c", tag="base")
+                  .vertices(tag="base").circle(0.7)
+                  .reset().edges("|Y", tag="base")
+                  .ellipse(1.2, 1, mode="i")
+                  .reset().rect(2, 2, mode="i").clean())
+        result = sketch.finalize().extrude(0.15)
+        self.assertTrue(result.val().is_watertight())
+        self.assertGreater(result.val().volume(), 0)
+
+        edge_sketch = (Sketch().segment((0, 0), (0, 2)).segment((2, 0))
+                       .close().arc((0.6, 0.6), 0.4, 0, 360)
+                       .assemble(tag="face").edges("%LINE", tag="face")
+                       .vertices().chamfer(0.2))
+        edge_result = edge_sketch.finalize().extrude(0.15)
+        self.assertTrue(edge_result.val().is_watertight())
+
+    def test_sketch_constraint_line_arc_angle_solves_and_extrudes(self):
+        sketch = (Sketch().segment((0, 0), (0, 3), "s1")
+                  .arc((0, 3), (1.5, 1.5), (0, 0), "a1")
+                  .constrain("s1", "Fixed", None)
+                  .constrain("s1", "a1", "Coincident", None)
+                  .constrain("a1", "s1", "Coincident", None)
+                  .constrain("s1", "a1", "Angle", 45)
+                  .solve().assemble())
+        result = sketch.finalize().extrude(0.15)
+        self.assertTrue(result.val().is_watertight())
+        self.assertGreater(result.val().volume(), 0.1)
+
+    def test_cadquery_sketch_boolean_operators_offsets_and_moved_loft(self):
+        base = Sketch().rect(2, 2).vertices().fillet(0.25).reset()
+        cutter = Sketch().rect(1, 1, angle=45).vertices().chamfer(0.1).reset()
+        boolean_result = (base - cutter).finalize().extrude(0.5)
+        self.assertTrue(boolean_result.val().is_watertight())
+
+        source = Sketch().rect(1, 4).circle(1).clean()
+        outward = source.copy().wires().offset(0.25)
+        offset_result = Workplane("front").placeSketch(outward).extrude(1)
+        self.assertTrue(offset_result.val().is_watertight())
+        pocket = (offset_result.faces(">Z").workplane().placeSketch(source)
+                  .cutBlind(-0.5))
+        self.assertTrue(pocket.val().is_watertight())
+        inward = source.copy().wires().offset(-0.25, mode="r")
+        replacement_body = Workplane("front").placeSketch(source).extrude(1)
+        replacement_cut = (replacement_body.faces(">Z").workplane()
+                           .placeSketch(inward).cutBlind(-0.5))
+        self.assertTrue(replacement_cut.val().is_watertight())
+
+        first = Sketch().trapezoid(3, 1, 110).vertices().fillet(0.2)
+        second = Sketch().rect(2, 1).vertices().fillet(0.2)
+        loft = Workplane().placeSketch(first, second.moved(z=3)).loft()
+        self.assertTrue(loft.val().is_watertight())
+
+        distributed = Sketch().circle(0.4).wires().distribute(6).circle(0.1)
+        self.assertEqual(len(distributed._parent._locations), 6)
+        for x, y in distributed._parent._locations:
+            self.assertAlmostEqual(math.hypot(x, y), 0.4, delta=1e-9)
+
+    def test_sketch_hull_contains_circle_and_segment_inputs(self):
+        result = (Workplane("XY", size=10, tolerance=0.03).sketch()
+                  .arc((0, 0), 1.0, 0, 360)
+                  .arc((1, 1.5), 0.5, 0, 360)
+                  .segment((0, 2), (-1, 3)).hull()
+                  .finalize().extrude(0.5))
+        self.assertTrue(result.val().is_watertight())
+        self.assertGreater(result.val().volume(), 3.5)
+
+    def test_cut_blind_to_curved_face_is_watertight(self):
+        block = Workplane("XY", size=12, tolerance=.02).box(6, 6, 10)
+        sphere = block.part.sphere((0, 0, 0), 2, name="target_sphere")
+        surface = block.part.face_surface(sphere, sphere.patch_names[0])
+
+        cut = block.faces(">Z").workplane().circle(.5).cutBlind(surface)
+
+        self.assertTrue(cut.val().is_watertight())
+        self.assertLess(cut.val().volume(), block.val().volume() - 1)
+
+    def test_tapered_cut_blind_uses_drafted_closed_profile_cutters(self):
+        block = Workplane("XY", size=8, tolerance=.01).box(6, 6, 2)
+        profiles = block.faces(">Z").workplane().pushPoints([(-1, 0), (1, 0)]).circle(.1)
+        straight = profiles.cutBlind(-.5)
+        tapered = profiles.cutBlind(-.5, taper=10)
+
+        self.assertTrue(tapered.val().is_watertight())
+        self.assertLess(tapered.val().volume(), block.val().volume())
+        self.assertNotAlmostEqual(tapered.val().volume(), straight.val().volume(), delta=1e-4)
+
+    def test_tapered_cut_blind_supports_both_sides(self):
+        block = Workplane("XY", size=8, tolerance=.02).box(6, 6, 2)
+        cut = block.workplane().circle(.4).cutBlind(-.35, both=True, taper=5)
+        self.assertTrue(cut.val().is_watertight())
+        self.assertLess(cut.val().volume(), block.val().volume())
+
+    def test_four_point_counterbores_and_countersinks_remove_material(self):
+        base = (Workplane("XY").box(4, 2, 0.5).faces(">Z").workplane()
+                .rect(3.5, 1.5, forConstruction=True).vertices())
+        bored = base.cboreHole(0.125, 0.25, 0.125)
+        sunk = base.cskHole(0.125, 0.25, 90)
+        self.assertTrue(bored.val().is_watertight())
+        self.assertTrue(sunk.val().is_watertight())
+        self.assertLess(bored.val().volume(), 3.97)
+        self.assertLess(sunk.val().volume(), 3.976)
+
+    def test_connector_panel_cut_profiles_remain_watertight(self):
+        panel = Workplane("front", size=100, tolerance=0.01).box(120, 100, 2)
+        original_volume = panel.val().volume()
+
+        def d_sub(x, pin_half_span, side_x, taper_x):
+            nonlocal panel
+            for dx in (-pin_half_span, pin_half_span):
+                panel = (panel.workplane(offset=1, centerOption="CenterOfBoundBox")
+                         .center(x + dx, 0).circle(1.6).cutThruAll())
+            panel = (
+                panel.workplane(offset=1, centerOption="CenterOfBoundBox").center(x, 0)
+                .moveTo(-side_x + 3.4, -5.7)
+                .threePointArc((-side_x + 0.995836, -4.70416), (-side_x, -2.3))
+                .lineTo(-taper_x, 2.3)
+                .threePointArc((-taper_x + 0.99584, 4.70416), (-taper_x + 3.4, 5.7))
+                .lineTo(taper_x - 3.4, 5.7)
+                .threePointArc((taper_x - 0.99584, 4.70416), (taper_x, 2.3))
+                .lineTo(side_x, -2.3)
+                .threePointArc((side_x - 0.995836, -4.70416), (side_x - 3.4, -5.7))
+                .close().cutThruAll()
+            )
+
+        # Full-size D-sub, narrow D-sub, and DB9 profiles all use the same
+        # tapered, multi-arc construction with different dimensions.
+        d_sub(-30, 23.5, 20.438896, 21.25)
+        d_sub(0, 16.65, 13.5889, 14.4)
+        d_sub(30, 12.5, 9.438896, 10.25)
+
+        # Circular four-pin opening and its four square-pattern mounting holes.
+        panel = (panel.workplane(offset=1, centerOption="CenterOfBoundBox")
+                 .center(-40, 30).circle(14).cutThruAll())
+        for dx in (-12.37435, 12.37435):
+            for dy in (-12.37435, 12.37435):
+                panel = (panel.workplane(offset=1, centerOption="CenterOfBoundBox")
+                         .center(-40 + dx, 30 + dy).circle(1.6).cutThruAll())
+
+        # The final connector style is a two-arc rounded slot.
+        panel = (
+            panel.workplane(offset=1, centerOption="CenterOfBoundBox").center(40, 30)
+            .moveTo(-2.9176, -5.3)
+            .threePointArc((-6.05, 0), (-2.9176, 5.3))
+            .lineTo(2.9176, 5.3)
+            .threePointArc((6.05, 0), (2.9176, -5.3))
+            .close().cutThruAll()
+        )
+
+        self.assertTrue(panel.val().is_watertight())
+        self.assertLess(panel.val().volume(), original_volume)
+
     def test_ellipse_sketch_extrudes_with_expected_dimensions_and_volume(self):
         solid = Workplane("XY", size=20, tolerance=0.01).ellipse(3, 2, 90).extrude(4).val()
         points, _ = solid.mesh()
@@ -337,6 +556,8 @@ class NativeWorkplaneTests(unittest.TestCase):
         self.assertTrue(shell.is_watertight())
         self.assertGreater(shell.volume(), 0)
         self.assertTrue(any("BlendCorner_" in name for name in shell.patch_names))
+        opening = next(name.split("ShellRim_", 1)[1] for name in shell.patch_names if "ShellRim_" in name)
+        self.assertFalse(any("BlendEdge_" in name and opening in name for name in shell.patch_names))
 
     def test_round_shell_on_concave_union(self):
         arm = Workplane("XY", size=20, tolerance=0.02).box(6, 2, 3)
@@ -355,8 +576,8 @@ class NativeWorkplaneTests(unittest.TestCase):
 
     def test_outward_shell_bridge(self):
         block = Workplane("XY", size=20, tolerance=0.01).box(2, 2, 2)
-        closed = block.shell(0.1)
-        opened = block.faces(">Z").shell(0.1)
+        closed = block.shell(0.1, kind="intersection")
+        opened = block.faces(">Z").shell(0.1, kind="intersection")
         self.assertTrue(closed.val().is_watertight())
         self.assertTrue(opened.val().is_watertight())
         self.assertAlmostEqual(closed.val().volume(), 2.2**3 - 8, delta=0.01)
@@ -367,10 +588,12 @@ class NativeWorkplaneTests(unittest.TestCase):
 
     def test_round_outward_shell_bridge(self):
         block = Workplane("XY", size=20, tolerance=0.01).box(2, 2, 2)
-        sharp = block.faces(">Z").shell(0.1)
+        sharp = block.faces(">Z").shell(0.1, kind="intersection")
         rounded = block.faces(">Z").shell(0.1, kind="arc")
+        default = block.faces(">Z").shell(0.1)
         self.assertTrue(rounded.val().is_watertight())
         self.assertLess(rounded.val().volume(), sharp.val().volume())
+        self.assertAlmostEqual(default.val().volume(), rounded.val().volume(), delta=1e-6)
         self.assertTrue(any("BlendEdge_" in name for name in rounded.val().patch_names))
         self.assertTrue(any("ShellRim_" in name for name in rounded.val().patch_names))
 
@@ -487,6 +710,19 @@ class NativeWorkplaneTests(unittest.TestCase):
         self.assertTrue(blended.val().is_volume)
         self.assertGreater(blended.val().triangle_count, n0)
 
+    def test_circle_extrusion_fillet_keeps_each_rim_provenance(self):
+        cylinders = (Workplane("XY", size=20, tolerance=0.05)
+                     .pushPoints([(0, 0), (3, 0)]).circle(1).extrude(1))
+        rims = cylinders.faces(">Z").edges()
+        name = cylinders.val().name
+        self.assertEqual(
+            ["[{0}-Circle1,{0}-ExtrudeTop]".format(name),
+             "[{0}-Circle2,{0}-ExtrudeTop]".format(name)],
+            [edge["name"] for edge in rims._selected_edges],
+        )
+        rounded = rims.fillet(0.2)
+        self.assertTrue(rounded.val().is_watertight())
+
     def test_revolve_disk_is_volume(self):
         # Profile in XY; default revolve is around workplane Y.
         result = (
@@ -545,15 +781,65 @@ class NativeWorkplaneTests(unittest.TestCase):
         import runpy
         path = os.path.join(os.path.dirname(__file__), "..", "examples",
                             "cadquery_gallery", "25_multi_section_loft_until.py")
-        result = runpy.run_path(path)["result"]
+        gallery = runpy.run_path(path)
+        result = gallery["build"]()
         solids = result.vals()
         self.assertEqual(4, len(solids))
         self.assertTrue(all(solid.is_watertight() for solid in solids))
         self.assertTrue(all(solid.curve_names and solid.point_names for solid in solids))
-        loft_sides = [name for name in solids[0].patch_names if "-Side-Line" in name]
+        loft_sides = [name for name in solids[0].patch_names if "-Side-" in name]
         self.assertEqual(4, len(loft_sides))
         volumes = sorted(solid.volume() for solid in solids)
         self.assertLess(volumes[1], volumes[2])
+
+    def test_gallery_35_parametric_enclosure_has_posts_and_separate_cover(self):
+        import runpy
+        path = os.path.join(os.path.dirname(__file__), "..", "examples",
+                            "cadquery_gallery", "35_parametric_enclosure.py")
+        gallery = runpy.run_path(path)
+
+        components = gallery["build_components"]()
+        body = components["bottom"].val()
+        lid = components["topOfLid"].val()
+        shell_body = components["shellBody"].val()
+        enclosure_with_posts = components["box"].val()
+        cover_before_holes = components["cutlip"].val()
+        assembly = gallery["build"]().val()
+        self.assertTrue(body.is_watertight())
+        self.assertTrue(lid.is_watertight())
+        self.assertTrue(assembly.is_watertight())
+        self.assertGreater(enclosure_with_posts.volume(), shell_body.volume())  # Screw posts.
+        self.assertLess(lid.volume(), cover_before_holes.volume())  # Counterbores/clearance.
+
+        body_points, _ = body.mesh()
+        lid_points, _ = lid.mesh()
+        self.assertLessEqual(min(point.x for point in body_points), -49.9)
+        self.assertGreaterEqual(max(point.x for point in body_points), 49.9)
+        self.assertGreater(min(point.x for point in lid_points),
+                           max(point.x for point in body_points))
+        self.assertGreater(lid.volume(), 0)
+
+    def test_gallery_36_lego_brick_has_studs_and_parametric_underside_supports(self):
+        import runpy
+        path = os.path.join(os.path.dirname(__file__), "..", "examples",
+                            "cadquery_gallery", "36_lego_brick.py")
+        gallery = runpy.run_path(path)
+
+        brick = gallery["make_brick"](6, 2)
+        names = brick.val().patch_names
+        self.assertTrue(brick.val().is_watertight())
+        self.assertEqual(22, sum("-Circle" in name for name in names))
+        # Twelve studs plus five hollow posts with inner and outer boundaries.
+
+        single_row = gallery["make_brick"](6, 1)
+        row_names = single_row.val().patch_names
+        self.assertTrue(single_row.val().is_watertight())
+        # A one-row brick uses five solid ribs, not hollow annular posts.
+        self.assertEqual(11, sum("-Circle" in name for name in row_names))
+
+        one_by_one = gallery["make_brick"](1, 1)
+        self.assertTrue(one_by_one.val().is_watertight())
+        self.assertEqual(1, sum("-Circle" in name for name in one_by_one.val().patch_names))
 
     def test_loft_starts_from_selected_face_profile(self):
         result = (Workplane("XY", size=20, tolerance=0.05).box(4, 4, 0.25)

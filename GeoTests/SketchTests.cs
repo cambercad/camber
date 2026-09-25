@@ -622,6 +622,28 @@ public class SketchTests : IDisposable
         AssertNear(targetDeg, angleDeg, "AngleDegrees");
     }
 
+    [Fact]
+    public void Constraint_AngleBetweenLineAndArc_UsesNearestArcEndpointTangent()
+    {
+        var s = MakeSketch();
+        var line = s.AddCLine(new Vec2D(0, 0), new Vec2D(0, 3));
+        var arc = s.AddCArc(new Vec2D(0, 3), new Vec2D(1.5, 1.5), new Vec2D(0, 0));
+        line.Freeze();
+        s.SetCoincident(line.CEnd, arc.CStart);
+        s.SetCoincident(line.CStart, arc.CEnd);
+        const double targetDegrees = 45;
+        s.SetAngleDegrees(line, arc, targetDegrees);
+
+        AssertSolved(s.SolveConstraints());
+
+        Vec2D direction = line.CEnd.Evaluate() - line.CStart.Evaluate();
+        Vec2D tangent = new Vec2D(-arc.CStartDir.Ey.Evaluate(), arc.CStartDir.Ex.Evaluate());
+        double cosine = Math.Abs(Dot2(direction, tangent) / (direction.Length() * tangent.Length()));
+        AssertNear(targetDegrees, Math.Acos(Math.Clamp(cosine, -1, 1)) * 180.0 / Math.PI,
+            "Line/arc tangent angle");
+        AssertNear(0, (line.CEnd.Evaluate() - arc.CStart.Evaluate()).Length(), "Line/arc endpoint");
+    }
+
     // ════════════════════════════════════════════════════════════════════════
     // Colinear
     // ════════════════════════════════════════════════════════════════════════
