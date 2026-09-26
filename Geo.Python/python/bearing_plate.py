@@ -19,22 +19,22 @@ part = Part(vec3(-300), vec3(300), tolerance=0.01)
 def build_holed_plate(profile_name, hole_sketch_name, solid_name, cutter_name, result_name):
     profile_sk = part.sketch("xy", name=profile_name)
     profile_sk.add_rectangle((0, 0), (plate_w, plate_h))
-    solid = part.extrude_two_sides(
-        profile_sk, plate_thickness * 0.5, plate_thickness * 0.5, name=solid_name)
+    solid = profile_sk.extrude_two_sides(
+        plate_thickness * 0.5, plate_thickness * 0.5, name=solid_name)
 
     holes_sk = part.sketch("xy", name=hole_sketch_name)
     hole_y = plate_h * 0.5
     holes_sk.add_circle((hole_inset, hole_y), hole_radius, name="Circle1")
     holes_sk.add_circle((plate_w - hole_inset, hole_y), hole_radius, name="Circle2")
-    cutter = part.extrude_two_sides(
-        holes_sk, plate_thickness * 0.5, plate_thickness * 0.5, name=cutter_name)
+    cutter = holes_sk.extrude_two_sides(
+        plate_thickness * 0.5, plate_thickness * 0.5, name=cutter_name)
     return part.subtract(solid, cutter, name=result_name)
 
 
 def build_square_post(prefix, size, height, result_name):
     sk = part.sketch("xy", name=prefix + "_profile")
     sk.add_rectangle((0, 0), (size, size))
-    return part.extrude(sk, height, name=result_name)
+    return sk.extrude(height, name=result_name)
 
 
 plate_a = build_holed_plate(

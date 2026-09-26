@@ -33,18 +33,18 @@ def build_showcase():
     # Exact cylinder/plane adapters. Round the cavity-side rim after shelling to
     # demonstrate that shell rims are ordinary selectable feature edges.
     cup = part.cylinder((-18, 0, 0), 6.5, 13, name="cup", max_deviation=.02)
-    cup = part.shell(cup, .8, faces="cup-ExtrudeTop", name="cup_shell")
+    cup = cup.shell(.8, faces="cup-ExtrudeTop", name="cup_shell")
     inner_rims = [name for name in cup.curve_names
                   if "ShellRim_" in name and "ShellInner_" in name]
     if not inner_rims:
         raise RuntimeError("The cup shell did not publish a cavity-side rim edge")
-    cup = part.fillet(cup, inner_rims[0], .35, name="cup_finished", max_deviation=.02)
+    cup = cup.fillet(inner_rims[0], .35, name="cup_finished", max_deviation=.02)
 
     # Exact spherical/plane junction after a CSG intersection.
     sphere = part.sphere((0, 0, 6), 7, name="bowl_sphere", max_deviation=.02)
     upper = part.cuboid((-8, -8, 6), (8, 8, 16), name="bowl_clip")
     hemisphere = part.intersect(sphere, upper, name="hemisphere")
-    bowl = part.shell(hemisphere, .65, faces="bowl_clip-ExtrudeBottom", name="sphere_bowl")
+    bowl = hemisphere.shell(.65, faces="bowl_clip-ExtrudeBottom", name="sphere_bowl")
 
     # Four rotated sections form NURBS/mesh-backed sides. The shell fallback
     # offsets their existing triangulation and miters all shared support tangents.
@@ -59,7 +59,7 @@ def build_showcase():
                 for i, (z, width, depth, angle) in enumerate(stations)]
     vessel = part.loft(sections, first_curves=["south"] * len(sections),
                        name="twisted_vessel", max_deviation=.025)
-    vessel = part.shell(vessel, .15, faces="twisted_vessel-EndCap",
+    vessel = vessel.shell(.15, faces="twisted_vessel-EndCap",
                         name="twisted_vessel_shell", max_deviation=.025)
 
     # One sketched L profile gives the shell both convex corners and a concave
@@ -70,8 +70,8 @@ def build_showcase():
     for i, start in enumerate(l_points):
         l_sketch.add_line(start, l_points[(i + 1) % len(l_points)],
                           name="l_edge_{0}".format(i + 1))
-    l_prism = part.extrude(l_sketch, 10, name="l_prism")
-    l_shell = part.shell(l_prism, .6, faces="l_prism-ExtrudeTop",
+    l_prism = l_sketch.extrude(10, name="l_prism")
+    l_shell = l_prism.shell(.6, faces="l_prism-ExtrudeTop",
                          name="l_shaped_shell")
 
     for label, solid in (("filleted analytic cup", cup),

@@ -36,21 +36,21 @@ class CurrentEdgeReferenceTests(unittest.TestCase):
         )
         self.assertIn("#current=", edge)
         self.assertIn(edge, body.curve_names)
-        for operation in (part.fillet, part.chamfer):
+        for operation in (body.fillet, body.chamfer):
             with self.subTest(feature=operation.__name__):
                 result = operation(
-                    body, [edge], 0.1, name=operation.__name__ + "_result"
+                    [edge], 0.1, name=operation.__name__ + "_result"
                 )
                 self.assertTrue(result.is_watertight())
                 self.assertGreater(body.volume() - result.volume(), 0.001)
                 self.assertLess(body.volume() - result.volume(), 0.1)
         copy = part.copy_solid(body, name="copied")
         with self.assertRaisesRegex(Exception, "another or rebuilt solid"):
-            part.fillet(copy, [edge], 0.1)
+            copy.fillet([edge], 0.1)
         with self.assertRaisesRegex(Exception, "selects 2 connected edges"):
-            part.fillet(body, ["[hub-Circle1,crossing-Circle1]"], 0.1)
+            body.fillet(["[hub-Circle1,crossing-Circle1]"], 0.1)
         with self.assertRaisesRegex(Exception, "Indexed support-pair"):
-            part.fillet(body, ["[hub-Circle1,crossing-Circle1]_1"], 0.1)
+            body.fillet(["[hub-Circle1,crossing-Circle1]_1"], 0.1)
 
 
 if __name__ == "__main__":

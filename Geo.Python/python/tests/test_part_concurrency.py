@@ -22,7 +22,7 @@ class PartConcurrencyTests(unittest.TestCase):
         owner = Part((-10, -10, -10), (20, 20, 20), tolerance=.01)
         sketch = owner.sketch()
         sketch.add_rectangle((0, 0), (12, 4))
-        blank = owner.extrude(sketch, 2, name='blank')
+        blank = sketch.extrude(2, name='blank')
         tool = owner.cuboid((4+index*.1, -1, -1), (5+index*.1, 5, 3), name='slot')
         body = owner.subtract(blank, tool, name='finished')
         # Materialize on the owning worker; no mutable body is shared by workers.

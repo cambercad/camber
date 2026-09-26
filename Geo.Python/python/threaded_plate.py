@@ -36,7 +36,7 @@ def create_metric_threaded_plate(
 
     plate_sk = part.sketch(frame=Frame(vec3(0, 0, 0)), name=name + "_profile")
     plate_sk.add_rectangle((-0.5 * w, -0.5 * h), (0.5 * w, 0.5 * h))
-    plate = part.extrude(plate_sk, t, name=name + "_blank", max_deviation=max_deviation)
+    plate = plate_sk.extrude(t, name=name + "_blank", max_deviation=max_deviation)
 
     hole = part.cylinder(
         Frame(vec3(0, 0, -part_overlap)),

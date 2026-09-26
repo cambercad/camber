@@ -44,7 +44,7 @@ class HermiteCurveTests(unittest.TestCase):
                 frame = Frame(points[0], x=(1, 0, 0), y=(0, tangent.z, -tangent.y), z=tangent)
                 profile = part.sketch(frame=frame)
                 profile.add_rectangle((.25, -.2), (1.25, .4))
-                solid = part.extrude_along_curve(profile, curve, reference_direction=reference)
+                solid = profile.extrude_along_curve(curve, reference_direction=reference)
                 self.assertTrue(solid.is_watertight())
                 self.assertGreater(solid.volume(), 70)
                 self.assertLess(solid.volume(), 85)

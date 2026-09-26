@@ -441,7 +441,7 @@ class NativeWorkplaneTests(unittest.TestCase):
     def test_cut_blind_to_curved_face_is_watertight(self):
         block = Workplane("XY", size=12, tolerance=.02).box(6, 6, 10)
         sphere = block.part.sphere((0, 0, 0), 2, name="target_sphere")
-        surface = block.part.face_surface(sphere, sphere.patch_names[0])
+        surface = sphere.face_surface(sphere.patch_names[0])
 
         cut = block.faces(">Z").workplane().circle(.5).cutBlind(surface)
 
@@ -583,7 +583,7 @@ class NativeWorkplaneTests(unittest.TestCase):
         self.assertAlmostEqual(closed.val().volume(), 2.2**3 - 8, delta=0.01)
         self.assertAlmostEqual(opened.val().volume(), 2.2**3 - 2*2*2.1, delta=0.01)
         self.assertTrue(any("ShellRim_" in name for name in opened.val().patch_names))
-        self.assertAlmostEqual(block.part.shell(block.val(), 0.1, outward=True).volume(),
+        self.assertAlmostEqual(block.val().shell(0.1, outward=True).volume(),
                                closed.val().volume(), delta=1e-6)
 
     def test_round_outward_shell_bridge(self):
@@ -599,8 +599,8 @@ class NativeWorkplaneTests(unittest.TestCase):
 
     def test_part_shell_optional_faces(self):
         block = Workplane("XY", size=20, tolerance=0.01).box(2, 2, 2)
-        closed = block.part.shell(block.val(), 0.1)
-        explicit_empty = block.part.shell(block.val(), 0.1, faces=[])
+        closed = block.val().shell(0.1)
+        explicit_empty = block.val().shell(0.1, faces=[])
         self.assertAlmostEqual(closed.volume(), explicit_empty.volume(), delta=1e-6)
 
     def test_closed_spherical_shell(self):

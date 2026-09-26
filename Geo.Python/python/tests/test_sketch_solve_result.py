@@ -51,6 +51,6 @@ class SketchSolveResultTests(unittest.TestCase):
         sketch.fix(left @ 0).fix(right @ 1)
         sketch.tangent_circles(crown, left).tangent_circles(crown, right)
         sketch.solve()
-        solid = part.extrude(sketch, 1)
+        solid = sketch.extrude(1)
         self.assertTrue(solid.is_watertight())
         self.assertGreater(solid.volume(), 400)

@@ -35,11 +35,11 @@ half_w = 4.0
 half_h = 8.0
 sk.add_rectangle((-half_w, -half_h), (half_w, half_h), names=("south", "east", "north", "west"))
 
-projected = part.project_sketch(sk, host, name="on_cyl")
+projected = sk.project_onto(host, name="on_cyl")
 print(projected)
 
 # Negative height follows normals into the solid (pocket).
-cutter = part.extrude_projected(projected, height=-2.5, name="cutter")
+cutter = projected.extrude(height=-2.5, name="cutter")
 body = host - cutter
 
 print(body)

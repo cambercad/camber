@@ -3,18 +3,26 @@ import unittest
 
 import camber
 
-from camber import Part, PartOperation, set_progress_log
+from camber import Part, PartOperation, Sketch, Solid, set_progress_log
 from camber.view import _load_operations, _operation_row_text
 
 
 class PartOperationTests(unittest.TestCase):
+    def test_operations_live_on_their_inputs_and_carry_doc_groups(self):
+        self.assertFalse(hasattr(Part, "extrude"))
+        self.assertFalse(hasattr(Part, "shell"))
+        self.assertFalse(hasattr(Part, "fillet"))
+        self.assertEqual("Build solids", Sketch.extrude.__api_group__)
+        self.assertEqual("Hollow and draft", Solid.shell.__api_group__)
+        self.assertEqual("Booleans", Part.batch_subtract.__api_group__)
+
     def test_extrude_taper_angle_uses_signed_draft_and_records_normal_extrude(self):
         set_progress_log(False)
         part = Part((-10, -10, -2), (10, 10, 4), tolerance=.005)
         sketch = part.sketch("xy", name="draft_profile")
         sketch.add_rectangle((-3, -2.5), (3, 2.5))
 
-        drafted = part.extrude(sketch, 1, taper_angle=math.pi / 18, name="drafted")
+        drafted = sketch.extrude(1, taper_angle=math.pi / 18, name="drafted")
 
         self.assertTrue(drafted.is_watertight())
         points, _ = drafted.mesh()
@@ -32,7 +40,7 @@ class PartOperationTests(unittest.TestCase):
         sketch.add_rectangle((-0.5, -0.5), (0.5, 0.5))
 
         with self.assertRaises(Exception):
-            part.extrude(sketch, 10, taper_angle=math.pi / 4)
+            sketch.extrude(10, taper_angle=math.pi / 4)
 
 
     def test_extrude_until_named_face_uses_native_surface_trim(self):
@@ -43,9 +51,9 @@ class PartOperationTests(unittest.TestCase):
         sketch = part.sketch("xy", name="profile")
         sketch.add_rectangle((-.5, -.5), (.5, .5))
 
-        surface = part.face_surface(target, bottom)
-        direct = part.extrude_until_surface(sketch, surface)
-        by_name = part.extrude_until_face(sketch, target, bottom)
+        surface = target.face_surface(bottom)
+        direct = sketch.extrude_until_surface(surface)
+        by_name = sketch.extrude_until_face(target, bottom)
 
         self.assertFalse(surface.is_volume)
         self.assertTrue(direct.is_watertight())
@@ -60,7 +68,7 @@ class PartOperationTests(unittest.TestCase):
         tool = part.cylinder(origin=(2, 2, -1), radius=.5, height=6, name="tool")
         drilled = part.subtract(base, tool, name="drilled")
         edge = next(name for name in drilled.curve_names if "ExtrudeTop" in name)
-        finished = part.fillet(drilled, edge, .2, name="finished")
+        finished = drilled.fillet(edge, .2, name="finished")
 
         operations = part.operations
         self.assertEqual(["Cuboid", "Cylinder", "Subtract", "Fillet"], [item.kind for item in operations])
@@ -79,7 +87,7 @@ class PartOperationTests(unittest.TestCase):
         body = part.cuboid((0, 0, 0), (1, 1, 1), name="body")
         before = part.operations
         with self.assertRaises(Exception):
-            part.fillet(body, "not-a-curve", .2)
+            body.fillet("not-a-curve", .2)
         self.assertEqual(before, part.operations)
 
     def test_batch_subtract_accepts_pattern_generator_and_records_subtract(self):
@@ -87,7 +95,7 @@ class PartOperationTests(unittest.TestCase):
         part = Part((-2, -2, -2), (14, 8, 5), tolerance=.001)
         base = part.cuboid((0, 0, 0), (10, 6, 2), name="base")
         tool = part.cuboid((1, 1, -1), (3, 3, 3), name="tool")
-        copies = part.pattern_linear(tool, 2, (5, 0, 0), name="cutters")
+        copies = tool.pattern_linear(2, (5, 0, 0), name="cutters")
 
         result = part.batch_subtract(base, (copy for copy in copies), name="perforated")
 

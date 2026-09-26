@@ -1,18 +1,18 @@
-"""L-shaped EFH with an Erker — wall centerlines, then offset.
+"""L-shaped residential floor plan with a bay window — wall centerlines, then offset.
 
     y=10.5  +----------------+
-            |    Schlafen    |
+            |    Bedroom     |
     y=6.6   +--------+-------+
-            | Wohnen |  Bad  |
+            | Living | Bath  |
     y=4.2   |        +--+----+----+
-            |        |Diele | Kü |
-    y=0     +--Erker-+------+----+
+            |        | Hall |Kitchen|
+    y=0     +-- Bay -+------+----+
            x=0  2  5.2     8   13.2
 
-Heights (metres), typical Swiss residential:
-  * 2.50 m lichte Raumhöhe — SIA 2024 Wohnen (MFH/EFH)
-  * 0.25 m Stahlbetondecke — usual massive slab (20–30 cm)
-Cantonal minima are often 2.40 m clear; new-build practice is 2.50–2.60 m.
+Representative residential dimensions (metres):
+  * 2.50 m clear ceiling height
+  * 0.25 m reinforced-concrete floor slab
+Actual code minima and design practices vary by jurisdiction.
 """
 from camber import Frame, Part, vec3
 
@@ -40,7 +40,7 @@ def extrude_walls(name, segments):
         sk.add_line(a, b, name=n, construction=True) for n, a, b in segments
     ]
     sk.offset(curves, half, side="both", join="miter", end_cap="square")
-    return part.extrude(sk, room_height, name=name)
+    return sk.extrude(room_height, name=name)
 
 
 sk = part.sketch("xy", constrained=True, name="shell")
@@ -98,16 +98,16 @@ sk.offset(
     join="miter",
     end_cap="square",
 )
-shell = part.extrude(sk, room_height, name="shell")
+shell = sk.extrude(room_height, name="shell")
 
 partitions = extrude_walls("partitions", [
-    ("kit", (notch_x, 0.0), (notch_x, kitchen_y)),
-    ("sleep", (0.0, sleep_y), (notch_x, sleep_y)),
-    ("diele", (bay_x1, 0.0), (bay_x1, sleep_y)),
-    ("bath", (bay_x1, kitchen_y), (notch_x, kitchen_y)),
+    ("kitchen", (notch_x, 0.0), (notch_x, kitchen_y)),
+    ("bedroom", (0.0, sleep_y), (notch_x, sleep_y)),
+    ("hall", (bay_x1, 0.0), (bay_x1, sleep_y)),
+    ("bathroom", (bay_x1, kitchen_y), (notch_x, kitchen_y)),
 ])
 
-# Bodenplatte: closed centerline, offset out by half the wall to the outer face.
+# Floor slab: closed centerline, offset outward by half the wall thickness.
 slab_pts = (
     (0.0, 0.0),
     (bay_x0, 0.0),
@@ -129,10 +129,10 @@ for i in range(len(slab_pts) - 1):
     slab_edges.append(slab_sk.add_line(
         slab_pts[i], slab_pts[i + 1], name="slab{0}".format(i), construction=True))
 slab_sk.offset(slab_edges, half, side="out", join="miter")
-ground = part.extrude(slab_sk, slab, name="ground")
+ground = slab_sk.extrude(slab, name="ground")
 
 # Shell+slab first; a pre-union of all walls then fails against the slab.
 base = part.union(shell, ground, name="base")
 house = part.union(base, partitions, name="house")
 print(house)
-house.show(title="Swiss EFH")
+house.show(title="L-shaped residential floor plan")

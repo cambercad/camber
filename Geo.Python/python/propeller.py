@@ -75,7 +75,7 @@ def create_propeller_spinner(part, max_deviation):
     z_aft = -blade_into_ogive * spinner_length_m
     sk = part.sketch(frame=propeller_revolve_meridian_frame(vec3(0, 0, z_aft)), name="PropSpinProf")
     add_spinner_meridian(sk, hub_outer_radius_m, spinner_length_m)
-    return part.revolve(sk, 2.0 * math.pi, name="PropSpinner", max_deviation=max_deviation)
+    return sk.revolve(2.0 * math.pi, name="PropSpinner", max_deviation=max_deviation)
 
 
 ext = tip_radius_m * 1.2

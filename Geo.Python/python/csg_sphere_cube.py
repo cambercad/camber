@@ -17,7 +17,7 @@ part = Part(vec3(-25), vec3(25), tolerance=0.01)
 
 sk = part.sketch("xy", name="cube_sk")
 sk.add_rectangle((-cube_half, -cube_half), (cube_half, cube_half))
-cube = part.extrude(sk, cube_half, name="cube", both_sides=True)
+cube = sk.extrude(cube_half, name="cube", both_sides=True)
 
 sphere = part.sphere((0, 0, 0), sphere_r, name="sphere")
 body = sphere & cube

@@ -43,11 +43,11 @@ def build():
     # intersection instead of relying on two solids that only touch at a face.
     flange_profile = part.sketch("xy", frame=Frame((0, 0, 0)), name="base_flange_profile")
     _octagon(flange_profile, base_width, base_depth, corner_clip)
-    flange = part.extrude(flange_profile, base_height, name="base_flange")
+    flange = flange_profile.extrude(base_height, name="base_flange")
 
     body_profile = part.sketch("xy", frame=Frame((0, 0, body_bottom_z)), name="housing_profile")
     _octagon(body_profile, body_width, body_depth, corner_clip)
-    body = part.extrude(body_profile, body_height, name="drafted_housing", taper_angle=draft)
+    body = body_profile.extrude(body_height, name="drafted_housing", taper_angle=draft)
     housing = part.batch_union((flange, body))
 
     # Follow the outer draft with an expanding downward cavity, leaving a
@@ -64,8 +64,8 @@ def build():
     cavity_offset = (body_height + top_overrun) * math.tan(draft) + wall
     cavity_clip = corner_clip + (math.sqrt(2) - 2) * cavity_offset
     _octagon(cavity_profile, cavity_width, cavity_depth, cavity_clip)
-    cavity = part.extrude(
-        cavity_profile, -(body_height - floor + top_overrun), taper_angle=-draft,
+    cavity = cavity_profile.extrude(
+        -(body_height - floor + top_overrun), taper_angle=-draft,
         name="drafted_cavity_tool")
     housing = part.subtract(housing, cavity, name="hollow_housing")
 
@@ -95,11 +95,11 @@ def build():
     floor_top_z = body_bottom_z + floor
     display = part.sketch("xy", frame=Frame((0, 0, floor_top_z)), name="display_recess_profile")
     display.add_rectangle((-25, -10), (5, 10))
-    cutters.append(part.extrude(display, -.8, name="display_recess_tool"))
+    cutters.append(display.extrude(-.8, name="display_recess_tool"))
 
     encoder = part.sketch("xy", frame=Frame((0, 0, floor_top_z)), name="encoder_profile")
     encoder.add_circle((22, 0), 5.5)
-    cutters.append(part.extrude(encoder, -.8, name="encoder_seat_tool"))
+    cutters.append(encoder.extrude(-.8, name="encoder_seat_tool"))
 
     # Small through-floor vents, kept clear of the display recess and bosses.
     for index, (x, y) in enumerate((

@@ -115,13 +115,20 @@ sk.add_line((0, 0), (2, 0))
 sk.add_line((2, 0), (2, 2))
 sk.add_line((2, 2), (0, 2))
 sk.add_line((0, 2), (0, 0))
-cube = part.extrude(sk, 2.0, name='cube')
+cube = sk.extrude(2.0, name='cube')
 hole = part.cylinder(origin=(1, 1, -0.5), radius=0.4, height=3.0, name='cyl')
 (cube - hole).show()
 "@
 ```
 
 A window should open. Click a face/edge/point to copy its name. **Ctrl-click** = multi-select.
+
+The Python API follows the geometry being edited: construct from a `Sketch`
+(`sk.extrude(...)`, `sk.revolve(...)`), modify a `Solid`
+(`cube.shell(...)`, `cube.fillet(...)`, `cube.hole(...)`), and combine solids
+through their owning `Part` (`part.union(...)`, `part.batch_subtract(...)`).
+The [API reference](python/docs/camber-api.html) groups methods from metadata
+on their definitions.
 
 Same example as a file:
 

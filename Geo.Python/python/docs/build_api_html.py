@@ -30,17 +30,20 @@ DUNDERS = {
 
 SECTIONS = [
     ("Core", ["Part", "PartOperation", "Sketch", "SketchCurve", "Solid", "Surface", "ProjectedSketch"]),
+    ("Inspection", ["Section", "Measurement", "Interference", "section"]),
     ("Pose", ["Frame", "Curve", "LoftOptions", "frame_from_axis"]),
     ("Assembly", [
         "Assembly", "AssemblyLeaf", "AssemblyOccurrence", "AssemblyPart", "AssemblyPointDatum",
-        "AssemblyAxisDatum", "AssemblyPlaneDatum",
+        "AssemblyAxisDatum", "AssemblyPlaneDatum", "AssemblyConstraint",
+        "AssemblyConstraintDatum", "AssemblySolveResult", "MateResidual",
     ]),
     ("Vectors", ["vec2", "vec3"]),
     ("Geom", [
         "RayHit", "triangulate", "signed_area", "is_ccw", "point_in_polygon",
         "convex_hull", "tessellate_bezier", "text_outlines",
     ]),
-    ("Viewer", ["show"]),
+    ("Viewer", ["show", "render_views"]),
+    ("Diagnostics", ["set_progress_log", "progress_log_enabled"]),
     ("Constants", ["BOOLEAN_UNION", "BOOLEAN_SUBTRACT", "BOOLEAN_INTERSECT"]),
 ]
 
@@ -54,10 +57,10 @@ CONST_DOCS = {
 # Do not list native-handle constructors; users get these from factories.
 FACTORY_HEAD = {
     "Sketch": "Sketch  # Part.sketch / Part.sketch(..., constrained=True)",
-    "Solid": "Solid  # Part.extrude / union / cut / …",
+    "Solid": "Solid  # Sketch.extrude / Part.union / Part.subtract",
     "Surface": "Surface  # Part.loft_surface / open mesh import",
     "SketchCurve": "SketchCurve  # Sketch.add_line / add_circle / add_arc",
-    "ProjectedSketch": "ProjectedSketch  # Part.project_sketch",
+    "ProjectedSketch": "ProjectedSketch  # Sketch.project_onto",
     "Curve": "Curve  # Curve.line / helix / circle / arc / spiral",
     "Assembly": "Assembly  # Part.assembly",
     "AssemblyOccurrence": "AssemblyOccurrence  # Assembly.add_subassembly",
@@ -65,7 +68,7 @@ FACTORY_HEAD = {
     "AssemblyPointDatum": "AssemblyPointDatum  # AssemblyPart.point / point_at",
     "AssemblyAxisDatum": "AssemblyAxisDatum  # AssemblyPart.axis / axis_at",
     "AssemblyPlaneDatum": "AssemblyPlaneDatum  # AssemblyPart.plane / plane_at",
-    "RayHit": "RayHit  # Part.raycast",
+    "RayHit": "RayHit  # Solid.raycast",
     "cqcompat.Sketch": "cqcompat.Sketch  # Workplane.sketch",
 }
 
@@ -147,6 +150,10 @@ def class_members(cls):
             continue
         if name in ("__module__", "__dict__", "__weakref__", "__doc__", "__slots__"):
             continue
+        # Constructors are described from the class signature below. Inherited
+        # tuple/object dunders are implementation details, not this class's API.
+        if name == "__init__" or (name in DUNDERS and name not in cls.__dict__):
+            continue
         if name in DUNDERS:
             kind = "op"
         elif isinstance(val, property):
@@ -192,7 +199,7 @@ def member_doc(kind, name, target, raw):
 
 def describe_value(name, obj):
     if inspect.isclass(obj):
-        return "class", first_paragraph(inspect.getdoc(obj)), None
+        return "class", first_paragraph(inspect.getdoc(obj)), signature_of(obj)
     if inspect.isfunction(obj) or inspect.ismethod(obj):
         return "function", first_paragraph(inspect.getdoc(obj)), signature_of(obj, drop_self=True)
     return "const", CONST_DOCS.get(name, ""), repr(obj)
@@ -217,20 +224,14 @@ def collect():
                 if name in FACTORY_HEAD:
                     entry["sig"] = None
                     entry["head"] = FACTORY_HEAD[name]
-                else:
-                    ctor = getattr(obj, "__init__", None)
-                    if inspect.isfunction(ctor) or inspect.ismethod(ctor):
-                        entry["sig"] = signature_of(ctor)
                 for mk, mn, mt, raw in class_members(obj):
-                    if mn == "__init__":
-                        if name not in FACTORY_HEAD:
-                            entry["sig"] = signature_of(mt)
-                        continue
                     entry["members"].append({
                         "kind": mk,
                         "name": mn,
                         "sig": member_sig(mk, mn, mt, raw, name),
                         "doc": member_doc(mk, mn, mt, raw),
+                        "group": getattr(mt, "__api_group__", "Properties" if mk == "prop" else
+                                         "Operators" if mk == "op" else "Other"),
                     })
             items.append(entry)
         catalog.append((title, items))
@@ -260,6 +261,8 @@ def collect():
                     "name": mn,
                     "sig": member_sig(mk, mn, mt, raw, name),
                     "doc": member_doc(mk, mn, mt, raw),
+                    "group": getattr(mt, "__api_group__", "Properties" if mk == "prop" else
+                                     "Operators" if mk == "op" else "Other"),
                 })
         cq_items.append(entry)
     catalog.append(("CadQuery compat", cq_items))
@@ -312,13 +315,20 @@ def render(catalog):
                 )
             )
             if item["members"]:
-                body.append("<ul>")
-                for m in item["members"]:
+                current_group = None
+                for m in sorted(item["members"], key=lambda member: (
+                    member["group"] in ("Other", "Properties", "Operators"),
+                    member["group"], member["name"].lower())):
                     if m["name"] == "__init__":
                         continue
+                    if m["group"] != current_group:
+                        if current_group is not None:
+                            body.append("</ul>")
+                        current_group = m["group"]
+                        body.append("<h4>{0}</h4><ul>".format(esc(current_group)))
                     member_search = " ".join([
                         item["name"] + "." + m["name"],
-                        m["sig"],
+                        m["sig"], m["group"],
                         m["doc"] or "",
                     ]).lower()
                     body.append(
@@ -328,7 +338,8 @@ def render(catalog):
                             (" <span>{0}</span>".format(esc(m["doc"])) if m["doc"] else ""),
                         )
                     )
-                body.append("</ul>")
+                if current_group is not None:
+                    body.append("</ul>")
             body.append("</article>")
         body.append("</section>")
         nav.append("</div>")
@@ -417,6 +428,8 @@ article:target { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent
 .k { float: right; font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
   color: var(--accent-dark); background: var(--accent-soft); padding: 3px 8px; border-radius: 999px; }
 h3 { margin: 0 0 6px; padding-right: 72px; font-size: 15px; font-weight: 650; }
+h4 { margin: 18px 0 4px; color: var(--mute); font-size: 11px;
+  font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
 article p { margin: 0 0 8px; color: var(--mute); }
 ul { list-style: none; margin: 8px 0 0; padding: 0; border-top: 1px solid var(--line); }
 li { padding: 7px 0; border-bottom: 1px solid var(--line); }

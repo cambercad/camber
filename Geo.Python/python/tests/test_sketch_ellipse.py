@@ -23,7 +23,7 @@ class EllipseTests(unittest.TestCase):
                                (e @ .75,(0,-4)),(e @ "center",(0,0))):
             with self.subTest(point=point):
                 self.assertLess(math.dist(sk.eval_xy(point),expected),1e-6)
-        solid = self.part.extrude(sk,6,max_deviation=.01)
+        solid = sk.extrude(6,max_deviation=.01)
         self.assertTrue(solid.is_watertight())
         self.assertAlmostEqual(solid.volume(),math.pi*10*4*6,delta=3)
         # A construction axis uses standard line constraints and is excluded
@@ -33,7 +33,7 @@ class EllipseTests(unittest.TestCase):
         sk.horizontal(guide)
         sk.solve()
         self.assertLess(math.dist(sk.eval_xy(e @ .25),(0,4)),1e-6)
-        with_guide = self.part.extrude(sk,6,max_deviation=.01)
+        with_guide = sk.extrude(6,max_deviation=.01)
         self.assertTrue(with_guide.is_watertight())
         self.assertAlmostEqual(with_guide.volume(),solid.volume(),places=8)
 

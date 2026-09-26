@@ -20,6 +20,14 @@ _NACA_TE_TRIM = 0.01
 _TYPES = None
 
 
+def api_group(name):
+    """Attach a reference-page category without changing call behavior."""
+    def decorate(method):
+        method.__api_group__ = name
+        return method
+    return decorate
+
+
 def _env_flag(name, default=True):
     raw = os.environ.get(name)
     if raw is None:
@@ -787,7 +795,7 @@ class AssemblyOccurrence(object):
 
 
 class PartOperation(namedtuple("PartOperation", "index kind result inputs entities details")):
-    """One successful solid-producing feature in a Part's chronological ledger."""
+    """Immutable ``Part.operations`` record: index, kind, result name, input names, selected entity names, and parameter details."""
     __slots__ = ()
 
 class AssemblyLeaf(namedtuple("AssemblyLeaf", "path part solid frame bounds")):
@@ -1227,10 +1235,12 @@ class Part(object):
         """Next unique kernel name with this prefix."""
         return _require(_native_mod()["NativePart"], "generate_name")(prefix)
 
+    @api_group("Create")
     def assembly(self, name=None):
         """Create or get an Assembly attached to this part."""
         return Assembly(_require(self._n, "get_assembly")(_name(name)), self)
 
+    @api_group("Create")
     def sketch(self, plane="xy", name=None, origin_name=None, frame=None, constrained=False):
         """2D sketch. ``plane`` is ``xy``/``xz``/``yz``; or pass ``frame=``.
 
@@ -1248,6 +1258,7 @@ class Part(object):
         return Sketch(_invoke(self._n, "sketch", plane or "xy", _name(name)), self)
 
 
+    @api_group("Create")
     def section_sketch(self, solid, plane=None, name=None):
         """Return the cross-section of ``solid`` as sampled curves in a Sketch.
 
@@ -1265,7 +1276,7 @@ class Part(object):
         """Drop a sketch from the part (does not undo solids already built from it)."""
         _require(self._n, "unregister_sketch")(sketch._n)
 
-    def extrude(self, sketch, height, name=None, both_sides=False, max_deviation=-1, twist=0,
+    def _extrude(self, sketch, height, name=None, both_sides=False, max_deviation=-1, twist=0,
                 taper_angle=0):
         """Extrude along the sketch-plane normal.
 
@@ -1283,45 +1294,46 @@ class Part(object):
         return Solid(_require(self._n, "extrude")(
             sketch._n, height, md, tw, n, float(taper_angle)), self)
 
-    def extrude_two_sides(self, sketch, plus_z, minus_z=0.0, name=None, max_deviation=-1, twist=0):
+    def _extrude_two_sides(self, sketch, plus_z, minus_z=0.0, name=None, max_deviation=-1, twist=0):
         """Extrude ``plus_z`` along +normal and ``minus_z`` along −normal."""
         return Solid(_require(self._n, "extrude_two_sides")(
             sketch._n, plus_z, minus_z, float(max_deviation), float(twist), _name(name)), self)
 
-    def extrude_until_next(self, sketch, target, name=None, max_deviation=-1):
+    def _extrude_until_next(self, sketch, target, name=None, max_deviation=-1):
         """Extrude along the nearer of the two sketch-normal directions to ``target``."""
         return Solid(_require(self._n, "extrude_until_next")(
             sketch._n, target._n, float(max_deviation), _name(name)), self)
 
-    def face_surface(self, solid, patch_name, name=None):
+    def _face_surface(self, solid, patch_name, name=None):
         """Extract a named face as an oriented open surface for exact CSG trimming."""
         return Surface(_require(self._n, "extract_face_surface")(
             solid._n, str(patch_name), _name(name)), self)
 
-    def extrude_until_surface(self, sketch, surface, name=None, max_deviation=-1):
+    def _extrude_until_surface(self, sketch, surface, name=None, max_deviation=-1):
         """Extrude to an open surface that fully spans the sketch projection."""
         return Solid(_require(self._n, "extrude_until_surface")(
             sketch._n, surface._n, float(max_deviation), _name(name)), self)
 
-    def extrude_until_face(self, sketch, target, patch_name, name=None, max_deviation=-1):
+    def _extrude_until_face(self, sketch, target, patch_name, name=None, max_deviation=-1):
         """Extrude to one named face of a target solid."""
         return Solid(_require(self._n, "extrude_until_face")(
             sketch._n, target._n, str(patch_name), float(max_deviation), _name(name)), self)
 
-    def project_sketch(self, sketch, solid, name=None, max_deviation=-1):
+    def _project_sketch(self, sketch, solid, name=None, max_deviation=-1):
         """Tessellate sketch and project onto solid along the sketch-plane normal."""
         return ProjectedSketch(_require(self._n, "project_sketch_onto_mesh")(
             sketch._n, solid._n, float(max_deviation), _name(name)), self)
 
-    def extrude_projected(self, projected, height, name=None):
+    def _extrude_projected(self, projected, height, name=None):
         """Extrude a ProjectedSketch along stored surface normals (negative = into solid)."""
         return Solid(_require(self._n, "extrude_projected_sketch")(
             projected._n, float(height), _name(name)), self)
 
-    def revolve(self, sketch, angle, name=None, max_deviation=-1):
+    def _revolve(self, sketch, angle, name=None, max_deviation=-1):
         """Revolve the sketch about sketch X by ``angle`` radians."""
         return Solid(_require(self._n, "revolve")(sketch._n, float(angle), float(max_deviation), _name(name)), self)
 
+    @api_group("Primitives")
     def cylinder(self, origin, radius, height, name=None, axis="z", max_deviation=-1):
         """Cylinder from a point or Frame. ``axis`` is ``x``/``y``/``z`` if origin is a point.
 
@@ -1334,20 +1346,24 @@ class Part(object):
         return Solid(_require(self._n, "create_cylinder")(
             _as_frame(pose)._native(), float(radius), float(height), float(max_deviation), _name(name)), self)
 
+    @api_group("Primitives")
     def cylinder_revolve(self, pose, radius, height, name=None, max_deviation=-1):
         """Cylinder as a revolve of a rectangle (same pose convention as cylinder)."""
         return Solid(_require(self._n, "create_cylinder_revolve")(
             _as_frame(pose)._native(), float(radius), float(height), float(max_deviation), _name(name)), self)
 
+    @api_group("Primitives")
     def sphere(self, center, radius, name=None, max_deviation=-1):
         """Sphere at ``center`` (point or Frame)."""
         return Solid(_require(self._n, "create_sphere")(
             _as_frame(center)._native(), float(radius), float(max_deviation), _name(name)), self)
 
+    @api_group("Primitives")
     def cube(self, pose, extent, name=None):
         """Axis-aligned cube of side ``extent`` in the pose (center at origin)."""
         return Solid(_require(self._n, "create_cube")(_as_frame(pose)._native(), float(extent), _name(name)), self)
 
+    @api_group("Primitives")
     def cuboid(self, pose_or_min, extents_or_max, name=None):
         """Pose + local extents, or world AABB min/max."""
         if isinstance(pose_or_min, Frame):
@@ -1438,7 +1454,7 @@ class Part(object):
             return None
         return Frame._from_native(native)
 
-    def extrude_along_curve(self, sketch, curve, name=None, max_deviation=-1, twist=0,
+    def _extrude_along_curve(self, sketch, curve, name=None, max_deviation=-1, twist=0,
                             reference_direction=None):
         """Sweep a profile along a 3D Curve.
 
@@ -1451,16 +1467,17 @@ class Part(object):
         return Solid(_require(self._n, "extrude_along_curve")(
             sketch._n, curve._n, float(max_deviation), float(twist), _name(name), reference), self)
 
-    def extrude_along_curve_strip(self, sketch, curves, name=None, max_deviation=-1, twist=0):
+    def _extrude_along_curve_strip(self, sketch, curves, name=None, max_deviation=-1, twist=0):
         """Sweep the sketch along a sequence of Curves (G1 strip)."""
         return Solid(_require(self._n, "extrude_along_curve_strip")(
             sketch._n, _curve_list(curves), float(max_deviation), float(twist), _name(name)), self)
 
-    def extrude_along_sketch(self, profile, guide, name=None, max_deviation=-1):
+    def _extrude_along_sketch(self, profile, guide, name=None, max_deviation=-1):
         """Sweep ``profile`` along a 3D path taken from ``guide`` sketch curves."""
         return Solid(_require(self._n, "extrude_along_sketch")(
             profile._n, guide._n, float(max_deviation), _name(name)), self)
 
+    @api_group("Multi-profile")
     def loft(self, sketches, options=None, name=None, max_deviation=-1, *, first_curves=None):
         """Loft through Sketches, preserving their authored start points as connectors.
 
@@ -1490,6 +1507,7 @@ class Part(object):
             _sketch_list(sketches), options._n, float(max_deviation), _name(name),
             "" if first_curves is None else _join_names(first_curves)), self)
 
+    @api_group("Multi-profile")
     def loft_surface(self, sections, *, guides=None, start_tangent=None,
                      end_tangent=None, name=None, max_deviation=-1):
         """Create an uncapped NURBS sheet through sketch sections.
@@ -1510,23 +1528,27 @@ class Part(object):
             _sketch_list(sections), _curve_list(() if guides is None else guides),
             tangent(start_tangent), tangent(end_tangent), float(max_deviation), _name(name)), self)
 
+    @api_group("Booleans")
     def boolean(self, a, b, operation, name=None):
         """CSG: ``operation`` is BOOLEAN_UNION / SUBTRACT / INTERSECT."""
         return Solid(_require(self._n, "boolean")(a._n, b._n, int(operation), _name(name)), self)
 
+    @api_group("Booleans")
     def union(self, a, b, name=None):
         """Boolean union. Same as ``a + b``."""
         return Solid(_invoke(self._n, "union", a._n, b._n, _name(name)), self)
 
+    @api_group("Booleans")
     def subtract(self, a, b, name=None):
         """Boolean subtraction ``a minus b``. Same as ``a - b``."""
         return Solid(_invoke(self._n, "subtract", a._n, b._n, _name(name)), self)
 
+    @api_group("Booleans")
     def intersect(self, a, b, name=None):
         """Boolean intersection. Same as ``a & b``."""
         return Solid(_invoke(self._n, "intersect", a._n, b._n, _name(name)), self)
 
-    def trim_by_surface(self, solid, surface, *, side="normal", name=None):
+    def _trim_by_surface(self, solid, surface, *, side="normal", name=None):
         """Trim a closed ``solid`` by an open ``surface``.
 
         ``side`` selects the retained half-space relative to the surface's
@@ -1546,6 +1568,7 @@ class Part(object):
         return Solid(_require(self._n, "trim_by_surface")(
             solid._n, surface._n, keep_normal, _name(name)), self)
 
+    @api_group("Booleans")
     def batch_union(self, meshes):
         """Union many solids. Empty list → None; one item returned as-is."""
         if not meshes:
@@ -1554,6 +1577,7 @@ class Part(object):
             return meshes[0]
         return Solid(_require(self._n, "batch_union")(_solid_list(meshes)), self)
 
+    @api_group("Booleans")
     def batch_subtract(self, base, cutters, name=None):
         """Subtract the union of ``cutters`` from ``base`` in one Boolean step.
 
@@ -1571,6 +1595,7 @@ class Part(object):
         return Solid(_require(self._n, "batch_subtract")(
             base._n, _solid_list(cutters), _name(name)), self)
 
+    @api_group("Booleans")
     def batch_boolean_chain(self, mesh_a, steps):
         """Apply ``steps`` as ``[(solid, BOOLEAN_*), ...]`` in order onto ``mesh_a``."""
         chain = _native_mod()["NativeBooleanChain"]()
@@ -1578,6 +1603,7 @@ class Part(object):
             chain.add(solid._n, int(op))
         return Solid(_require(self._n, "batch_boolean_chain")(mesh_a._n, chain), self)
 
+    @api_group("Import")
     def solid_from_mesh(self, positions, triangles, name=None):
         """Build a Solid or open Surface from world-space vertices and triangles."""
         from .geom import _pack_points3, _pack_triangles
@@ -1585,7 +1611,7 @@ class Part(object):
             _pack_points3(positions), _pack_triangles(triangles), _name(name))
         return _body(native, self)
 
-    def raycast(self, solid, origin, direction):
+    def _raycast(self, solid, origin, direction):
         """Nearest mesh hit from ``origin`` along ``direction``, or ``None``.
 
         ``hit.t`` is the fraction of the kernel's internal cast segment:
@@ -1599,7 +1625,7 @@ class Part(object):
             solid._n, float(ox), float(oy), float(oz), float(dx), float(dy), float(dz))
         return _parse_ray_hit(packed)
 
-    def pattern_linear(self, solid, count, step, name=None):
+    def _pattern_linear(self, solid, count, step, name=None):
         """Return independent solids at equal XYZ steps, including ``solid``.
 
         ``count`` includes the unchanged seed. ``name`` prefixes the new names.
@@ -1611,7 +1637,7 @@ class Part(object):
                          float(x), float(y), float(z), _name(name))
         return [solid] + [Solid(_invoke(result, "get", i), self) for i in range(1, int(result.count))]
 
-    def pattern_circular(self, solid, count, axis=None, angle=2*math.pi, name=None):
+    def _pattern_circular(self, solid, count, axis=None, angle=2*math.pi, name=None):
         """Return copies rotated around ``axis.z``; count includes the seed.
 
         Axis defaults to Frame(). A full sweep (exactly ±2*pi radians) omits
@@ -1625,7 +1651,7 @@ class Part(object):
                          axis._native(), float(angle), _name(name))
         return [solid] + [Solid(_invoke(result, "get", i), self) for i in range(1, int(result.count))]
 
-    def mirror(self, solid, plane=None, name=None):
+    def _mirror(self, solid, plane=None, name=None):
         """Return a new solid reflected in the XY plane of ``plane`` (a Frame).
 
         The default is the world XY plane. Source geometry and names stay intact.
@@ -1633,6 +1659,7 @@ class Part(object):
         plane = Frame() if plane is None else _as_frame(plane)
         return Solid(_invoke(self._n, "mirror", solid._n, plane._native(), _name(name)), self)
 
+    @api_group("Create")
     def copy_solid(self, source, name):
         """Deep-copy a solid, rewriting its entity prefixes to the required new name.
 
@@ -1653,7 +1680,7 @@ class Part(object):
                 raise ValueError("copy_solid requires matching working coordinate lattices; use Parts with the same working volume")
         return Solid(_require(self._n, "copy_solid_as_instance")(source._n, name), self)
 
-    def fillet(self, solid, edges, radius, name=None, max_deviation=-1):
+    def _fillet(self, solid, edges, radius, name=None, max_deviation=-1):
         """Fillet named edges. ``edges`` is a string or list of names.
 
         Continues across supported planar/cylindrical tangent seams. Surviving
@@ -1662,12 +1689,48 @@ class Part(object):
         return Solid(_require(self._n, "fillet")(
             solid._n, _join_names(edges), float(radius), float(max_deviation), _name(name)), self)
 
-    def chamfer(self, solid, edges, distance, name=None, max_deviation=-1):
+    def _chamfer(self, solid, edges, distance, name=None, max_deviation=-1):
         """Chamfer named edges. ``edges`` is a string or list of names."""
         return Solid(_require(self._n, "chamfer")(
             solid._n, _join_names(edges), float(distance), float(max_deviation), _name(name)), self)
 
-    def shell(self, solid, thickness, faces=None, name=None, max_deviation=-1, outward=False, join="sharp"):
+    def _hole(self, solid, mouth, diameter, depth=None, *, name=None, max_deviation=-1):
+        """Drill a flat-bottom hole. ``mouth.z`` points into the solid; no depth means through."""
+        return Solid(_require(self._n, "drill_hole")(
+            solid._n, _as_frame(mouth)._native(), float(diameter),
+            -1.0 if depth is None else float(depth), float(max_deviation), _name(name)), self)
+
+    def _counterbore_hole(self, solid, mouth, diameter, counterbore_diameter,
+                         counterbore_depth, depth=None, *, name=None, max_deviation=-1):
+        """Drill a hole with a flat-bottom counterbore. No drill depth means through."""
+        return Solid(_require(self._n, "counterbore_hole")(
+            solid._n, _as_frame(mouth)._native(), float(diameter),
+            -1.0 if depth is None else float(depth), float(counterbore_diameter),
+            float(counterbore_depth), float(max_deviation), _name(name)), self)
+
+    def _countersink_hole(self, solid, mouth, diameter, countersink_diameter,
+                         included_angle, depth=None, *, name=None, max_deviation=-1):
+        """Drill a hole with a conical countersink; ``included_angle`` is in radians."""
+        return Solid(_require(self._n, "countersink_hole")(
+            solid._n, _as_frame(mouth)._native(), float(diameter),
+            -1.0 if depth is None else float(depth), float(countersink_diameter),
+            float(included_angle), float(max_deviation), _name(name)), self)
+
+    def _draft_faces(self, solid, faces, neutral_frame, angle, *, pull_direction=None,
+                    name=None, max_deviation=-1):
+        """Draft named prism side faces about a neutral cap plane.
+
+        ``neutral_frame.z`` is the default pull direction. Currently limited to
+        straight, convex polygonal prisms; unsupported geometry fails explicitly.
+        """
+        neutral = _as_frame(neutral_frame)
+        direction = neutral.z if pull_direction is None else vec3(pull_direction)
+        return Solid(_require(self._n, "draft_prismatic_faces")(
+            solid._n, _join_names(faces), neutral._native(),
+            direction.x, direction.y, direction.z, float(angle),
+            float(max_deviation), _name(name)), self)
+
+    def _shell(self, solid, thickness, faces=None, name=None, max_deviation=-1, outward=False, join="sharp"):
         """Hollow a solid inward, or expand it with ``outward=True``.
 
         Inward shelling keeps exterior dimensions and opening boundaries fixed. Planar,
@@ -1685,6 +1748,64 @@ class Part(object):
         return Solid(_require(self._n, "shell")(
             solid._n, float(thickness), _join_names(faces or []), float(max_deviation), _name(name), bool(outward), join == "round"), self)
 
+    def _rib(self, base, path, thickness, to, *, frame=None, name=None, max_deviation=-1):
+        """Union a constant-width polyline rib, terminated by an exact extrusion.
+
+        ``path`` is an open sequence of 2D points in ``frame``. ``frame.z``
+        points into the rib. ``to`` is a positive height, a target Solid
+        (next intersection), a Surface, or ``(target_solid, face_name)``.
+        A face/surface must cover the whole rib profile; incomplete trims fail.
+        """
+        if not isinstance(base, Solid) or base._part is not self:
+            raise TypeError("base must be a Solid from this Part")
+        frame = Frame() if frame is None else frame
+        if not isinstance(frame, Frame):
+            raise TypeError("frame must be a Frame")
+        points = [_xy(point) for point in path]
+        width = float(thickness)
+        if len(points) < 2 or not math.isfinite(width) or width <= 0:
+            raise ValueError("rib needs an open path of at least two points and positive thickness")
+        if any(not all(math.isfinite(v) for v in point) for point in points):
+            raise ValueError("rib path coordinates must be finite")
+        if any(points[i] == points[i + 1] for i in range(len(points) - 1)):
+            raise ValueError("rib path cannot contain zero-length segments")
+        if isinstance(to, bool):
+            raise TypeError("to must be a height, Solid, Surface, or (Solid, face_name)")
+        if isinstance(to, (int, float)):
+            if not math.isfinite(to) or to <= 0:
+                raise ValueError("rib height must be finite and positive")
+            mode = "height"
+        elif isinstance(to, Surface) and to._part is self:
+            mode = "surface"
+        elif isinstance(to, Solid) and to._part is self:
+            mode = "next"
+        elif (isinstance(to, tuple) and len(to) == 2 and
+              isinstance(to[0], Solid) and to[0]._part is self):
+            mode = "face"
+        else:
+            raise TypeError("to must be a height, Solid, Surface, or (Solid, face_name) from this Part")
+
+        sketch = self.sketch(frame=frame, name=self._generate_name("rib_profile"))
+        centerline = [sketch.add_line(points[i], points[i + 1], construction=True)
+                      for i in range(len(points) - 1)]
+        sketch.offset(centerline, width / 2, side="both", join="miter",
+                      end_cap="butt", open_mode="outline")
+        tool_name = self._generate_name("rib_tool")
+        if mode == "height":
+            rib = sketch.extrude(to, name=tool_name,
+                               max_deviation=max_deviation)
+        elif mode == "surface":
+            rib = sketch.extrude_until_surface(to, name=tool_name,
+                                              max_deviation=max_deviation)
+        elif mode == "next":
+            rib = sketch.extrude_until_next(to, name=tool_name,
+                                           max_deviation=max_deviation)
+        else:
+            rib = sketch.extrude_until_face(to[0], to[1], name=tool_name,
+                                           max_deviation=max_deviation)
+        return self.union(base, rib, name=base.name if name is None else name)
+
+    @api_group("Inspect")
     def solid(self, name):
         """Look up a Solid or Surface already registered on this part, or None."""
         found = _require(self._n, "get_mesh_from_name")(name)
@@ -1692,18 +1813,21 @@ class Part(object):
             return None
         return _body(found, self)
 
+    @api_group("Import")
     def load_stl(self, path, group_border_angle_deg, name=None, require_watertight=True):
         """Import STL as a Solid or, when allowed, an open Surface."""
         native = _require(self._n, "load_stl_file")(
             path, float(group_border_angle_deg), _name(name), 1 if require_watertight else 0)
         return _body(native, self)
 
+    @api_group("Import")
     def load_off(self, path, group_border_angle_deg, name=None, require_watertight=True):
         """Import OFF as a Solid or, when allowed, an open Surface."""
         native = _require(self._n, "load_off_file")(
             path, float(group_border_angle_deg), _name(name), 1 if require_watertight else 0)
         return _body(native, self)
 
+    @api_group("Import")
     def load_obj(self, path, group_border_angle_deg=-1, name=None, scale=1.0):
         """Import Wavefront OBJ. ``group_border_angle_deg`` splits patches at sharp edges
         (viewer edges are drawn on patch borders; use e.g. 22 when the OBJ has no ``g`` tags).
@@ -1744,6 +1868,60 @@ class Sketch(object):
     def __init__(self, native, part):
         self._n = native
         self._part = part
+
+    @api_group("Build solids")
+    def extrude(self, height, name=None, both_sides=False, max_deviation=-1,
+                twist=0, taper_angle=0) -> "Solid":
+        """Extrude this sketch; positive taper narrows the far end (radians)."""
+        return self._part._extrude(self, height, name, both_sides, max_deviation,
+                                   twist, taper_angle)
+
+    @api_group("Build solids")
+    def extrude_two_sides(self, plus_z, minus_z=0.0, name=None, max_deviation=-1, twist=0) -> "Solid":
+        """Extrude along both sides of the sketch plane."""
+        return self._part._extrude_two_sides(self, plus_z, minus_z, name, max_deviation, twist)
+
+    @api_group("Build solids")
+    def extrude_until_next(self, target, name=None, max_deviation=-1) -> "Solid":
+        """Extrude to the first intersection with a target solid."""
+        return self._part._extrude_until_next(self, target, name, max_deviation)
+
+    @api_group("Build solids")
+    def extrude_until_surface(self, surface, name=None, max_deviation=-1) -> "Solid":
+        """Extrude to an open surface spanning the entire profile."""
+        return self._part._extrude_until_surface(self, surface, name, max_deviation)
+
+    @api_group("Build solids")
+    def extrude_until_face(self, target, patch_name, name=None, max_deviation=-1) -> "Solid":
+        """Extrude to a named face of a target solid."""
+        return self._part._extrude_until_face(self, target, patch_name, name, max_deviation)
+
+    @api_group("Build solids")
+    def revolve(self, angle, name=None, max_deviation=-1) -> "Solid":
+        """Revolve this sketch around its X axis by an angle in radians."""
+        return self._part._revolve(self, angle, name, max_deviation)
+
+    @api_group("Build solids")
+    def extrude_along_curve(self, curve, name=None, max_deviation=-1, twist=0,
+                            reference_direction=None) -> "Solid":
+        """Sweep this profile along a 3D curve."""
+        return self._part._extrude_along_curve(self, curve, name, max_deviation,
+                                               twist, reference_direction)
+
+    @api_group("Build solids")
+    def extrude_along_curve_strip(self, curves, name=None, max_deviation=-1, twist=0) -> "Solid":
+        """Sweep this profile along a G1 strip of 3D curves."""
+        return self._part._extrude_along_curve_strip(self, curves, name, max_deviation, twist)
+
+    @api_group("Build solids")
+    def extrude_along_sketch(self, guide, name=None, max_deviation=-1) -> "Solid":
+        """Sweep this profile along a guide sketch."""
+        return self._part._extrude_along_sketch(self, guide, name, max_deviation)
+
+    @api_group("Project")
+    def project_onto(self, solid, name=None, max_deviation=-1) -> "ProjectedSketch":
+        """Project this sketch onto a solid along its plane normal."""
+        return self._part._project_sketch(self, solid, name, max_deviation)
 
     @property
     def name(self):
@@ -2650,11 +2828,16 @@ def _dump_name_and_nums(fields, count):
 
 
 class ProjectedSketch(object):
-    """Result of Part.project_sketch: named 3D polylines on a mesh with surface normals."""
+    """Result of Sketch.project_onto: named 3D polylines with surface normals."""
 
     def __init__(self, native, part):
         self._n = native
         self._part = part
+
+    @api_group("Build solids")
+    def extrude(self, height, name=None) -> "Solid":
+        """Extrude along stored surface normals; negative goes into the solid."""
+        return self._part._extrude_projected(self, height, name)
 
     @property
     def name(self):
@@ -2770,6 +2953,83 @@ class Solid(_MeshBody):
         if not self.is_volume:
             raise ValueError("Solid requires a closed volume mesh")
 
+    @api_group("Edge treatment")
+    def fillet(self, edges, radius, name=None, max_deviation=-1) -> "Solid":
+        """Round named edges."""
+        return self._part._fillet(self, edges, radius, name, max_deviation)
+
+    @api_group("Edge treatment")
+    def chamfer(self, edges, distance, name=None, max_deviation=-1) -> "Solid":
+        """Bevel named edges."""
+        return self._part._chamfer(self, edges, distance, name, max_deviation)
+
+    @api_group("Hollow and draft")
+    def shell(self, thickness, faces=None, name=None, max_deviation=-1,
+              outward=False, join="sharp") -> "Solid":
+        """Hollow inward or outward; optionally remove named opening faces."""
+        return self._part._shell(self, thickness, faces, name, max_deviation, outward, join)
+
+    @api_group("Hollow and draft")
+    def draft_faces(self, faces, neutral_frame, angle, *, pull_direction=None,
+                    name=None, max_deviation=-1) -> "Solid":
+        """Draft named prism side faces about a neutral cap plane."""
+        return self._part._draft_faces(self, faces, neutral_frame, angle,
+                                       pull_direction=pull_direction, name=name,
+                                       max_deviation=max_deviation)
+
+    @api_group("Add material")
+    def rib(self, path, thickness, to, *, frame=None, name=None, max_deviation=-1) -> "Solid":
+        """Add a constant-width polyline rib to this solid."""
+        return self._part._rib(self, path, thickness, to, frame=frame,
+                               name=name, max_deviation=max_deviation)
+
+    @api_group("Holes")
+    def hole(self, mouth, diameter, depth=None, *, name=None, max_deviation=-1) -> "Solid":
+        """Drill a flat-bottom hole; no depth means through."""
+        return self._part._hole(self, mouth, diameter, depth, name=name,
+                                max_deviation=max_deviation)
+
+    @api_group("Holes")
+    def counterbore_hole(self, mouth, diameter, counterbore_diameter,
+                         counterbore_depth, depth=None, *, name=None, max_deviation=-1) -> "Solid":
+        """Drill a hole with a flat-bottom counterbore."""
+        return self._part._counterbore_hole(self, mouth, diameter, counterbore_diameter,
+                                            counterbore_depth, depth, name=name,
+                                            max_deviation=max_deviation)
+
+    @api_group("Holes")
+    def countersink_hole(self, mouth, diameter, countersink_diameter,
+                         included_angle, depth=None, *, name=None, max_deviation=-1) -> "Solid":
+        """Drill a hole with a conical countersink; angle is in radians."""
+        return self._part._countersink_hole(self, mouth, diameter, countersink_diameter,
+                                            included_angle, depth, name=name,
+                                            max_deviation=max_deviation)
+
+    @api_group("Transforms")
+    def pattern_linear(self, count, step, name=None) -> list:
+        """Return independent copies at equal XYZ steps, including this seed."""
+        return self._part._pattern_linear(self, count, step, name)
+
+    @api_group("Transforms")
+    def pattern_circular(self, count, axis=None, angle=2*math.pi, name=None) -> list:
+        """Return copies rotated around an axis, including this seed."""
+        return self._part._pattern_circular(self, count, axis, angle, name)
+
+    @api_group("Transforms")
+    def mirror(self, plane=None, name=None) -> "Solid":
+        """Return a reflected copy across a Frame's XY plane."""
+        return self._part._mirror(self, plane, name)
+
+    @api_group("Inspect")
+    def raycast(self, origin, direction):
+        """Return the nearest mesh hit from origin along direction, or None."""
+        return self._part._raycast(self, origin, direction)
+
+    @api_group("Inspect")
+    def face_surface(self, patch_name, name=None) -> "Surface":
+        """Extract a named face as an oriented open surface."""
+        return self._part._face_surface(self, patch_name, name)
+
     def __add__(self, other):
         """Boolean union. Result keeps this solid's name."""
         return self._part.union(self, other, name=self.name)
@@ -2777,7 +3037,7 @@ class Solid(_MeshBody):
     def located(self, location):
         """Return this solid translated to a world-space location."""
         target = _xyz(location)
-        copies = self._part.pattern_linear(self, 2, target)
+        copies = self.pattern_linear(2, target)
         return copies[1]
 
     def __sub__(self, other):
@@ -2794,7 +3054,7 @@ class Solid(_MeshBody):
         ``side`` is ``"normal"`` or ``"opposite"`` relative to the surface
         triangle normals.
         """
-        return self._part.trim_by_surface(self, surface, side=side,
+        return self._part._trim_by_surface(self, surface, side=side,
                                           name=self.name if name is None else name)
 
     def signed_volume(self):

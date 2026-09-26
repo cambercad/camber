@@ -11,11 +11,11 @@ class AssemblyPlaneFrameTests(unittest.TestCase):
         self.part = Part((-100, -100, -100), (100, 100, 100), tolerance=.01)
         sketch = self.part.sketch(name='profile')
         sketch.add_rectangle((0, 0), (2, 3))
-        self.solid = self.part.extrude(sketch, 4, name='block')
+        self.solid = sketch.extrude(4, name='block')
         # Independent exact-mesh witnesses retain the actual modeled planes,
         # including construction-lattice rounding of the nominal extrusion.
-        self.local_top = self.part.raycast(self.solid, (1, 1, 10), (0, 0, -1)).point.z
-        self.local_bottom = self.part.raycast(self.solid, (1, 1, -10), (0, 0, 1)).point.z
+        self.local_top = self.solid.raycast((1, 1, 10), (0, 0, -1)).point.z
+        self.local_bottom = self.solid.raycast((1, 1, -10), (0, 0, 1)).point.z
 
     def assert_vector(self, actual, expected):
         for a, b in zip(actual, expected):

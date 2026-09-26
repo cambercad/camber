@@ -8,7 +8,7 @@ class SolidEdgeTests(unittest.TestCase):
         part = Part((-10, -10, -10), (10, 10, 10), tolerance=.01)
         sketch = part.sketch("xy", name="profile")
         sketch.add_rectangle((0, 0), (4, 6), names=("south", "east", "north", "west"))
-        solid = part.extrude(sketch, 3, name="block")
+        solid = sketch.extrude(3, name="block")
         self.assertEqual(solid.patch_names, part.patch_names)
         self.assertEqual(solid.curve_names, part.curve_names)
         self.assertEqual(solid.point_names, part.point_names)
@@ -23,10 +23,10 @@ class SolidEdgeTests(unittest.TestCase):
         edge = "block:[block-south,block-east]"
         reverse = "block:[block-east,block-south]"
         self.assertIn(edge, solid.curve_names)
-        for operation in (part.fillet, part.chamfer):
+        for operation in (solid.fillet, solid.chamfer):
             with self.subTest(operation=operation.__name__):
-                a = operation(solid, edge, .3, name=operation.__name__+"_forward")
-                b = operation(solid, reverse, .3, name=operation.__name__+"_reversed")
+                a = operation(edge, .3, name=operation.__name__+"_forward")
+                b = operation(reverse, .3, name=operation.__name__+"_reversed")
                 self.assertTrue(a.is_watertight())
                 self.assertTrue(b.is_watertight())
                 self.assertAlmostEqual(a.volume(), b.volume(), places=9)
@@ -40,9 +40,9 @@ class SolidEdgeTests(unittest.TestCase):
         points = [(0,0),(40,0),(40,10),(20,10),(20,30),(0,30)]
         for i, point in enumerate(points):
             sketch.add_line(point,points[(i+1)%len(points)],name=f"edge_{i}")
-        solid = part.extrude(sketch,5,name="step")
+        solid = sketch.extrude(5,name="step")
         edges = [f"[step-edge_{(i-1)%len(points)},step-edge_{i}]" for i in range(len(points))]
-        rounded = part.fillet(solid,edges,1,name="rounded")
+        rounded = solid.fillet(edges,1,name="rounded")
         self.assertTrue(rounded.is_watertight())
         self.assertGreater(rounded.volume(),0)
         self.assertLess(rounded.volume(),solid.volume())
@@ -63,11 +63,11 @@ class SolidEdgeTests(unittest.TestCase):
                 sketch.add_circle((0,0),radius,name="section")
                 sketch.radius("section",radius).fix("section@center")
                 sketch.solve()
-                blank=part.extrude(sketch,radius,name="cap_blank")
+                blank=sketch.extrude(radius,name="cap_blank")
                 end="ExtrudeBottom" if bottom else "ExtrudeTop"
                 edges=[edge for edge in blank.curve_names if end in edge]
                 self.assertEqual(1,len(edges))
-                hemisphere=part.fillet(blank,edges,radius,name="hemisphere",max_deviation=.001)
+                hemisphere=blank.fillet(edges,radius,name="hemisphere",max_deviation=.001)
                 self.assertTrue(hemisphere.is_watertight())
                 expected=2*math.pi*radius**3/3
                 # Bound volume error by area times the tessellation deviation.
@@ -84,13 +84,13 @@ class SolidEdgeTests(unittest.TestCase):
                               y=(0, 1, 0), z=(math.sin(angle), 0, math.cos(angle)))
                 sketch = part.sketch(frame=frame)
                 sketch.add_rectangle((0, 0), (1, 1), names=("south", "east", "north", "west"))
-                blank = part.extrude(sketch, 3, name="sector_blank")
-                rounded = part.fillet(blank, "[sector_blank-north,sector_blank-west]", .5,
+                blank = sketch.extrude(3, name="sector_blank")
+                rounded = blank.fillet("[sector_blank-north,sector_blank-west]", .5,
                                       name="vertical_round", max_deviation=.001)
                 end = "ExtrudeBottom" if bottom else "ExtrudeTop"
                 rim = [edge for edge in rounded.curve_names if end in edge
                        and "sector_blank-south" not in edge and "sector_blank-east" not in edge]
                 self.assertEqual(3, len(rim))
-                result = part.fillet(rounded, rim, .5, name="spherical_corner", max_deviation=.001)
+                result = rounded.fillet(rim, .5, name="spherical_corner", max_deviation=.001)
                 self.assertTrue(result.is_watertight())
                 self.assertAlmostEqual(result.volume(), 2.752673239922555, delta=.01)

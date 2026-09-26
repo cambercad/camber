@@ -27,4 +27,4 @@ class NamedRectangleTests(unittest.TestCase):
                 x, y = sk.eval_xy("right@1.000")
                 self.assertAlmostEqual(9, x, places=5)
                 self.assertAlmostEqual(5, y, places=5)
-                self.assertTrue(p.extrude(sk, 2).is_watertight())
+                self.assertTrue(sk.extrude(2).is_watertight())

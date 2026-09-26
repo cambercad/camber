@@ -57,7 +57,7 @@ def external_spur(
     sk.add_involute_gear(
         (0.0, 0.0), module, teeth, pressure_angle=pressure,
         addendum=addendum, dedendum=dedendum, max_deviation=max_deviation)
-    body = part.extrude(sk, 0.5 * face, both_sides=True, name=name)
+    body = sk.extrude(0.5 * face, both_sides=True, name=name)
     if bore > 0.0:
         body = _cut_bore(part, body, bore, face + 2.0, name + "_bore")
     return body
@@ -74,7 +74,7 @@ def internal_ring(
         (0.0, 0.0), module, teeth, pressure_angle=pressure,
         addendum=addendum, dedendum=dedendum, max_deviation=max_deviation)
     extra = 0.5
-    cutter = part.extrude(sk, 0.5 * face + extra, both_sides=True, name=name + "_cut")
+    cutter = sk.extrude(0.5 * face + extra, both_sides=True, name=name + "_cut")
     blank = part.cylinder((0.0, 0.0, -0.5 * face), outer_radius, face, name=name + "_blank")
     return blank - cutter
 
@@ -94,10 +94,9 @@ def herringbone(
                              max_deviation=max_deviation)
         return sk
 
-    lower = part.extrude(
-        involute_sketch(name + "_lo_sk", Frame()), half_width, name=name + "_lo", twist=twist)
-    upper = part.extrude(
-        involute_sketch(name + "_hi_sk", yaw_frame(half_width, twist * half_width)),
+    lower = involute_sketch(name + "_lo_sk", Frame()).extrude(
+        half_width, name=name + "_lo", twist=twist)
+    upper = involute_sketch(name + "_hi_sk", yaw_frame(half_width, twist * half_width)).extrude(
         half_width, name=name + "_hi", twist=-twist)
     body = lower + upper
     if bore > 0.0:
@@ -140,7 +139,7 @@ def hex_cap_screw(part, name, thread_d, length, head_af, head_h):
         pts.append((r_head * math.cos(a), r_head * math.sin(a)))
     for i in range(6):
         sk.add_line(pts[i], pts[(i + 1) % 6])
-    head = part.extrude(sk, head_h, name=name + "_head")
+    head = sk.extrude(head_h, name=name + "_head")
     shank = part.cylinder((0.0, 0.0, -length), 0.5 * thread_d, length, name=name + "_shank")
     return head + shank
 

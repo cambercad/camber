@@ -12,10 +12,10 @@ class SolidPatternTests(unittest.TestCase):
 
     def test_linear_and_partial_circular_lists_include_seed(self):
         p, s = self.part, self.seed
-        row = p.pattern_linear(s, 3, (3, 0, 0), name='row')
+        row = s.pattern_linear(3, (3, 0, 0), name='row')
         self.assertIs(row[0], s)
         self.assertEqual(['seed', 'row_1', 'row_2'], [x.name for x in row])
-        arc = p.pattern_circular(s, 3, angle=math.pi, name='arc')
+        arc = s.pattern_circular(3, angle=math.pi, name='arc')
         self.assertIs(arc[0], s)
         for copy in row + arc:
             self.assertTrue(copy.is_watertight())
@@ -28,8 +28,8 @@ class SolidPatternTests(unittest.TestCase):
     def test_mirror_is_an_independent_oriented_solid_and_can_be_mirrored_back(self):
         p, s = self.part, self.seed
         plane = Frame((.13, -.27, .31), x=(1,0,0), y=(0,.8,.6), z=(0,-.6,.8))
-        reflected = p.mirror(s, plane, name='reflected')
-        restored = p.mirror(reflected, plane, name='restored')
+        reflected = s.mirror(plane, name='reflected')
+        restored = reflected.mirror(plane, name='restored')
         self.assertTrue(reflected.is_watertight())
         self.assertAlmostEqual(s.signed_volume(), reflected.signed_volume(), places=8)
         before, _ = s.mesh()
@@ -41,11 +41,11 @@ class SolidPatternTests(unittest.TestCase):
     def test_invalid_counts_and_names_are_rejected(self):
         for count in (0, -1, 1.5, True):
             with self.subTest(count=count):
-                with self.assertRaises(ValueError): self.part.pattern_linear(self.seed, count, (1,0,0))
-                with self.assertRaises(ValueError): self.part.pattern_circular(self.seed, count)
+                with self.assertRaises(ValueError): self.seed.pattern_linear(count, (1,0,0))
+                with self.assertRaises(ValueError): self.seed.pattern_circular(count)
         with self.assertRaisesRegex(Exception, 'Mirror output name already exists'):
-            self.part.mirror(self.seed, name='seed')
-        self.assertIs(self.seed, self.part.pattern_linear(self.seed, 1, (0,0,0))[0])
+            self.seed.mirror(name='seed')
+        self.assertIs(self.seed, self.seed.pattern_linear(1, (0,0,0))[0])
 
 
 if __name__ == '__main__': unittest.main()

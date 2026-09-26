@@ -64,7 +64,7 @@ def create_pipe(part=None, part_name="pipe"):
     profile.add_circle((0.0, 0.0), pipe_radius, name="outer")
     profile.add_circle((0.0, 0.0), pipe_inner_radius, name="inner")
 
-    pipe = part.extrude_along_sketch(profile, guide, name=part_name)
+    pipe = profile.extrude_along_sketch(guide, name=part_name)
 
     # Capture both terminal frames before booleans replace the virgin sweep.
     bottom_sk = part.sketch(part_name + "-ExtrudeBottom", name=named("bottom_flange_profile"))
@@ -91,11 +91,11 @@ def create_pipe(part=None, part_name="pipe"):
 
     bottom_name = named("bottom_flange")
     top_name = named("top_flange")
-    bottom_ext = part.extrude_two_sides(
-        bottom_sk, 0.0, plate_thickness, name=bottom_name
+    bottom_ext = bottom_sk.extrude_two_sides(
+        0.0, plate_thickness, name=bottom_name
     )
-    top_ext = part.extrude_two_sides(
-        top_sk, plate_thickness, 0.0, name=top_name
+    top_ext = top_sk.extrude_two_sides(
+        plate_thickness, 0.0, name=top_name
     )
 
     # Union both plates first, then fillet all eight vertical corners. Filleting
@@ -104,35 +104,34 @@ def create_pipe(part=None, part_name="pipe"):
     # after its own union because nothing else is merged in between).
     pipe = pipe + bottom_ext
     pipe = pipe + top_ext
-    pipe = part.fillet(pipe, flange_corners(bottom_name) + flange_corners(top_name), fillet_radius)
+    pipe = pipe.fillet(flange_corners(bottom_name) + flange_corners(top_name), fillet_radius)
 
     bolt_sk = part.sketch(frame=bottom_frame, name=named("bottom_counterbores"))
     add_bolt_circles(bolt_sk, bolt_radius, "counterbore")
-    pipe = pipe - part.extrude_two_sides(
-        bolt_sk, 0.0, bolt_depth, name=named("bottom_counterbore_cutter")
+    pipe = pipe - bolt_sk.extrude_two_sides(
+        0.0, bolt_depth, name=named("bottom_counterbore_cutter")
     )
 
     through_sk = part.sketch(frame=bottom_frame, name=named("bottom_bolt_holes"))
     add_bolt_circles(through_sk, through_bolt_radius, "bolt_hole")
-    pipe = pipe - part.extrude_two_sides(
-        through_sk, 0.0, plate_thickness, name=named("bottom_hole_cutter")
+    pipe = pipe - through_sk.extrude_two_sides(
+        0.0, plate_thickness, name=named("bottom_hole_cutter")
     )
 
     top_bolt_sk = part.sketch(frame=top_frame, name=named("top_counterbores"))
     add_bolt_circles(top_bolt_sk, bolt_radius, "counterbore")
-    pipe = pipe - part.extrude_two_sides(
-        top_bolt_sk, bolt_depth, 0.0, name=named("top_counterbore_cutter")
+    pipe = pipe - top_bolt_sk.extrude_two_sides(
+        bolt_depth, 0.0, name=named("top_counterbore_cutter")
     )
 
     top_through_sk = part.sketch(frame=top_frame, name=named("top_bolt_holes"))
     add_bolt_circles(top_through_sk, through_bolt_radius, "bolt_hole")
-    pipe = pipe - part.extrude_two_sides(
-        top_through_sk, plate_thickness, 0.0, name=named("top_hole_cutter")
+    pipe = pipe - top_through_sk.extrude_two_sides(
+        plate_thickness, 0.0, name=named("top_hole_cutter")
     )
 
     # Sweep side = {solid}-{profile curve}-{guide curve}.
-    pipe = part.chamfer(
-        pipe,
+    pipe = pipe.chamfer(
         [
             "[{0}-outer-h_line,{1}-ExtrudeBottom]".format(part_name, bottom_name),
             "[{0}-outer-v_line,{1}-ExtrudeTop]".format(part_name, top_name),

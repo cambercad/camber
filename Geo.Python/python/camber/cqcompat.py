@@ -1939,7 +1939,7 @@ class Workplane(object):
         sketch_frame = _frame_plus_local(frame, (0.0, 0.0, zmin))
         sk = self.part.sketch(frame=sketch_frame, name=name + "_sk")
         _Wire.rect(xmin, xmax, ymin, ymax, names=("south", "east", "north", "west")).draw(sk)
-        solid = self.part.extrude(sk, zmax - zmin, name=name)
+        solid = sk.extrude(zmax - zmin, name=name)
         faces, edges = _prism_faces(name, frame, xmin, xmax, ymin, ymax, zmin, zmax)
         return solid, faces, edges
 
@@ -1967,7 +1967,7 @@ class Workplane(object):
             sketch_frame = _frame_plus_local(frame, (0.0, 0.0, z0))
             sk = self.part.sketch(frame=sketch_frame, name=name + "_sk")
             sk.add_circle((0.0, 0.0), float(radius), name="side")
-            solid = self.part.extrude(sk, z1 - z0, name=name)
+            solid = sk.extrude(z1 - z0, name=name)
             fcs, edgs = _revolve_caps(name, frame, z0, z1, float(radius))
             solids.append(solid)
             faces.extend(fcs)
@@ -2046,7 +2046,7 @@ class Workplane(object):
             wires = self._wires()
             name = self._new_name("ext")
             sk = self._profile_sketch(wires, name + "_sk")
-            solid = self.part.extrude_until_next(sk, self._solid, name=name)
+            solid = sk.extrude_until_next(self._solid, name=name)
             return self._apply_combine(solid, [], [], combine)
         if both and taper_angle:
             raise ValueError("tapered extrude cannot be combined with both=True")
@@ -2074,10 +2074,10 @@ class Workplane(object):
                 wire_name = name if index == 0 else self._new_name("ext_profile")
                 sk = self._profile_sketch([wire], wire_name + "_sk")
                 if both:
-                    operand = self.part.extrude(sk, abs(height), name=wire_name, both_sides=True,
+                    operand = sk.extrude(abs(height), name=wire_name, both_sides=True,
                                                 twist=twist)
                 else:
-                    operand = self.part.extrude(sk, height, name=wire_name, twist=twist,
+                    operand = sk.extrude(height, name=wire_name, twist=twist,
                                                 taper_angle=taper_angle)
                 if solid is None:
                     if mode in ("s", "i"):
@@ -2096,10 +2096,10 @@ class Workplane(object):
             return self._apply_combine(solid, [], [], combine)
         sk = self._profile_sketch(wires, name + "_sk")
         if both:
-            solid = self.part.extrude(sk, abs(height), name=name, both_sides=True, twist=twist)
+            solid = sk.extrude(abs(height), name=name, both_sides=True, twist=twist)
             z0, z1 = -abs(height), abs(height)
         else:
-            solid = self.part.extrude(sk, height, name=name, twist=twist,
+            solid = sk.extrude(height, name=name, twist=twist,
                                       taper_angle=taper_angle)
             if height >= 0:
                 z0, z1 = 0.0, height
@@ -2157,7 +2157,7 @@ class Workplane(object):
         wires = [wire.mapped_xy(to_revolve) for wire in self._wires()]
         name = self._new_name("rev")
         sk = self._profile_sketch(wires, name + "_sk", frame=frame)
-        solid = self.part.revolve(sk, math.radians(float(angleDegrees)), name=name)
+        solid = sk.revolve(math.radians(float(angleDegrees)), name=name)
         return self._apply_combine(solid, [], [], combine)
 
     def _revolve_axes(self, axis_start, axis_end):
@@ -2192,13 +2192,13 @@ class Workplane(object):
         name = self._new_name("swp")
         profile = self._profile_sketch(wires, name + "_profile")
         if isinstance(path, Curve):
-            solid = self.part.extrude_along_curve(profile, path, name=name)
+            solid = profile.extrude_along_curve(path, name=name)
         elif isinstance(path, Workplane):
             guide_wires = path._wires()
             if not guide_wires:
                 raise ValueError("sweep path has no pending 2D geometry")
             guide = path._profile_sketch(guide_wires, name + "_guide")
-            solid = self.part.extrude_along_sketch(profile, guide, name=name)
+            solid = profile.extrude_along_sketch(guide, name=name)
         else:
             raise TypeError("sweep path must be a Workplane or camber Curve")
         return self._apply_combine(solid, [], [], combine)
@@ -2277,7 +2277,7 @@ class Workplane(object):
             inward = Frame(frame.origin, frame.x, -vec3(frame.y), -vec3(frame.z))
             name = self._new_name("cut")
             sketch = self._profile_sketch(self._wires(), name + "_sk", frame=inward)
-            cutter = self.part.extrude_until_surface(sketch, until, name=name + "_tool")
+            cutter = sketch.extrude_until_surface(until, name=name + "_tool")
             solid = self.part.subtract(self._solid, cutter, name=self._solid.name)
             return self._cleared(_solid=solid, _faces=list(self._faces), _edges=list(self._edges))
         if isinstance(until, str):
@@ -2321,11 +2321,11 @@ class Workplane(object):
                     sk = part.sketch(frame=frame, name=tool_name + "_sk")
                     wire.draw(sk)
                     if both:
-                        operand = part.extrude_two_sides(sk, abs(height), abs(height), name=tool_name)
+                        operand = sk.extrude_two_sides(abs(height), abs(height), name=tool_name)
                     elif height >= 0:
-                        operand = part.extrude(sk, height, name=tool_name)
+                        operand = sk.extrude(height, name=tool_name)
                     else:
-                        operand = part.extrude_two_sides(sk, 0.0, abs(height), name=tool_name)
+                        operand = sk.extrude_two_sides(0.0, abs(height), name=tool_name)
                     if cutter is None:
                         if operation in ("s", "i"):
                             raise ValueError("a subtract/intersect sketch mode needs an existing profile")
@@ -2344,11 +2344,11 @@ class Workplane(object):
                 sk = part.sketch(frame=frame, name=name + "_sk")
                 self._draw_wires(sk, wires)
                 if both:
-                    cutter = part.extrude_two_sides(sk, abs(height), abs(height), name=name)
+                    cutter = sk.extrude_two_sides(abs(height), abs(height), name=name)
                 elif height >= 0:
-                    cutter = part.extrude(sk, height, name=name)
+                    cutter = sk.extrude(height, name=name)
                 else:
-                    cutter = part.extrude_two_sides(sk, 0.0, abs(height), name=name)
+                    cutter = sk.extrude_two_sides(0.0, abs(height), name=name)
             results.append(part.subtract(solid, cutter, name=solid.name))
         return self._cleared(
             _solid=results[0] if len(results) == 1 else None,
@@ -2427,13 +2427,13 @@ class Workplane(object):
     @staticmethod
     def _tapered_cut_operand(part, sketch, wire, frame, height, both, angle, name):
         if not both:
-            return part.extrude(sketch, height, name=name, taper_angle=angle)
-        positive = part.extrude(sketch, abs(height), name=name + "_positive",
+            return sketch.extrude(height, name=name, taper_angle=angle)
+        positive = sketch.extrude(abs(height), name=name + "_positive",
                                 taper_angle=angle)
         reverse_frame = Frame(frame.origin, frame.x, -vec3(frame.y), -vec3(frame.z))
         reverse_sketch = part.sketch(frame=reverse_frame, name=name + "_negative_sk")
         wire.mapped_xy(lambda point: (point[0], -point[1])).draw(reverse_sketch)
-        negative = part.extrude(reverse_sketch, abs(height), name=name + "_negative",
+        negative = reverse_sketch.extrude(abs(height), name=name + "_negative",
                                 taper_angle=angle)
         return part.union(positive, negative, name=name + "_symmetric")
 
@@ -2571,7 +2571,7 @@ class Workplane(object):
             raise ValueError("fillet needs selected edges, e.g. .edges('|Z').fillet(0.2)")
         if self._solid is None:
             raise ValueError("fillet needs a solid")
-        solid = self.part.fillet(self._solid, names, float(radius), name=self._solid.name)
+        solid = self._solid.fillet(names, float(radius), name=self._solid.name)
         return self._cleared(_solid=solid, _faces=list(self._faces), _edges=list(self._edges))
 
     def chamfer(self, length, length2=None):
@@ -2583,13 +2583,13 @@ class Workplane(object):
             raise ValueError("chamfer needs selected edges, e.g. .edges('|Z').chamfer(0.2)")
         if self._solid is None:
             raise ValueError("chamfer needs a solid")
-        solid = self.part.chamfer(self._solid, names, float(length), name=self._solid.name)
+        solid = self._solid.chamfer(names, float(length), name=self._solid.name)
         return self._cleared(_solid=solid, _faces=list(self._faces), _edges=list(self._edges))
 
     def val(self):
         """The current camber Solid (raises if none)."""
         if self._selected_faces and self._solid is not None:
-            return self.part.face_surface(self._solid, self._selected_faces[0]["name"])
+            return self._solid.face_surface(self._selected_faces[0]["name"])
         if self._stack_solids:
             return self._stack_solids[0]
         if self._solid is None:
@@ -2682,7 +2682,7 @@ class Workplane(object):
         """Return an independent translated solid."""
         if self._solid is None:
             raise ValueError("translate needs a solid")
-        moved = self.part.pattern_linear(self._solid, 2, _as_vec3(vec))[1]
+        moved = self._solid.pattern_linear(2, _as_vec3(vec))[1]
         return self._cleared(_solid=moved, _faces=[], _edges=[])
 
     def rotate(self, axisStart, axisEnd, angleDegrees):
@@ -2693,8 +2693,8 @@ class Workplane(object):
         if _norm(end - start) < 1e-12:
             raise ValueError("rotate axis is degenerate")
         axis = _plane_from_normal(start, end - start, self._frame.x)
-        moved = self.part.pattern_circular(
-            self._solid, 2, axis=axis, angle=math.radians(float(angleDegrees)))[1]
+        moved = self._solid.pattern_circular(
+            2, axis=axis, angle=math.radians(float(angleDegrees)))[1]
         return self._cleared(_solid=moved, _faces=[], _edges=[])
 
     def rotateAboutCenter(self, axis, angleDegrees):
@@ -2726,7 +2726,7 @@ class Workplane(object):
                 plane = _plane_from_normal(face["center"], face["normal"], self._frame.x)
         else:
             plane = mirrorPlane if isinstance(mirrorPlane, Frame) else named_plane(mirrorPlane, basePointVector)
-        mirrored = self.part.mirror(self._solid, plane=plane)
+        mirrored = self._solid.mirror(plane=plane)
         if union:
             mirrored = self.part.union(self._solid, mirrored)
         return self._cleared(_solid=mirrored, _faces=[], _edges=[])
@@ -2746,7 +2746,7 @@ class Workplane(object):
             raise ValueError("shell needs a solid")
         faces = [face["name"] for face in self._selected_faces]
         join = "round" if thickness > 0 and kind == "arc" else "sharp"
-        shelled = self.part.shell(self._solid, abs(thickness), faces=faces,
+        shelled = self._solid.shell(abs(thickness), faces=faces,
                                   outward=thickness > 0, join=join)
         return self._cleared(_solid=shelled, _faces=[], _edges=[])
 
@@ -2779,12 +2779,12 @@ class Workplane(object):
         sketch.add_rectangle((u0 - margin, v0 - margin), (u1 + margin, v1 + margin))
         top = bottom = None
         if keepTop:
-            cutter = self.part.extrude(sketch, max(distances) + margin,
+            cutter = sketch.extrude(max(distances) + margin,
                                        name=self._new_name("split_top_tool"))
             top = self.part.intersect(self._solid, cutter, name=self._new_name("split_top"))
         if keepBottom:
-            cutter = self.part.extrude_two_sides(
-                sketch, 0, -min(distances) + margin,
+            cutter = sketch.extrude_two_sides(
+                0, -min(distances) + margin,
                 name=self._new_name("split_bottom_tool"))
             bottom = self.part.intersect(self._solid, cutter, name=self._new_name("split_bottom"))
         if top is not None and bottom is not None:

@@ -115,7 +115,7 @@ guide.add_arc(a4_start, _arc_mid_on_circle(a4_start, a4_end, center), a4_end, na
 guide.add_line(a4_end, _pt(line2, 0.000), name="line2")
 guide.add_arc(_pt(arc2, 1.000), _pt(arc2, 0.500), _pt(arc2, 0.000), name="arc2")
 
-body = part.extrude_along_sketch(s2, guide, name="profile", max_deviation=0.003)
+body = s2.extrude_along_sketch(guide, name="profile", max_deviation=0.003)
 
 s_cut = part.sketch("xy", constrained=True, name="pocket")
 s_cut.solve_after_every_constraint = False
@@ -131,7 +131,7 @@ s_cut.vertical_distance(s_cut @ "origin", south @ 0.000, 7.5)
 s_cut.length(east, 14.5)
 s_cut.solve()
 
-cutter = part.extrude_two_sides(s_cut, 20, 20, name="pocket", max_deviation=0.003)
+cutter = s_cut.extrude_two_sides(20, 20, name="pocket", max_deviation=0.003)
 result = body - cutter
 print(result)
 result.show(title="profile sweep")

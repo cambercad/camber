@@ -443,6 +443,34 @@ public class NativePart
         return Track(_inner.Chamfer(mesh.Native, entities, distance, maxDeviation, NativeUtil.EmptyToNull(name)), "Chamfer", new[] { mesh.Native.Name }, entities, $"distance={distance:G6}");
     }
 
+    public NativeSolid DrillHole(NativeSolid solid, NativeFrame mouth, double diameter, double depth, double maxDeviation, string name)
+        => Track(_inner.DrillHole(solid.Native, mouth.Native, diameter, depth == -1 ? null : depth,
+            maxDeviation, NativeUtil.EmptyToNull(name)), "Hole", new[] { solid.Native.Name },
+            details: $"diameter={diameter:G6};depth={depth:G6}");
+
+    public NativeSolid CounterboreHole(NativeSolid solid, NativeFrame mouth, double diameter, double depth,
+        double counterboreDiameter, double counterboreDepth, double maxDeviation, string name)
+        => Track(_inner.CounterboreHole(solid.Native, mouth.Native, diameter, depth == -1 ? null : depth,
+            counterboreDiameter, counterboreDepth, maxDeviation, NativeUtil.EmptyToNull(name)),
+            "Counterbore hole", new[] { solid.Native.Name },
+            details: $"diameter={diameter:G6};counterbore={counterboreDiameter:G6}x{counterboreDepth:G6}");
+
+    public NativeSolid CountersinkHole(NativeSolid solid, NativeFrame mouth, double diameter, double depth,
+        double countersinkDiameter, double includedAngle, double maxDeviation, string name)
+        => Track(_inner.CountersinkHole(solid.Native, mouth.Native, diameter, depth == -1 ? null : depth,
+            countersinkDiameter, includedAngle, maxDeviation, NativeUtil.EmptyToNull(name)),
+            "Countersink hole", new[] { solid.Native.Name },
+            details: $"diameter={diameter:G6};countersink={countersinkDiameter:G6};angle={includedAngle:G6}");
+
+    public NativeSolid DraftPrismaticFaces(NativeSolid solid, string faceNames, NativeFrame neutral,
+        double pullX, double pullY, double pullZ, double angle, double maxDeviation, string name)
+    {
+        var entities = NativeUtil.SplitNames(faceNames);
+        return Track(_inner.DraftPrismaticFaces(solid.Native, entities, new Plane3D(neutral.Native),
+            new Vec3D(pullX, pullY, pullZ), angle, maxDeviation, NativeUtil.EmptyToNull(name)),
+            "Draft", new[] { solid.Native.Name }, entities, $"angle={angle:G6}");
+    }
+
     public NativeSolid Shell(NativeSolid mesh, double thickness, string faceNames, double maxDeviation, string name, bool outward, bool rounded)
     {
         var entities = NativeUtil.SplitNames(faceNames);

@@ -26,7 +26,7 @@ chord_angle = -aoa_deg * math.pi / 180.0
 sketch = part.sketch(frame=Frame.from_plane((0, 0, 0), (0, 0, 1), (1, 0, 0), (0, 1, 0)), name="naca_section")
 sketch.add_naca4(naca, (0, 0), chord, chord_angle, samples_per_side=36)
 
-wing = part.extrude(sketch, span, name="hydrofoil_4412", max_deviation=max_dev)
+wing = sketch.extrude(span, name="hydrofoil_4412", max_deviation=max_dev)
 print("Created extruded NACA", naca, "wing:", wing)
 print("chord=", chord, "m  span=", span, "m  AoA=", aoa_deg, "deg  max_dev=", max_dev, "m")
 

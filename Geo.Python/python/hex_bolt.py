@@ -98,7 +98,7 @@ def create_hex_head_bolt(part, designation, shank_length_m, max_deviation, name=
             (circum_radius * math.cos(t0), circum_radius * math.sin(t0)),
             (circum_radius * math.cos(t1), circum_radius * math.sin(t1)),
         )
-    head = part.extrude(hex_sketch, k + part_overlap, name=name + "_head", max_deviation=max_deviation)
+    head = hex_sketch.extrude(k + part_overlap, name=name + "_head", max_deviation=max_deviation)
 
     body = part.boolean(
         part.boolean(shank, washer, BOOLEAN_UNION, name=name + "_u1"),
@@ -125,7 +125,7 @@ def create_hex_head_bolt(part, designation, shank_length_m, max_deviation, name=
     chamfer_sketch.add_line(p_e, p_a)
     with_chamfer = part.boolean(
         body,
-        part.revolve(chamfer_sketch, TWO_PI, name=name + "_topChamferCut", max_deviation=max_deviation),
+        chamfer_sketch.revolve(TWO_PI, name=name + "_topChamferCut", max_deviation=max_deviation),
         BOOLEAN_SUBTRACT,
         name=name + "_chamfer",
     )
@@ -150,7 +150,7 @@ def create_hex_head_bolt(part, designation, shank_length_m, max_deviation, name=
     tip_chamfer_sketch.add_line(t_f, t_a)
     with_tip = part.boolean(
         with_chamfer,
-        part.revolve(tip_chamfer_sketch, TWO_PI, name=name + "_tipChamferCut", max_deviation=max_deviation),
+        tip_chamfer_sketch.revolve(TWO_PI, name=name + "_tipChamferCut", max_deviation=max_deviation),
         BOOLEAN_SUBTRACT,
         name=name + "_tipChamfer",
     )

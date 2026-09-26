@@ -43,14 +43,14 @@ def housing(part):
 
 def flange(part, body):
     profile = rectangle(part, "flange_profile", -6, 42, 34)
-    blank = part.extrude(profile, 7, name="flange")
+    blank = profile.extrude(7, name="flange")
     return part.union(body, blank, name="flanged_housing")
 
 
 def notch(part, body):
     # A through cut exposes an accessible inside corner, with planar end trims.
     profile = rectangle(part, "notch_profile", -10, 30, 30, center=(15, 15))
-    cutter = part.extrude(profile, 45, name="notch")
+    cutter = profile.extrude(45, name="notch")
     return part.subtract(body, cutter, name="notched_housing")
 
 
@@ -149,22 +149,22 @@ def build_sculpture(part, case):
     inner_added = 0.0
     rim_removed = 0.0
     rim_edges = []
-    shoe = part.extrude(rectangle(part, "shoe_profile", -9, 76, 68), 10,
+    shoe = rectangle(part, "shoe_profile", -9, 76, 68).extrude(10,
                         name="shoe")
     if case == "twisted_duct":
         body = hollow_duct(part, shoe)
         untreated_volume = body.volume()
-        body = part.fillet(body, longitudinal_edges("passage", loft=True), .6,
+        body = body.fillet(longitudinal_edges("passage", loft=True), .6,
                            name="inner_upright_rounds")
         inner_added = body.volume() - untreated_volume
     elif case in ("hollow_rounds", "hollow_chamfers"):
-        shell = part.extrude(rectangle(part, "shell_profile", 0, 40, 32), 60,
+        shell = rectangle(part, "shell_profile", 0, 40, 32).extrude(60,
                              name="shell")
-        passage = part.extrude(rectangle(part, "passage_profile", -10, 30, 22), 71,
+        passage = rectangle(part, "passage_profile", -10, 30, 22).extrude(71,
                                name="passage")
         body = part.subtract(part.union(shoe, shell), passage, name="open_extrusion")
         untreated_volume = body.volume()
-        body = part.fillet(body, longitudinal_edges("passage"), 2,
+        body = body.fillet(longitudinal_edges("passage"), 2,
                            name="inner_upright_rounds")
         inner_added = body.volume() - untreated_volume
         # Separate machining features allow the concave upright rounds to meet
@@ -183,7 +183,7 @@ def build_sculpture(part, case):
             ((0, 18, 78), 10, 2, 175),
         )
         seed = sculpted_loft(part, "crown_vane", stations)
-        vanes = part.pattern_circular(seed, 6, name="crown_vanes")
+        vanes = seed.pattern_circular(6, name="crown_vanes")
         body = part.batch_union([shoe, *vanes])
     else:
         stations = [((x + 17, y, z), width * .7, height, angle)
@@ -197,25 +197,25 @@ def build_sculpture(part, case):
             curved_removed = untreated_volume - vane.volume()
             if curved_removed <= 0 or not vane.is_watertight():
                 raise ValueError(f"{case}: curved treatment must remove material from a closed vane")
-        vanes = part.pattern_circular(vane, 2, name="opposed_fins") if case == "crossed_fins" else [vane]
+        vanes = vane.pattern_circular(2, name="opposed_fins") if case == "crossed_fins" else [vane]
         body = part.batch_union([shoe, *vanes])
 
     # A generous corner relief leaves its concave vertical edge fully exposed.
     # Its offset locates the cut outside the loft root, preserving the wall.
-    relief = part.extrude(rectangle(part, "relief_profile", -12, 18, 20,
-                                    center=(36, 32)), 18, name="relief")
+    relief = rectangle(part, "relief_profile", -12, 18, 20,
+                                    center=(36, 32)).extrude(18, name="relief")
     body = part.subtract(body, relief, name="relieved_shoe")
     before = body.volume()
     inside = edge("relief-bottom", "relief-left")
     inside_before = body.volume()
-    body = part.chamfer(body, inside, 2, name="inward_chamfer")
+    body = body.chamfer(inside, 2, name="inward_chamfer")
     inward_added = body.volume() - inside_before
     # The three connected convex edges meet at the opposite shoe corner.
     corner = [edge("shoe-bottom", "shoe-left"),
               edge("shoe-bottom", "shoe-ExtrudeTop"),
               edge("shoe-left", "shoe-ExtrudeTop")]
-    body = part.fillet(body, corner, 2.5, name="shoe_corner_network")
-    body = part.chamfer(body, edge("shoe-top", "shoe-ExtrudeTop"), .8,
+    body = body.fillet(corner, 2.5, name="shoe_corner_network")
+    body = body.chamfer(edge("shoe-top", "shoe-ExtrudeTop"), .8,
                         name="meeting_rim_chamfer")
     if not body.is_watertight() or body.volume() <= 0 or inward_added <= 0:
         raise ValueError(f"{case}: invalid solid or inward chamfer failed to add material")
@@ -249,32 +249,32 @@ def build_case(part, case):
     before = body.volume()
 
     if case == "convex_edges":
-        result = part.fillet(body, LONG_EDGES, 1.5, name="four_convex_rounds")
+        result = body.fillet(LONG_EDGES, 1.5, name="four_convex_rounds")
         description = "Four convex longitudinal edges, R1.5"
     elif case == "concave_notch":
-        result = part.fillet(body, INSIDE_EDGE, 1, name="concave_round")
+        result = body.fillet(INSIDE_EDGE, 1, name="concave_round")
         description = "Through-notch inside edge, R1; adds material"
     elif case == "mixed_selection":
-        result = part.fillet(body, [INSIDE_EDGE, LONG_EDGES[3]], 1, name="mixed_rounds")
+        result = body.fillet([INSIDE_EDGE, LONG_EDGES[3]], 1, name="mixed_rounds")
         description = "Separate convex and concave edges in one R1 operation"
     elif case == "corner_network":
-        result = part.fillet(body, FLANGE_CORNER, 2, name="three_edge_corner")
+        result = body.fillet(FLANGE_CORNER, 2, name="three_edge_corner")
         description = "Three connected convex flange edges meeting at one corner, R2"
     elif case == "different_radii":
-        large = part.fillet(body, LONG_EDGES[0], 2, name="large_round")
-        result = part.fillet(large, LONG_EDGES[2], .7, name="small_round")
+        large = body.fillet(LONG_EDGES[0], 2, name="large_round")
+        result = large.fillet(LONG_EDGES[2], .7, name="small_round")
         description = "Opposite edges, R2 and R0.7 in successive features"
     elif case == "chamfer_edges":
-        result = part.chamfer(body, LONG_EDGES, 1, name="four_chamfers")
+        result = body.chamfer(LONG_EDGES, 1, name="four_chamfers")
         description = "Four longitudinal edges with flat distance-1 chamfers"
     elif case == "round_and_chamfer":
-        rounded = part.fillet(body, FLANGE_CORNER, 2, name="rounded_corner")
-        result = part.chamfer(rounded, edge("flange-top", "flange-left"), .8,
+        rounded = body.fillet(FLANGE_CORNER, 2, name="rounded_corner")
+        result = rounded.chamfer(edge("flange-top", "flange-left"), .8,
                               name="round_and_chamfer")
         description = "R2 corner network plus an opposite distance-0.8 chamfer"
     elif case == "meeting_treatments":
-        rounded = part.fillet(body, FLANGE_CORNER, 2, name="rounded_corner")
-        result = part.chamfer(rounded, edge("flange-left", "flange-ExtrudeTop"), .7,
+        rounded = body.fillet(FLANGE_CORNER, 2, name="rounded_corner")
+        result = rounded.chamfer(edge("flange-left", "flange-ExtrudeTop"), .7,
                               name="meeting_treatments")
         description = "Distance-0.7 top-rim chamfer terminating into the R2 corner network"
     else:
@@ -319,7 +319,7 @@ def probe_corner(case):
     set_progress_log(False)
     part = Part((-50, -50, -15), (350, 300, 130), tolerance=.04)
     if case in ("duct_rim_rounds", "duct_rim_chamfers"):
-        shoe = part.extrude(rectangle(part, "shoe_profile", -9, 76, 68), 10, name="shoe")
+        shoe = rectangle(part, "shoe_profile", -9, 76, 68).extrude(10, name="shoe")
         body = hollow_duct(part, shoe)
         operation = part.fillet if case == "duct_rim_rounds" else part.chamfer
         return operation(body, opening_rim(body, "duct-EndCap"), .6)
@@ -328,33 +328,33 @@ def probe_corner(case):
     if case == "curved_four_edges":
         body = sculpted_loft(part, "vane", VANE_STATIONS)
         edges = longitudinal_edges("vane", loft=True)
-        return part.fillet(body, edges, .8)
+        return body.fillet(edges, .8)
     if case in ("curved_round", "curved_chamfer"):
         body = sculpted_loft(part, "vane", VANE_STATIONS)
         operation = part.fillet if case == "curved_round" else part.chamfer
         return operation(body, edge("vane-Side-bottom", "vane-Side-right"), .6)
     if case == "inward_chamfer_network":
-        body = part.extrude(rectangle(part, "block_profile", -10, 60, 44), 14, name="block")
-        cutter = part.extrude(rectangle(part, "pocket_profile", -5, 16, 12), 15, name="pocket")
+        body = rectangle(part, "block_profile", -10, 60, 44).extrude(14, name="block")
+        cutter = rectangle(part, "pocket_profile", -5, 16, 12).extrude(15, name="pocket")
         body = part.subtract(body, cutter)
-        return part.chamfer(body, [edge("pocket-bottom", "pocket-ExtrudeBottom"),
+        return body.chamfer([edge("pocket-bottom", "pocket-ExtrudeBottom"),
                                    edge("pocket-left", "pocket-ExtrudeBottom"),
                                    edge("pocket-bottom", "pocket-left")], .6)
     body = housing(part)
     if case == "tapered_round_corner":
-        return part.fillet(body, TAPERED_CORNER, 1)
+        return body.fillet(TAPERED_CORNER, 1)
     if case == "tapered_chamfer_corner":
-        return part.chamfer(body, TAPERED_CORNER, 1)
+        return body.chamfer(TAPERED_CORNER, 1)
     if case == "pocket_round":
-        cutter = part.extrude(rectangle(part, "pocket_profile", 15, 14, 10), 20,
+        cutter = rectangle(part, "pocket_profile", 15, 14, 10).extrude(20,
                               name="pocket")
         body = part.subtract(body, cutter)
-        return part.fillet(body, edge("pocket-bottom", "pocket-ExtrudeBottom"), 1)
+        return body.fillet(edge("pocket-bottom", "pocket-ExtrudeBottom"), 1)
     if case == "flange_chamfer_corner":
-        return part.chamfer(flange(part, body), FLANGE_CORNER, .7)
+        return flange(part, body).chamfer(FLANGE_CORNER, .7)
     if case == "mixed_corner":
         body = notch(part, body)
-        return part.fillet(body, [INSIDE_EDGE, edge("notch-bottom", "housing-EndCap"),
+        return body.fillet([INSIDE_EDGE, edge("notch-bottom", "housing-EndCap"),
                                   edge("notch-left", "housing-EndCap")], 1)
     raise ValueError(f"Unknown probe: {case}")
 

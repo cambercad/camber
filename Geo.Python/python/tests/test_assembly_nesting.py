@@ -12,7 +12,7 @@ set_progress_log(False)
 def _box(part, name, size=4.0):
     sk = part.sketch("xy", name=name + "_sk")
     sk.add_rectangle((-0.5 * size, -0.5 * size), (0.5 * size, 0.5 * size))
-    return part.extrude(sk, size, name=name)
+    return sk.extrude(size, name=name)
 
 
 def _near(got, expected, tol=0.15):
@@ -80,8 +80,9 @@ class AssemblyNestingTests(unittest.TestCase):
         self.assertTrue(_near(leaves[1].frame.origin, (3, 10, 0), tol=1e-8))
         self.assertEqual(leaves[1].solid.name, "nested")
         self.assertTrue(leaves[1].solid.patch_names)
-        self.assertTrue(_near(top.bounds()[0], (-3, -1, 0), tol=1e-8))
-        self.assertTrue(_near(top.bounds()[1], (5, 12, 4), tol=1e-8))
+        # Bounds come from the part's 0.05-tolerance integer lattice, not exact sketch coordinates.
+        self.assertTrue(_near(top.bounds()[0], (-3, -1, 0), tol=1e-3))
+        self.assertTrue(_near(top.bounds()[1], (5, 12, 4), tol=1e-3))
     def test_parent_can_mate_to_nested_part(self):
         part = Part(vec3(-80), vec3(80), tolerance=0.05)
         nested_solid = _box(part, "nested")

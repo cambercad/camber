@@ -25,11 +25,11 @@ part = Part(vec3(-80), vec3(80), tolerance=0.05)
 
 plate_sk = part.sketch("xy", name="plate")
 plate_sk.add_rectangle((-plate_half_x, -plate_half_y), (plate_half_x, plate_half_y))
-plate = part.extrude(plate_sk, plate_h, name="plate")
+plate = plate_sk.extrude(plate_h, name="plate")
 
 text_sk = part.sketch("xy", name="text")
 text_sk.add_text(label, origin=baseline, family=family, em_size=em_size)
-letters = part.extrude(text_sk, letter_h, name="letters")
+letters = text_sk.extrude(letter_h, name="letters")
 
 body = plate + letters
 print(body)
