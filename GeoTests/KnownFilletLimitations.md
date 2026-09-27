@@ -24,10 +24,13 @@ across the gap. Retained-support and loft-deviation regressions remain active.
 requests 0.1 mm cap-rim rounds in the oblique frame defined in that fixture.
 The generated blend does not provide a complete oriented cut:
 `Resolver.DetectPartialCut` finds contradictory exact side classifications in
-one connected cluster. The unrotated 0.1/0.2 mm cases and transformed stepped
-profile remain enabled. Further work must locate and repair the generated
-trim boundary; ignoring the partial-cut check or increasing a tolerance would
-not be an acceptable fix.
+one connected cluster. This is not an open-loop or T-junction failure: the
+blend patches join exactly and intersect the solid in one closed contour. The
+conflicting evidence comes from different triangles of the curved cutter, so
+the remaining question is whether the cutter geometry or the partial-cut
+classification is wrong. The check must not be bypassed or replaced with a
+tolerance. The unrotated 0.1/0.2 mm cases and transformed stepped profile remain
+enabled.
 
 To re-enable either regression, remove its `Skip` argument, retain all existing
 watertightness/support/volume assertions, and run the focused tests followed by

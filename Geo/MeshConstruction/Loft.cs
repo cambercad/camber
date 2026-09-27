@@ -103,26 +103,6 @@ namespace Geo
             get { return new LoftOptions(); }
         }
 
-        /// <summary>
-        /// High-accuracy loft for multi-station NACA propeller blades:
-        /// <see cref="LoftCorrespondenceMode.MergedArcLengthAnchors"/> so u-columns follow sketch
-        /// <c>maxDeviation</c> tessellation; <see cref="LoftCreasePolicy.None"/> for smooth TE caps.
-        /// Uses <see cref="LoftStyle.SmoothCatmullRom"/> for watertight skinning on tilted section frames.
-        /// </summary>
-        public static LoftOptions PropellerBlade
-        {
-            get
-            {
-                return new LoftOptions
-                {
-                    Style = LoftStyle.SmoothCatmullRom,
-                    CorrespondenceMode = LoftCorrespondenceMode.MergedArcLengthAnchors,
-                    CreasePolicy = LoftCreasePolicy.None,
-                    CapEnds = true,
-                    AllowOpenContour = false
-                };
-            }
-        }
     }
 
     /// <summary>

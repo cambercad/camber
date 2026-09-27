@@ -7,20 +7,39 @@ public class SweepGuideTangencyTests : IDisposable
     public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
 
     private static GeoAPI Api()=>new(new Box3D(new Vec3D(-30),new Vec3D(30)),.001);
-    [Theory]
-    [InlineData(10,10)]
-    [InlineData(.001,20)]
-    public void KinkIsRejectedBeforeRegisteringAnIncorrectSweep(double lateral, double finalZ)
+    [Fact]
+    public void SharpGuideJoinUsesAMiterSectionAndRemainsWatertight()
     {
         var api=Api();var profile=api.GetPlotterSketcher(DefaultPlanes.OriginXY,"profile");
         profile.AddRectangle(new Vec2D(-.5,-.5),1,1);
         var curves=new List<Curve3D>{
             new Line3D(new Vec3D(0),new Vec3D(0,0,10),"incoming"),
-            new Line3D(new Vec3D(0,0,10),new Vec3D(lateral,0,finalZ),"outgoing")};
-        var error=Assert.Throws<ArgumentException>(()=>api.ExtrudeAlongCurveStrip(profile,curves,name:"invalid"));
-        Assert.Contains("incoming",error.Message);Assert.Contains("outgoing",error.Message);
-        Assert.Contains("not tangent",error.Message);
-        Assert.DoesNotContain(api.GetMeshes(),mesh=>mesh.Name=="invalid");
+            new Line3D(new Vec3D(0,0,10),new Vec3D(10,0,10),"outgoing")};
+
+        var mesh=api.ExtrudeAlongCurveStrip(profile,curves,name:"mitered",referenceDirection:new Vec3D(0,1,0));
+
+        Assert.True(MeshAnalysis.IsWatertightMesh(mesh.Mesh.PrecisionPositions,mesh.Mesh.Triangles));
+        Assert.True(MeshAnalysis.AreTrianglesConsistentlyOriented(mesh.Mesh.PrecisionPositions,mesh.Mesh.Triangles));
+        Assert.True(MeshAnalysis.ComputeSignedMeshVolume(mesh.Mesh.PrecisionPositions,mesh.Mesh.Triangles)>BigRationalHybrid.Zero);
+        Assert.Contains(mesh.groupIdToExtendedName.Values,name=>name.Contains("incoming",StringComparison.Ordinal));
+        Assert.Contains(mesh.groupIdToExtendedName.Values,name=>name.Contains("outgoing",StringComparison.Ordinal));
+        var body=api.GetAssembly("check").AddPart(mesh,new Vec3D(0));
+        var top=body.AddPlaneDatum("mitered-ExtrudeTop");
+        Assert.True(Vec3DOps.Dot(top.LocalNormal,new Vec3D(1,0,0))>.99);
+    }
+    [Fact]
+    public void AGuideThatReversesAtAJoinIsRejectedBeforeRegistration()
+    {
+        var api=Api();var profile=api.GetPlotterSketcher(DefaultPlanes.OriginXY,"profile");
+        profile.AddRectangle(new Vec2D(-.5,-.5),1,1);
+        var curves=new List<Curve3D>{
+            new Line3D(new Vec3D(0),new Vec3D(0,0,5),"outbound"),
+            new Line3D(new Vec3D(0,0,5),new Vec3D(0),"return")};
+
+        var error=Assert.Throws<ArgumentException>(()=>api.ExtrudeAlongCurveStrip(profile,curves,name:"reversal"));
+
+        Assert.Contains("reverses direction",error.Message);
+        Assert.DoesNotContain(api.GetMeshes(),mesh=>mesh.Name=="reversal");
     }
     [Fact]
     public void ReversedTangentSegmentsPreserveAnObliqueStartingProfile()
@@ -71,7 +90,7 @@ public class SweepGuideTangencyTests : IDisposable
         }
     }
     [Fact]
-    public void ClosingSeamIsValidatedEvenWhenInternalJoinIsTangent()
+    public void ClosedSweepMiterHandlesAKinkAtItsSeam()
     {
         var api=Api();var profile=api.GetPlotterSketcher(DefaultPlanes.OriginXY,"profile");
         profile.AddCircle(new Vec2D(0),.5);
@@ -79,9 +98,9 @@ public class SweepGuideTangencyTests : IDisposable
             new Line3D(new Vec3D(0),new Vec3D(0,0,10),"straight"),
             new CubicHermiteSpline3D(new[]{new Vec3D(0,0,10),new Vec3D(5,0,5),new Vec3D(0)},
                 new Vec3D(0,0,1),new Vec3D(1,0,0),"return")};
-        var error=Assert.Throws<ArgumentException>(()=>api.ExtrudeAlongCurveStrip(profile,curves,name:"invalid_closed"));
-        Assert.Contains("return",error.Message);Assert.Contains("straight",error.Message);
-        Assert.DoesNotContain(api.GetMeshes(),mesh=>mesh.Name=="invalid_closed");
+        var mesh=api.ExtrudeAlongCurveStrip(profile,curves,name:"closed_miter");
+        Assert.True(MeshAnalysis.IsWatertightMesh(mesh.Mesh.PrecisionPositions,mesh.Mesh.Triangles));
+        Assert.True(MeshAnalysis.AreTrianglesConsistentlyOriented(mesh.Mesh.PrecisionPositions,mesh.Mesh.Triangles));
     }
     [Fact]
     public void TangentLineArcLineHasCapNormalAlongFinalGuide()

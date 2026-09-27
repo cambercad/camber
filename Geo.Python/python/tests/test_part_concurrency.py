@@ -41,15 +41,13 @@ class PartConcurrencyTests(unittest.TestCase):
         destination = Part((-10, -10, -10), (20, 20, 20), tolerance=.02)
         assembly = destination.assembly('collected')
         for i, (owner, body, signature, _) in enumerate(actual):
-            with self.assertRaisesRegex(Exception, 'not registered'):
-                assembly.add_part(body)
+            assembly.add_part(body, (0, 0, i*4))
             copied = destination.copy_solid(body, 'collected_'+str(i))
             points, triangles = copied.mesh()
             geometry = tuple(sorted(tuple(sorted(tuple(points[j]) for j in triangle)) for triangle in triangles))
             self.assertEqual(signature[0], geometry)
             self.assertEqual(signature[1], tuple(sorted(
                 name.partition(':')[2] for name in copied.curve_names)))
-            assembly.add_part(copied, (0, 0, i*4))
         self.assertEqual(4, len(assembly.parts))
 
     def test_incompatible_lattice_copy_rejected_without_registering_result(self):

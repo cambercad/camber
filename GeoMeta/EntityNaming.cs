@@ -42,6 +42,10 @@ namespace GeoMeta
         public const string ChamferCornerPrefix = "ChamferCorner_";
         public const string ShellInnerPrefix = "ShellInner_";
         public const string ShellRimPrefix = "ShellRim_";
+        public const string ThickenNegativePrefix = "ThickenNegative_";
+        public const string ThickenPositivePrefix = "ThickenPositive_";
+        public const string ThickenRimPrefix = "ThickenRim_";
+        public const string SurfaceCapPrefix = "SurfaceCap_";
 
         public const string SketchCurveCenterParam = "center";
         public const string SketchCurveControlVertexPrefix = "cv";
@@ -147,6 +151,10 @@ namespace GeoMeta
         public static string ChamferCorner(int index) => ChamferCornerPrefix + index;
         public static string ShellInner(string sourcePatch) => ShellInnerPrefix + sourcePatch;
         public static string ShellRim(string sourceEdge) => ShellRimPrefix + sourceEdge;
+        public static string ThickenNegative(string sourcePatch) => ThickenNegativePrefix + sourcePatch;
+        public static string ThickenPositive(string sourcePatch) => ThickenPositivePrefix + sourcePatch;
+        public static string ThickenRim(int index) => ThickenRimPrefix + index;
+        public static string SurfaceCap(string surfaceName, int index) => SurfaceCapPrefix + surfaceName + "_" + index;
 
         public static string ImportAutoGroup(string prefix, int groupIndex) => prefix + groupIndex;
 

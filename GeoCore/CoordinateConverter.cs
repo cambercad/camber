@@ -7,6 +7,7 @@
         private readonly Box3I integerBoundingBox;
         private readonly double toIntegerScaling;
         private readonly double toOriginalScaling;
+        private readonly BigRationalHybrid exactToOriginalScaling;
 
         /// <param name="operatingSpaceSlices">Number of lattice divisions along the longest box axis (default 1M ≈ former 20-bit grid).</param>
         public CoordinateConverter(Box3D operatingSpace = default, int operatingSpaceSlices = 1_000_000)
@@ -28,6 +29,7 @@
             double longestAxisSize = Math.Max(boxSize.X, Math.Max(boxSize.Y, boxSize.Z));
             int longestAxisDivisions = operatingSpaceSlices - 1;
             toIntegerScaling = longestAxisDivisions / longestAxisSize;
+            exactToOriginalScaling = ExactRational(longestAxisSize) / new BigRationalHybrid(longestAxisDivisions);
 
             // Use the same uniform scale on every axis. The integer bounds describe
             // the operating box in that isotropic lattice; shorter axes therefore
@@ -132,6 +134,34 @@
                 p.Y.ToDouble() * toOriginalScaling + offset.Y,
                 p.Z.ToDouble() * toOriginalScaling + offset.Z
             );
+        }
+
+        /// <summary>
+        /// Re-express an exact point from another converter's integer lattice in
+        /// this converter's lattice. No rounding is performed; coordinates may
+        /// therefore be rational even when the two grids do not align.
+        /// </summary>
+        public Rat3Hybrid ConvertExact(in Rat3Hybrid point, CoordinateConverter source)
+        {
+            var sourceUnit = source.exactToOriginalScaling;
+            var targetUnit = exactToOriginalScaling;
+            return new Rat3Hybrid(
+                ((point.X * sourceUnit + ExactRational(source.offset.X) - ExactRational(offset.X)) / targetUnit),
+                ((point.Y * sourceUnit + ExactRational(source.offset.Y) - ExactRational(offset.Y)) / targetUnit),
+                ((point.Z * sourceUnit + ExactRational(source.offset.Z) - ExactRational(offset.Z)) / targetUnit));
+        }
+
+        /// <summary>Whether both converters have the same exact scale and world origin.</summary>
+        public bool HasSameLattice(CoordinateConverter other) =>
+            offset.X == other.offset.X && offset.Y == other.offset.Y && offset.Z == other.offset.Z &&
+            exactToOriginalScaling.CompareTo(other.exactToOriginalScaling) == 0;
+
+        private static BigRationalHybrid ExactRational(double value)
+        {
+            if (!double.IsFinite(value))
+                throw new ArgumentOutOfRangeException(nameof(value), "Lattice parameters must be finite.");
+            BigRational rational = value;
+            return new BigRationalHybrid(rational.Numerator, rational.Denominator);
         }
         public List<Int3> Convert(List<Vec3D> p)
         {

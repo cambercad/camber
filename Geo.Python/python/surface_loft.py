@@ -1,7 +1,7 @@
 """A sheet from constrained sections, two boundary guides and optional tangents."""
 
 import argparse
-from camber import Curve, Frame, Part, show
+from camber import Curve3D, Frame, Part, show
 
 
 def build_surface():
@@ -17,9 +17,9 @@ def build_surface():
         section.solve()
         sections.append(section)
 
-    left = Curve.hermite([(0, 0, 0), (0, 0, 20), (0, 0, 40)],
+    left = Curve3D.hermite([(0, 0, 0), (0, 0, 20), (0, 0, 40)],
                          [(0, 1, 2), (0, -1, 2), (0, 1, 2)], name="left_boundary")
-    right = Curve.hermite([(30, 0, 0), (30, 0, 20), (30, 0, 40)],
+    right = Curve3D.hermite([(30, 0, 0), (30, 0, 20), (30, 0, 40)],
                           [(0, -1, 2), (0, 1, 2), (0, -1, 2)], name="right_boundary")
     sheet = part.loft_surface(sections, guides=[left, right], name="guided_sheet")
     # Without guides: part.loft_surface(sections)

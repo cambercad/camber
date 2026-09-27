@@ -5,7 +5,7 @@ using GeoSolver.Kinematics;
 
 namespace Geo
 {
-    [APIDescription(@"Assembly: 3D mate solver for registered meshes. AddPart places solids; AddSubAssembly places a child assembly (which may itself contain parts and sub-assemblies) as a rigid occurrence. Create datums on parts (including nested ones); apply mates; then SolveConstraints().")]
+    [APIDescription(@"Assembly: 3D mate solver for registered meshes. AddPart places solids; AddSubAssembly places child definitions as rigid occurrences. A definition may be placed repeatedly; use each occurrence's GetParts() references for unambiguous parent mates. Create datums on parts; apply mates; then SolveConstraints().")]
     public partial class Assembly
     {
         private readonly GeoAPI _api;
@@ -14,7 +14,9 @@ namespace Geo
         private readonly List<AssemblyPart> _parts = new List<AssemblyPart>();
         private readonly List<AssemblyOccurrence> _occurrences = new List<AssemblyOccurrence>();
         private readonly List<AssemblyMateRecord> _mateRecords = new List<AssemblyMateRecord>();
+        private readonly Dictionary<AnchorMesh, (GeoAPI Source, AnchorMesh Definition)> _foreignDefinitions = new();
         private bool _solveAfterEveryConstraint = true;
+        internal bool SuppressOccurrenceMeshUpdates { get; private set; }
 
         internal Assembly(GeoAPI api, string name)
         {
@@ -47,38 +49,87 @@ When True, every Fix*/Set* call triggers SolveConstraints(). Set False to batch 
         }
 
         [APIDescription(@"AddPart(mesh: AnchorMesh, position: Vec3D, orientation: Quaternion = identity) -> AssemblyPart
-Registers a rigid body at the given initial pose. Mesh must belong to this GeoAPI instance.")]
+Registers a rigid body at the given initial pose. Mesh must belong to this assembly's GeoAPI instance.")]
         public AssemblyPart AddPart(AnchorMesh mesh, Vec3D position, Quaternion orientation = default)
+            => AddPart(_api, mesh, position, orientation);
+
+        [APIDescription(@"AddPart(source: GeoAPI, mesh: AnchorMesh, position: Vec3D, orientation: Quaternion = identity) -> AssemblyPart
+Registers a solid owned by another GeoAPI instance. Its exact geometry is re-expressed in this assembly's lattice without coordinate rounding; repeated placements share the converted definition.")]
+        public AssemblyPart AddPart(GeoAPI source, AnchorMesh mesh, Vec3D position, Quaternion orientation = default)
         {
+            if (source == null)
+                throw new ArgumentNullException(nameof(source));
             if (mesh == null)
                 throw new ArgumentNullException(nameof(mesh));
 
-            if (!_api.IsRegisteredMesh(mesh))
-                throw new ArgumentException($"Mesh '{mesh.Name}' is not registered on this GeoAPI instance.", nameof(mesh));
+            if (!source.IsRegisteredMesh(mesh))
+                throw new ArgumentException($"Mesh '{mesh.Name}' is not registered on the source GeoAPI instance.", nameof(mesh));
+
+            AnchorMesh definition = mesh;
+            if (!ReferenceEquals(source, _api))
+                definition = GetForeignDefinition(source, mesh);
 
             orientation = TransformMath.NormalizeDefault(orientation);
             var initialPose = new Transform(position, orientation);
-            mesh.CaptureRigidRestPose(_api.Converter);
+            definition.CaptureRigidRestPose(_api.Converter);
 
-            _solver.IncludeCharacteristicLength(MeshCharacteristicLength(mesh));
-            RigidTransform<AnchorMesh> rigidBody = _solver.AddRigidBody(mesh, initialPose);
-            var part = new AssemblyPart(this, mesh, rigidBody);
+            _solver.IncludeCharacteristicLength(MeshCharacteristicLength(definition));
+            RigidTransform<AnchorMesh> rigidBody = _solver.AddRigidBody(definition, initialPose);
+            var part = new AssemblyPart(this, definition, rigidBody);
             _parts.Add(part);
             TouchActivity();
             return part;
         }
 
-        [APIDescription(@"AddSubAssembly(child: Assembly, position: Vec3D, orientation: Quaternion = identity) -> AssemblyOccurrence
-Places a child assembly as a rigid occurrence at the given pose. The child may contain parts and further sub-assemblies. Child internals keep their last solved relative poses; this assembly owns 6 DOF for the whole subtree. Mates on this assembly may use datums on nested parts.")]
-        public AssemblyOccurrence AddSubAssembly(Assembly child, Vec3D position, Quaternion orientation = default)
+        private AnchorMesh GetForeignDefinition(GeoAPI source, AnchorMesh mesh)
+        {
+            if (_foreignDefinitions.TryGetValue(mesh, out var cached))
+            {
+                if (!ReferenceEquals(cached.Source, source))
+                    throw new ArgumentException("The same mesh was registered by multiple source GeoAPI instances; specify a distinct mesh for each source lattice.", nameof(mesh));
+                return cached.Definition;
+            }
+
+            mesh.EnsureCoplanarPostProcessed();
+            var sourceConverter = source.Converter;
+            var targetConverter = _api.Converter;
+            var exactPositions = new List<Rat3Hybrid>(mesh.Mesh.PrecisionPositions.Count);
+            for (int i = 0; i < mesh.Mesh.PrecisionPositions.Count; i++)
+                exactPositions.Add(targetConverter.ConvertExact(mesh.Mesh.PrecisionPositions[i], sourceConverter));
+
+            var definitionMesh = new MeshNormalUV
+            {
+                PrecisionPositions = exactPositions,
+                Positions = targetConverter.Convert(exactPositions),
+                Triangles = new List<Tri>(mesh.Mesh.Triangles),
+                TrianglesEx = new List<MeshTriangle<TriangleVertexNormalUV>>(mesh.Mesh.TrianglesEx),
+            };
+            var definition = new AnchorMesh(mesh.Name, definitionMesh,
+                new Dictionary<int, string>(mesh.groupIdToExtendedName),
+                SurfaceMetaData.CloneDictionary(mesh.surfaceMetaData),
+                deferCoplanarPostProcess: false,
+                skipCoplanarFusion: true,
+                isVolume: mesh.IsVolume,
+                preserveTriangulation: true,
+                faceLineages: mesh.FaceLineages,
+                ambiguousReferences: mesh.AmbiguousFaceReferences);
+            _foreignDefinitions.Add(mesh, (source, definition));
+            return definition;
+        }
+
+        [APIDescription(@"AddSubAssembly(child: Assembly, position: Vec3D, orientation: Quaternion = identity, flexible: bool = false) -> AssemblyOccurrence
+Places a child definition. Rigid occurrences share the definition's internal pose. A flexible occurrence gets an independent copy of its internal mate state and part geometry, so its joints can move without affecting other occurrences. Use the returned occurrence's GetParts() references for unambiguous parent mates.")]
+        public AssemblyOccurrence AddSubAssembly(Assembly child, Vec3D position, Quaternion orientation = default, bool flexible = false)
+            => AddSubAssembly(child, position, orientation, flexible, cloneFlexibleDefinition: flexible);
+
+        internal AssemblyOccurrence AddSubAssembly(Assembly child, Vec3D position, Quaternion orientation,
+            bool flexible, bool cloneFlexibleDefinition)
         {
             if (child == null)
                 throw new ArgumentNullException(nameof(child));
-            if (!ReferenceEquals(child._api, _api))
-                throw new ArgumentException("Sub-assembly must belong to the same GeoAPI instance.", nameof(child));
             if (child == this)
                 throw new ArgumentException("An assembly cannot contain itself.", nameof(child));
-            if (child.Parent != null)
+            if (!flexible && child.Parent != null && child.Parent != this)
                 throw new ArgumentException(
                     $"Assembly '{child.Name}' is already nested in '{child.Parent.Name}'.",
                     nameof(child));
@@ -97,15 +148,29 @@ Places a child assembly as a rigid occurrence at the given pose. The child may c
                     nameof(child));
 
             orientation = TransformMath.NormalizeDefault(orientation);
+            Assembly definition = child;
+            if (flexible && cloneFlexibleDefinition)
+            {
+                string instanceName;
+                do { instanceName = GeoAPI.GenerateName(child.Name + "_flexible"); }
+                while (_api.GetAssemblies().Any(existing => existing.Name == instanceName));
+                definition = child.CloneHierarchy(instanceName, independentGeometry: true);
+            }
+            if (_occurrences.Any(existing => ReferenceEquals(existing.Child, definition)))
+                definition.SuppressOccurrenceMeshUpdates = true;
             var initialPose = new Transform(position, orientation);
-            IncludeSubtreeCharacteristicLength(child);
+            IncludeSubtreeCharacteristicLength(definition);
             _solver.IncludeCharacteristicLength(position.Length());
 
-            var rig = new AssemblyOccurrenceRig(child);
+            var rig = new AssemblyOccurrenceRig(definition);
             RigidTransform<AssemblyOccurrenceRig> rigidBody = _solver.AddRigidBody(rig, initialPose);
-            var occurrence = new AssemblyOccurrence(this, child, rigidBody);
+            var occurrence = new AssemblyOccurrence(this, definition, rigidBody, flexible: flexible)
+            { DisplayName = child.Name };
             _occurrences.Add(occurrence);
-            child.Parent = this;
+            // Parent is the definition-tree parent used for internal local
+            // transforms. Repeated placements in this same assembly share the
+            // definition and are distinguished by AssemblyPart occurrence refs.
+            definition.Parent ??= this;
             TouchActivity();
             return occurrence;
         }
@@ -119,7 +184,7 @@ Locks the part at its current pose (6 DOF). A nested part locks the rigid sub-as
                 AssemblyMateKind.FixPart,
                 $"Fix {part.Mesh.Name}",
                 part).WithFixedTarget(SolverTransformOf(part).Evaluate(),
-                    part.Assembly == this ? null : FindDirectOccurrenceContaining(part.Assembly)),
+                    FindOccurrenceContaining(part)),
                 part.Mesh.Name + ":");
             AddSolverConstraints(new FixedTransformConstraint3d(SolverTransformOf(part)));
         }
@@ -131,19 +196,17 @@ Locks the part at the given world pose.")]
             EnsurePartInTree(part);
             orientation = TransformMath.NormalizeDefault(orientation);
             Transform desired = new Transform(position, orientation);
-            if (part.Assembly != this)
+            AssemblyOccurrence occurrence = FindOccurrenceContaining(part);
+            if (occurrence != null)
             {
-                AssemblyOccurrence occ = FindDirectOccurrenceContaining(part.Assembly);
-                if (occ == null)
-                    throw new ArgumentException($"AssemblyPart '{part.Mesh.Name}' is not in assembly '{Name}'.");
-                Transform relative = PoseInAssembly(part, occ.Child);
+                Transform relative = RelativePoseInOccurrence(part, occurrence);
                 desired = TransformMath.Compose(desired, TransformMath.Inverse(relative));
             }
             RecordMate(new AssemblyMateRecord(
                 AssemblyMateKind.FixPart,
                 $"Fix {part.Mesh.Name}",
                 part).WithFixedTarget(desired,
-                    part.Assembly == this ? null : FindDirectOccurrenceContaining(part.Assembly)),
+                    occurrence),
                 part.Mesh.Name + ":");
             AddSolverConstraints(new FixedTransformConstraint3d(SolverTransformOf(part), desired));
         }
@@ -152,14 +215,15 @@ Locks the part at the given world pose.")]
 Locks a nested sub-assembly at its current pose (6 DOF).")]
         public void FixSubAssembly(AssemblyOccurrence occurrence)
         {
-            EnsureOwnedOccurrence(occurrence);
+            AssemblyOccurrence root = occurrence?.InstanceRoot;
+            EnsureOwnedOccurrence(root);
             AssemblyPart leaf = FirstLeafPart(occurrence.Child);
             RecordMate(new AssemblyMateRecord(
                 AssemblyMateKind.FixPart,
                 $"Fix {occurrence.Child.Name}",
-                leaf).WithFixedTarget(occurrence.EvaluatePose(), occurrence),
+                leaf.ForOccurrence(root)).WithFixedTarget(root.EvaluatePose(), root),
                 occurrence.Child.Name + ":");
-            AddSolverConstraints(new FixedTransformConstraint3d(occurrence.Transform));
+            AddSolverConstraints(new FixedTransformConstraint3d(root.Transform));
         }
 
         [APIDescription(@"SetCoincident(a: AssemblyPointDatum, b: AssemblyPointDatum) -> None
@@ -481,9 +545,16 @@ Runs the 6-DOF rigid-body solver. preferMinimalMovement biases toward the curren
         {
             if (part == null)
                 throw new ArgumentNullException(nameof(part));
+            if (part.OccurrenceContext != null)
+            {
+                if (part.Assembly != this || !part.OccurrenceContext.Child.ContainsAssembly(this) ||
+                    !_parts.Contains(part.DefinitionPart))
+                    throw new ArgumentException("AssemblyPart does not refer to a part in this occurrence definition.");
+                return;
+            }
             if (part.Assembly != this)
                 throw new ArgumentException("AssemblyPart belongs to a different Assembly.");
-            if (!_parts.Contains(part))
+            if (!_parts.Contains(part.DefinitionPart))
                 throw new ArgumentException("AssemblyPart was not created by this Assembly.");
         }
 
@@ -491,15 +562,25 @@ Runs the 6-DOF rigid-body solver. preferMinimalMovement biases toward the curren
         {
             if (part == null)
                 throw new ArgumentNullException(nameof(part));
-            if (part.Assembly == this)
+            if (part.Assembly == this && part.OccurrenceContext == null)
             {
-                if (!_parts.Contains(part))
+                if (!_parts.Contains(part.DefinitionPart))
                     throw new ArgumentException("AssemblyPart was not created by this Assembly.");
+                return;
+            }
+            if (part.OccurrenceContext != null)
+            {
+                if (!IsPartReferenceInTree(part))
+                    throw new ArgumentException(
+                        $"AssemblyPart '{part.Mesh.Name}' does not belong to this assembly occurrence.");
                 return;
             }
             if (!ContainsAssembly(part.Assembly))
                 throw new ArgumentException(
                     $"AssemblyPart '{part.Mesh.Name}' is not in assembly '{Name}' or its sub-assemblies.");
+            if (FindDirectOccurrenceContaining(part.Assembly, out int matches) != null && matches > 1)
+                throw new ArgumentException(
+                    $"AssemblyPart '{part.Mesh.Name}' is in multiple occurrences; get it from the intended AssemblyOccurrence.");
         }
 
         private void EnsureOwnedDatum(AssemblyPart a, AssemblyPart b)
@@ -531,21 +612,61 @@ Runs the 6-DOF rigid-body solver. preferMinimalMovement biases toward the curren
         }
 
         internal AssemblyOccurrence FindDirectOccurrenceContaining(Assembly nested)
+            => FindDirectOccurrenceContaining(nested, out _);
+
+        private AssemblyOccurrence FindDirectOccurrenceContaining(Assembly nested, out int matches)
         {
+            AssemblyOccurrence found = null;
+            matches = 0;
             for (int i = 0; i < _occurrences.Count; i++)
             {
                 if (_occurrences[i].Child.ContainsAssembly(nested))
-                    return _occurrences[i];
+                {
+                    found = _occurrences[i];
+                    matches++;
+                }
             }
-            return null;
+            return found;
+        }
+
+        private AssemblyOccurrence FindOccurrenceContaining(AssemblyPart part)
+        {
+            if (part.OccurrenceContext != null)
+            {
+                if (part.OccurrenceContext.Parent == this && _occurrences.Contains(part.OccurrenceContext))
+                    return part.OccurrenceContext;
+                for (int i = 0; i < part.DefinitionOccurrencePath.Count; i++)
+                    if (part.DefinitionOccurrencePath[i].Parent == this)
+                        return part.DefinitionOccurrencePath[i];
+                return null;
+            }
+            AssemblyOccurrence occurrence = FindDirectOccurrenceContaining(part.Assembly, out int matches);
+            if (matches > 1)
+                throw new ArgumentException(
+                    $"AssemblyPart '{part.Mesh.Name}' is in multiple occurrences; get it from the intended AssemblyOccurrence.");
+            return occurrence;
+        }
+
+        private bool IsPartReferenceInTree(AssemblyPart part)
+        {
+            AssemblyOccurrence context = part.OccurrenceContext;
+            if (context.Parent == this && _occurrences.Contains(context))
+                return context.Child.ContainsAssembly(part.Assembly);
+            for (int i = 0; i < part.DefinitionOccurrencePath.Count; i++)
+            {
+                AssemblyOccurrence step = part.DefinitionOccurrencePath[i];
+                if (step.Parent == this)
+                    return step.Child.ContainsAssembly(part.Assembly);
+            }
+            return part.Assembly == this && context.Child == this;
         }
 
         internal static Transform PoseInAssembly(AssemblyPart part, Assembly frame)
         {
             if (part.Assembly == frame)
-                return part.EvaluatePose();
+                return part.EvaluateDefinitionPose();
 
-            Transform pose = part.EvaluatePose();
+            Transform pose = part.EvaluateDefinitionPose();
             Assembly current = part.Assembly;
             while (current != frame)
             {
@@ -561,11 +682,60 @@ Runs the 6-DOF rigid-body solver. preferMinimalMovement biases toward the curren
             return pose;
         }
 
+        internal static Transform PoseInOccurrence(AssemblyPart part, Assembly frame,
+            IReadOnlyList<AssemblyOccurrence> definitionPath)
+        {
+            Transform pose = part.EvaluateDefinitionPose();
+            Assembly current = part.Assembly;
+            for (int i = definitionPath.Count - 1; i >= 0; i--)
+            {
+                AssemblyOccurrence step = definitionPath[i];
+                if (step.Child != current)
+                    throw new ArgumentException("Occurrence path does not lead to the referenced AssemblyPart.");
+                pose = TransformMath.Compose(step.Transform.Evaluate(), pose);
+                current = step.Parent;
+            }
+            if (current != frame)
+                throw new ArgumentException($"AssemblyPart '{part.Mesh.Name}' is not inside '{frame.Name}'.");
+            return pose;
+        }
+
+        internal static Transform PoseOfOccurrence(Assembly frame,
+            IReadOnlyList<AssemblyOccurrence> definitionPath)
+        {
+            if (definitionPath.Count == 0)
+                return new Transform(new Vec3D(0), TransformMath.IdentityOrientation);
+            Transform pose = definitionPath[^1].Transform.Evaluate();
+            for (int i = definitionPath.Count - 2; i >= 0; i--)
+                pose = TransformMath.Compose(definitionPath[i].Transform.Evaluate(), pose);
+            if (definitionPath[0].Parent != frame)
+                throw new ArgumentException($"Occurrence path does not begin inside '{frame.Name}'.");
+            return pose;
+        }
+
+        private static Transform RelativePoseInOccurrence(AssemblyPart part, AssemblyOccurrence occurrence)
+        {
+            if (part.OccurrenceContext == null)
+                return PoseInAssembly(part, occurrence.Child);
+            if (ReferenceEquals(part.OccurrenceContext, occurrence))
+                return PoseInOccurrence(part, occurrence.Child, part.DefinitionOccurrencePath);
+            for (int i = 0; i < part.DefinitionOccurrencePath.Count; i++)
+            {
+                if (!ReferenceEquals(part.DefinitionOccurrencePath[i], occurrence))
+                    continue;
+                var suffix = new AssemblyOccurrence[part.DefinitionOccurrencePath.Count - i - 1];
+                for (int j = 0; j < suffix.Length; j++)
+                    suffix[j] = part.DefinitionOccurrencePath[i + j + 1];
+                return PoseInOccurrence(part, occurrence.Child, suffix);
+            }
+            throw new ArgumentException("AssemblyPart reference does not pass through this occurrence.");
+        }
+
         internal CTransform SolverTransformOf(AssemblyPart part)
         {
-            if (part.Assembly == this)
+            AssemblyOccurrence occ = FindOccurrenceContaining(part);
+            if (occ == null && part.Assembly == this)
                 return part.Transform;
-            AssemblyOccurrence occ = FindDirectOccurrenceContaining(part.Assembly);
             if (occ == null)
                 throw new ArgumentException($"AssemblyPart '{part.Mesh.Name}' is not in assembly '{Name}'.");
             return occ.Transform;
@@ -574,13 +744,13 @@ Runs the 6-DOF rigid-body solver. preferMinimalMovement biases toward the curren
         internal CVec3D WorldPoint(AssemblyPart part, Vec3D localPoint)
         {
             EnsurePartInTree(part);
-            if (part.Assembly == this)
+            AssemblyOccurrence occ = FindOccurrenceContaining(part);
+            if (occ == null && part.Assembly == this)
                 return part.WorldPoint(localPoint);
 
-            AssemblyOccurrence occ = FindDirectOccurrenceContaining(part.Assembly);
             if (occ == null)
                 throw new ArgumentException($"AssemblyPart '{part.Mesh.Name}' is not in assembly '{Name}'.");
-            Transform relative = PoseInAssembly(part, occ.Child);
+            Transform relative = RelativePoseInOccurrence(part, occ);
             Vec3D inOccurrence = TransformMath.TransformPoint(in relative, localPoint);
             return occ.Transform.PointLocalToGlobal(CVec3D.Constant(inOccurrence));
         }
@@ -588,13 +758,13 @@ Runs the 6-DOF rigid-body solver. preferMinimalMovement biases toward the curren
         internal CVec3D WorldDirection(AssemblyPart part, Vec3D localDirection)
         {
             EnsurePartInTree(part);
-            if (part.Assembly == this)
+            AssemblyOccurrence occ = FindOccurrenceContaining(part);
+            if (occ == null && part.Assembly == this)
                 return part.WorldDirection(localDirection);
 
-            AssemblyOccurrence occ = FindDirectOccurrenceContaining(part.Assembly);
             if (occ == null)
                 throw new ArgumentException($"AssemblyPart '{part.Mesh.Name}' is not in assembly '{Name}'.");
-            Transform relative = PoseInAssembly(part, occ.Child);
+            Transform relative = RelativePoseInOccurrence(part, occ);
             Vec3D inOccurrence = TransformMath.TransformDirection(in relative, localDirection);
             return occ.Transform.DirectionLocalToGlobal(CVec3D.Constant(inOccurrence));
         }
@@ -611,12 +781,12 @@ Pose of a direct or nested part in this assembly's frame.")]
         public Transform WorldPoseOf(AssemblyPart part)
         {
             EnsurePartInTree(part);
-            if (part.Assembly == this)
-                return part.EvaluatePose();
-            AssemblyOccurrence occ = FindDirectOccurrenceContaining(part.Assembly);
+            AssemblyOccurrence occ = FindOccurrenceContaining(part);
+            if (occ == null && part.Assembly == this)
+                return part.EvaluateDefinitionPose();
             if (occ == null)
                 throw new ArgumentException($"AssemblyPart '{part.Mesh.Name}' is not in assembly '{Name}'.");
-            return TransformMath.Compose(occ.EvaluatePose(), PoseInAssembly(part, occ.Child));
+            return TransformMath.Compose(occ.EvaluatePose(), RelativePoseInOccurrence(part, occ));
         }
 
         [APIDescription(@"GetLeaves() -> IReadOnlyList[AssemblyLeaf]
@@ -634,28 +804,46 @@ Recursive leaf parts with occurrence paths and current world poses.")]
             CollectLeafWorldPoses(
                 parts,
                 worldPoses,
-                new Transform(default, TransformMath.IdentityOrientation), paths, Name);
+                new Transform(default, TransformMath.IdentityOrientation), paths, Name, null,
+                Array.Empty<AssemblyOccurrence>());
         }
 
-        private void CollectLeafWorldPoses(List<AssemblyPart> parts, List<Transform> worldPoses, Transform parentWorld, List<string> paths, string path)
+        private void CollectLeafWorldPoses(List<AssemblyPart> parts, List<Transform> worldPoses,
+            Transform parentWorld, List<string> paths, string path, AssemblyOccurrence context,
+            IReadOnlyList<AssemblyOccurrence> definitionPath)
         {
             for (int i = 0; i < _parts.Count; i++)
             {
                 AssemblyPart part = _parts[i];
-                parts.Add(part);
+                parts.Add(context == null ? part : part.ForOccurrence(context, definitionPath));
                 paths?.Add($"{path}/{part.Mesh.Name}[{i+1}]");
-                worldPoses.Add(TransformMath.Compose(parentWorld, part.EvaluatePose()));
+                worldPoses.Add(TransformMath.Compose(parentWorld, part.EvaluateDefinitionPose()));
             }
             for (int i = 0; i < _occurrences.Count; i++)
             {
                 AssemblyOccurrence occ = _occurrences[i];
                 Transform occWorld = TransformMath.Compose(parentWorld, occ.EvaluatePose());
-                occ.Child.CollectLeafWorldPoses(parts, worldPoses, occWorld, paths, $"{path}/{occ.Child.Name}[{i+1}]");
+                AssemblyOccurrence nextContext = context ?? occ;
+                IReadOnlyList<AssemblyOccurrence> nextPath = definitionPath;
+                if (context != null)
+                {
+                    var extended = new AssemblyOccurrence[definitionPath.Count + 1];
+                    for (int j = 0; j < definitionPath.Count; j++)
+                        extended[j] = definitionPath[j];
+                    extended[^1] = occ;
+                    nextPath = extended;
+                }
+                occ.Child.CollectLeafWorldPoses(parts, worldPoses, occWorld, paths,
+                    $"{path}/{occ.Name}[{i+1}]", nextContext, nextPath);
             }
         }
 
         internal void ApplyComposedPose(Transform parentWorld)
         {
+            // A shared definition has no single display pose. Assembly leaves,
+            // sections and interference queries use occurrence-specific snapshots.
+            if (SuppressOccurrenceMeshUpdates)
+                return;
             for (int i = 0; i < _parts.Count; i++)
             {
                 AssemblyPart part = _parts[i];

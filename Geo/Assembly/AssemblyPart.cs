@@ -5,24 +5,42 @@ using GeoSolver.Kinematics;
 
 namespace Geo
 {
-    [APIDescription(@"AssemblyPart: rigid-body handle returned by Assembly.AddPart. Create datums here; pass to Assembly mate methods.")]
+    [APIDescription(@"AssemblyPart: rigid-body handle returned by Assembly.AddPart or an occurrence-scoped reference returned by AssemblyOccurrence.GetParts. Create datums here; pass to Assembly mate methods.")]
     public sealed class AssemblyPart
     {
-        internal AssemblyPart(Assembly assembly, AnchorMesh mesh, RigidTransform<AnchorMesh> rigidBody)
+        internal AssemblyPart(Assembly assembly, AnchorMesh mesh, RigidTransform<AnchorMesh> rigidBody,
+            AssemblyOccurrence occurrenceContext = null, AssemblyPart definitionPart = null,
+            IReadOnlyList<AssemblyOccurrence> definitionOccurrencePath = null)
         {
             Assembly = assembly;
             Mesh = mesh;
             RigidBody = rigidBody;
+            OccurrenceContext = occurrenceContext;
+            DefinitionPart = definitionPart ?? this;
+            DefinitionOccurrencePath = definitionOccurrencePath ?? Array.Empty<AssemblyOccurrence>();
         }
 
         internal Assembly Assembly { get; }
         public AnchorMesh Mesh { get; }
         internal RigidTransform<AnchorMesh> RigidBody { get; }
+        // Non-null when this is a reference to a definition part through one
+        // specific occurrence. The same definition part may appear repeatedly.
+        internal AssemblyOccurrence OccurrenceContext { get; }
+        internal AssemblyPart DefinitionPart { get; }
+        internal IReadOnlyList<AssemblyOccurrence> DefinitionOccurrencePath { get; }
         internal CTransform Transform => RigidBody.Transform;
+
+        internal AssemblyPart ForOccurrence(AssemblyOccurrence occurrence,
+            IReadOnlyList<AssemblyOccurrence> definitionOccurrencePath = null) =>
+            new(Assembly, Mesh, RigidBody, occurrence, DefinitionPart, definitionOccurrencePath);
 
         [APIDescription(@"EvaluatePose() -> Transform
 Current solved world pose (position + orientation) of this part.")]
-        public Transform EvaluatePose() => Transform.Evaluate();
+        public Transform EvaluatePose() => OccurrenceContext == null
+            ? Transform.Evaluate()
+            : OccurrenceContext.Parent.WorldPoseOf(this);
+
+        internal Transform EvaluateDefinitionPose() => Transform.Evaluate();
 
         [APIDescription(@"AddAxisDatum(reference: str) -> AssemblyAxisDatum
 Infers axis point and direction from a patch or edge on this part's mesh (e.g. cylindrical hole side, ExtrudeTop/Bottom, edge tangent).")]

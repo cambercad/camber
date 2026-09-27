@@ -208,6 +208,19 @@ def _unpack_indexed3(packed):
     return points, tris
 
 
+def _unpack_points3(packed):
+    it = _line_iter(packed)
+    try:
+        n = int(next(it))
+    except StopIteration:
+        return []
+    points = []
+    for _ in range(n):
+        x, y, z = next(it).split()
+        points.append(vec3(float(x), float(y), float(z)))
+    return points
+
+
 def _parse_ray_hit(packed):
     if packed is None or str(packed).strip() == "":
         return None

@@ -90,6 +90,23 @@ class PartOperationTests(unittest.TestCase):
             body.fillet("not-a-curve", .2)
         self.assertEqual(before, part.operations)
 
+    def test_add_line_accepts_coordinates_and_named_points_in_one_api(self):
+        set_progress_log(False)
+        part = Part((-2, -2, -2), (4, 4, 4), tolerance=.01)
+        part.cuboid((0, 0, 0), (1, 1, 1), name="body")
+        point_name = part.point_names[0]
+
+        coordinate_line = part.add_line((0, 0, 0), (1, 0, 0), name="coordinates")
+        named_line = part.add_line(point_name, "Origin", name="named")
+        mixed_forward = part.add_line(point_name, (2, 0, 0), name="mixed_forward")
+        mixed_reverse = part.add_line((2, 0, 0), point_name, name="mixed_reverse")
+
+        self.assertEqual(
+            ["coordinates", "named", "mixed_forward", "mixed_reverse"],
+            [coordinate_line.name, named_line.name, mixed_forward.name, mixed_reverse.name],
+        )
+        self.assertFalse(hasattr(part, "add_line_by_names"))
+
     def test_batch_subtract_accepts_pattern_generator_and_records_subtract(self):
         set_progress_log(False)
         part = Part((-2, -2, -2), (14, 8, 5), tolerance=.001)

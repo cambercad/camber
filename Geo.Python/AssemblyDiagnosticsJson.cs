@@ -44,7 +44,7 @@ internal static class AssemblyDiagnosticsJson
     {
         writer.WritePropertyName(name);
         if(part==null){writer.WriteNullValue();return;}
-        AssemblyLeaf leaf=leaves.FirstOrDefault(item=>item.Part==part);
+        AssemblyLeaf leaf=leaves.FirstOrDefault(item=>RefersTo(item.Part,part));
         Transform pose=assembly.WorldPoseOf(part);
         writer.WriteStartObject();writer.WriteString("kind",kind);writer.WriteString("part",part.Mesh.Name);
         writer.WriteString("path",leaf?.Path??"");
@@ -52,6 +52,18 @@ internal static class AssemblyDiagnosticsJson
         Vector(writer,"world_point",TransformMath.TransformPoint(in pose,local));
         Vector(writer,"world_direction",TransformMath.TransformDirection(in pose,direction));
         writer.WriteEndObject();
+    }
+
+    private static bool RefersTo(AssemblyPart candidate,AssemblyPart requested)
+    {
+        if(!ReferenceEquals(candidate.DefinitionPart,requested.DefinitionPart))return false;
+        if(requested.OccurrenceContext==null)
+            return ReferenceEquals(candidate.Assembly,requested.Assembly);
+        if(!ReferenceEquals(candidate.OccurrenceContext,requested.OccurrenceContext) ||
+            candidate.DefinitionOccurrencePath.Count!=requested.DefinitionOccurrencePath.Count)return false;
+        for(int i=0;i<candidate.DefinitionOccurrencePath.Count;i++)
+            if(!ReferenceEquals(candidate.DefinitionOccurrencePath[i],requested.DefinitionOccurrencePath[i]))return false;
+        return true;
     }
 
     private static void Vector(Utf8JsonWriter writer,string name,Vec3D value)

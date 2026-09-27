@@ -80,7 +80,7 @@ def create_propeller_spinner(part, max_deviation):
 
 ext = tip_radius_m * 1.2
 part = Part(vec3(-ext), vec3(ext), tolerance=max_dev)
-loft_options = LoftOptions.propeller_blade()
+loft_options = LoftOptions(style="smooth_catmull_rom", crease_policy="none")
 
 blades = []
 for b in range(blade_count):

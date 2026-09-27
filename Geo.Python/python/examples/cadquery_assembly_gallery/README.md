@@ -1,6 +1,6 @@
 # CadQuery assembly documentation ports
 
-These correspond to the examples in [CadQuery's Assemblies page](https://cadquery.readthedocs.io/en/latest/assy.html). Each script exposes `build()`; supported scripts open Camber's viewer when run directly. The model components use one shared `Part`, required by Camber's native assembly registry. `cone()` uses a revolved profile equivalent to CadQuery's `Solid.makeCone`.
+These correspond to the examples in [CadQuery's Assemblies page](https://cadquery.readthedocs.io/en/latest/assy.html). Each script exposes `build()`; supported scripts open Camber's viewer when run directly. Components may use independent `Part` instances and working lattices. `cone()` uses a revolved profile equivalent to CadQuery's `Solid.makeCone`.
 
 | Script | Status | Difference or gap |
 | --- | --- | --- |

@@ -68,6 +68,7 @@ def _translate_and_label(scene, offset, label):
 
 def _collect_gallery(folder, category, failures):
     scenes = []
+    previous_common = sys.modules.pop("_common", None)
     sys.path.insert(0, str(folder))
     try:
         for path in _example_scripts(folder):
@@ -95,6 +96,9 @@ def _collect_gallery(folder, category, failures):
                 gc.collect()
     finally:
         sys.path.remove(str(folder))
+        sys.modules.pop("_common", None)
+        if previous_common is not None:
+            sys.modules["_common"] = previous_common
     return scenes
 
 

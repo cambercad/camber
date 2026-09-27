@@ -1195,8 +1195,11 @@ namespace Geo
         // Use rest geometry even if a prior display updated the shared body.
         internal AnchorMesh SnapshotForInspection(CoordinateConverter converter, Transform pose, string name)
         {
+            CoordinateConverter geometryConverter = _rigidBodyActive && _rigidConverterSet
+                ? _rigidConverter : converter;
             var mesh = _rigidBodyActive ? SnapshotRigidPose(pose)
-                : Mesh.SnapshotRigidPose(Mesh.PrecisionPositions, converter, pose);
+                : Mesh.SnapshotRigidPose(Mesh.PrecisionPositions, geometryConverter, pose);
+            mesh = mesh.Rebase(geometryConverter, converter);
             var metadata = SurfaceMetaData.CloneDictionary(_rigidBodyActive ? _rigidRestMeta : surfaceMetaData);
             var matrix = TransformMath.ToMat4D(in pose);
             foreach (var item in metadata.Values) item.Transform(in matrix);

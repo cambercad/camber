@@ -22,7 +22,7 @@ import re
 
 from .api import (
     LOFT_STYLE_RULED,
-    Curve,
+    Curve3D,
     Frame,
     LoftOptions,
     Part,
@@ -1371,7 +1371,7 @@ def _wire_signed_area(wire):
 
 
 class Workplane(object):
-    """CadQuery-shaped modelling context backed by one shared camber ``Part``."""
+    """CadQuery-shaped modelling context backed by a camber ``Part``."""
 
     def __init__(
             self, inPlane="XY", origin=None, obj=None, part=None,
@@ -2191,7 +2191,7 @@ class Workplane(object):
         wires = self._wires()
         name = self._new_name("swp")
         profile = self._profile_sketch(wires, name + "_profile")
-        if isinstance(path, Curve):
+        if isinstance(path, Curve3D):
             solid = profile.extrude_along_curve(path, name=name)
         elif isinstance(path, Workplane):
             guide_wires = path._wires()
@@ -2200,7 +2200,7 @@ class Workplane(object):
             guide = path._profile_sketch(guide_wires, name + "_guide")
             solid = profile.extrude_along_sketch(guide, name=name)
         else:
-            raise TypeError("sweep path must be a Workplane or camber Curve")
+            raise TypeError("sweep path must be a Workplane or camber Curve3D")
         return self._apply_combine(solid, [], [], combine)
 
     def loft(self, ruled=False, combine=True, clean=True):

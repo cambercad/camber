@@ -32,7 +32,8 @@ from .api import (
     AssemblyPart,
     AssemblyPlaneDatum,
     AssemblyPointDatum,
-    Curve,
+    Curve3D,
+    EntityName,
     Frame,
     LoftOptions,
     Part,
@@ -59,9 +60,9 @@ from .render import render_views
 from .inspection import section, Section, Measurement
 
 __all__ = [
-    "Part", "PartOperation", "AssemblyConstraint", "AssemblyConstraintDatum", "Sketch", "SketchCurve", "Solid", "Surface", "ProjectedSketch", "Frame", "Curve", "LoftOptions",
+    "Part", "PartOperation", "AssemblyConstraint", "AssemblyConstraintDatum", "Sketch", "SketchCurve", "Solid", "Surface", "ProjectedSketch", "Frame", "Curve3D", "LoftOptions",
     "AssemblySolveResult", "MateResidual", "Interference", "Assembly", "AssemblyLeaf", "AssemblyOccurrence", "AssemblyPart", "AssemblyPointDatum", "AssemblyAxisDatum", "AssemblyPlaneDatum",
-    "vec2", "vec3", "show", "render_views", "frame_from_axis",
+    "vec2", "vec3", "EntityName", "show", "render_views", "frame_from_axis",
     "section", "Section", "Measurement",
     "BOOLEAN_UNION", "BOOLEAN_SUBTRACT", "BOOLEAN_INTERSECT",
     "RayHit", "triangulate", "signed_area", "is_ccw", "point_in_polygon",

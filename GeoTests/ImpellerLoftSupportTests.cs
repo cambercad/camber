@@ -9,6 +9,13 @@ public class ImpellerLoftSupportTests : IDisposable
 {
     public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
 
+    private static LoftOptions BladeOptions() => new()
+    {
+        Style = LoftStyle.SmoothCatmullRom,
+        CorrespondenceMode = LoftCorrespondenceMode.MergedArcLengthAnchors,
+        CreasePolicy = LoftCreasePolicy.None
+    };
+
     // Authored meridian and section dimensions from the impeller example.
     // No tessellated asset, mesh repair or change to the requested round.
     internal static (GeoAPI Api, AnchorMesh Hub, AnchorMesh Blade, AnchorMesh Joined) Fixture(bool join = true)
@@ -48,15 +55,15 @@ public class ImpellerLoftSupportTests : IDisposable
         if (!join)
         {
             var output = new MeshOutput();
-            LoftBuilder.GenerateLoftFromSketches(api.Converter, sections, deviation, LoftOptions.PropellerBlade,
+            LoftBuilder.GenerateLoftFromSketches(api.Converter, sections, deviation, BladeOptions(),
                 output, "blade_loft", out var names, 0);
             var mesh = new MeshNormalUV(api.Converter, output.Vertices, output.Normals, output.UVs,
                 output.Triangles, output.TriangleGroups, output.PrecisePositions);
             var metadata = Geo.NurbsConstruction.NurbsPatchMetadataBuilder.BuildLoftMetadata(sections, deviation,
-                LoftOptions.PropellerBlade, "blade_loft", output.LoftSideSupportFactory);
+                BladeOptions(), "blade_loft", output.LoftSideSupportFactory);
             return (api, hub, new AnchorMesh("raw", mesh, names, metadata, false, preserveTriangulation: true), null);
         }
-        var blade = api.Loft(sections, LoftOptions.PropellerBlade, "blade_loft", deviation);
+        var blade = api.Loft(sections, BladeOptions(), "blade_loft", deviation);
         if (!join) return (api, hub, blade, null);
         var joined = api.Boolean(hub, blade, BooleanOp.Union, "joined");
         joined.EnsureCoplanarPostProcessed();

@@ -1257,6 +1257,20 @@ namespace Geo
                             $"Edge-blend patches contain a non-conforming T-junction between patches {a.Surface} and {b.Surface}.");
                 }
 
+            var boundaryValence = new Dictionary<Rat3Hybrid, int>();
+            foreach (var edge in boundaryEdges)
+            {
+                boundaryValence.TryGetValue(edge.A, out int atA);
+                boundaryValence[edge.A] = atA + 1;
+                boundaryValence.TryGetValue(edge.B, out int atB);
+                boundaryValence[edge.B] = atB + 1;
+            }
+            foreach (var (point, valence) in boundaryValence)
+                if (valence != 2)
+                    throw new InvalidOperationException(
+                        $"Edge-blend trim boundary is not a closed contour: exact boundary vertex " +
+                        $"{converter.Convert(point)} has valence {valence}; boundary loops must join exactly.");
+
             static bool CoveredByBoundaryTriangles((Rat3Hybrid A, Rat3Hybrid B, int Surface) edge,
                 MeshNormalUV volume, List<Rat3Hybrid> points)
             {

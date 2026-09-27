@@ -65,4 +65,33 @@ public class BlendCornerPlaneExtentTests
 
         Assert.Contains("T-junction", error.Message);
     }
+
+    [Fact]
+    public void RoundedBlendBoundaryRejectsLoopsJoinedOnlyAtOneVertex()
+    {
+        var api = new GeoAPI(new Box3D(new Vec3D(-5), new Vec3D(5)), .01);
+        var converter = api.Converter;
+        var volume = api.CreateCuboid(new Vec3D(-2), new Vec3D(2), "volume");
+        UVSurface Surface(List<Rat3Hybrid> precise) => new(
+            converter.Convert(precise),
+            Enumerable.Repeat(new Vec3D(0, 0, 1), precise.Count).ToList(),
+            Enumerable.Range(0, precise.Count).Select(i => new Vec2D(i, 0)).ToList(),
+            new List<Tri> { new(0, 1, 2) }, precise);
+        var first = Surface(new List<Rat3Hybrid>
+        {
+            new(0, 0, 2), new(1, 0, 2), new(0, 1, 2)
+        });
+        var second = Surface(new List<Rat3Hybrid>
+        {
+            new(0, 0, 2), new(-1, 0, 2), new(0, -1, 2)
+        });
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            EdgeBlendPipeline.ValidateBlendPatchBoundaries(
+                new[] { first, second }, new[] { ("first", (GeoCore.SurfaceMetaData)null), ("second", (GeoCore.SurfaceMetaData)null) },
+                volume.Mesh, converter));
+
+        Assert.Contains("closed contour", error.Message);
+        Assert.Contains("valence 4", error.Message);
+    }
 }

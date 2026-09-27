@@ -136,6 +136,44 @@ class AssemblyNestingTests(unittest.TestCase):
             self.assertTrue(_near(top.world_pose(marker),
                 (5*math.cos(spin), 5*math.sin(spin), 0), tol=1e-5))
 
+    def test_flexible_instances_have_independent_joint_state(self):
+        import math
+        part = Part(vec3(-80), vec3(80), tolerance=0.05)
+        base_solid = _box(part, "flex_base", size=2)
+        rotor_solid = _box(part, "flex_rotor", size=1)
+        mechanism = part.assembly("flex_mechanism")
+        mechanism.solve_after_every_constraint = False
+        base = mechanism.add_part(base_solid)
+        rotor = mechanism.add_part(rotor_solid)
+        mechanism.fix(base)
+        mechanism.concentric(base.axis_at((0, 0, 0), (0, 0, 1)),
+                             rotor.axis_at((0, 0, 0), (0, 0, 1)))
+        mechanism.coincident(base.plane_at((0, 0, 0), (0, 0, 1)),
+                             rotor.plane_at((0, 0, 0), (0, 0, 1)),
+                             opposite_normals=False)
+        self.assertTrue(mechanism.solve().converged)
+
+        parent = part.assembly("flex_parent")
+        parent.solve_after_every_constraint = False
+        first = parent.add_subassembly(mechanism, (10, 0, 0), flexible=True)
+        second = parent.add_subassembly(mechanism, (30, 0, 0), flexible=True)
+        self.assertTrue(first.flexible)
+        self.assertTrue(second.flexible)
+        self.assertIsNot(first.assembly._n, second.assembly._n)
+        self.assertNotEqual(first.parts[0].name, second.parts[0].name)
+
+        first_base, first_rotor = first.assembly.parts
+        first.assembly.angle(first_base.axis_at((0, 0, 0), (1, 0, 0)),
+                             first_rotor.axis_at((0, 0, 0), (1, 0, 0)), 0.4)
+        self.assertTrue(first.assembly.solve().converged)
+        left_rotor = next(leaf for leaf in first.assembly.leaves() if "flex_rotor" in leaf.solid.name)
+        right_rotor = next(leaf for leaf in second.assembly.leaves() if "flex_rotor" in leaf.solid.name)
+        source_rotor = next(leaf for leaf in mechanism.leaves() if leaf.part.name == rotor.name)
+        self.assertAlmostEqual(math.sin(0.4), first.assembly.constraints[-1].second.world_direction.y, delta=1e-5)
+        self.assertAlmostEqual(math.sin(0.4), left_rotor.frame.x.y, delta=1e-5)
+        self.assertAlmostEqual(0.0, right_rotor.frame.x.y, delta=1e-5)
+        self.assertAlmostEqual(0.0, source_rotor.frame.x.y, delta=1e-5)
+
     def test_rejects_cycles_and_double_nesting(self):
         part = Part(vec3(-80), vec3(80), tolerance=0.05)
         a_solid = _box(part, "a")

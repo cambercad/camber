@@ -10,11 +10,16 @@ namespace Curves
     {
         private List<CurveVertex3D> _vertices;
 
-        public List<CurveVertex3D> Vertices
-        {
-            get { return _vertices; }
-            set { _vertices = value ?? new List<CurveVertex3D>(); }
-        }
+        /// <summary>
+        /// Exact lattice coordinates aligned with <see cref="Vertices"/> when
+        /// available. Null for curves authored from ordinary doubles.
+        /// </summary>
+        public IReadOnlyList<Rat3Hybrid> PrecisionPositions { get; private set; }
+
+        /// <summary>The converter that maps <see cref="PrecisionPositions"/> to world coordinates.</summary>
+        public CoordinateConverter? PrecisionConverter { get; private set; }
+
+        public IReadOnlyList<CurveVertex3D> Vertices => _vertices;
 
         public PolylineCurve3D(string name = null) : base(name)
         {
@@ -23,7 +28,20 @@ namespace Curves
 
         public PolylineCurve3D(List<CurveVertex3D> vertices, string name = null) : base(name)
         {
-            _vertices = vertices ?? new List<CurveVertex3D>();
+            _vertices = vertices == null ? new List<CurveVertex3D>() : new List<CurveVertex3D>(vertices);
+        }
+
+        public PolylineCurve3D(List<CurveVertex3D> vertices,
+            IReadOnlyList<Rat3Hybrid> precisionPositions, CoordinateConverter converter,
+            string name = null) : base(name)
+        {
+            if (vertices == null) throw new ArgumentNullException(nameof(vertices));
+            if (precisionPositions == null) throw new ArgumentNullException(nameof(precisionPositions));
+            if (precisionPositions.Count != vertices.Count)
+                throw new ArgumentException("Exact points must align one-to-one with polyline vertices.", nameof(precisionPositions));
+            _vertices = new List<CurveVertex3D>(vertices);
+            PrecisionPositions = Array.AsReadOnly(precisionPositions.ToArray());
+            PrecisionConverter = converter;
         }
 
         public override CurveVertex3D Evaluate(double uniform)

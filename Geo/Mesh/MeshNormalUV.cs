@@ -51,6 +51,22 @@ namespace Geo
     {
         public MeshNormalUV() { }
 
+        internal MeshNormalUV Rebase(CoordinateConverter source, CoordinateConverter target)
+        {
+            if (source.HasSameLattice(target))
+                return this;
+            var precise = new List<Rat3Hybrid>(PrecisionPositions.Count);
+            for (int i = 0; i < PrecisionPositions.Count; i++)
+                precise.Add(target.ConvertExact(PrecisionPositions[i], source));
+            return new MeshNormalUV
+            {
+                PrecisionPositions = precise,
+                Positions = target.Convert(precise),
+                Triangles = new List<Tri>(Triangles),
+                TrianglesEx = new List<MeshTriangle<TriangleVertexNormalUV>>(TrianglesEx),
+            };
+        }
+
         internal MeshNormalUV SnapshotRigidPose(IEnumerable<Rat3Hybrid> restPoints,
             CoordinateConverter converter, Transform transform, int? groupId = null)
         {

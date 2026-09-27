@@ -875,12 +875,13 @@ namespace CSG
                                 insertedSegmentsB,
                                 trianglesB,
                                 newPoints,
-                                resolverTris.GetRange(numValidTrisA, numValidTrisB));
+                                resolverTris.GetRange(numValidTrisA, numValidTrisB),
+                                out var partialCutDetails);
                             
                             if (isPartialCut == true)
                             {
-                                throw new Exception("Partial cut detected in cluster " + i + 
-                                    ". Surface B does not completely cut through surface A.");
+                                throw new Exception("Partial cut detected in cluster " + i +
+                                    ". Surface B does not completely cut through surface A. " + partialCutDetails);
                             }
                             if (isPartialCut == null)
                             {
@@ -1233,8 +1234,10 @@ namespace CSG
             Dictionary<long, int> insertedSegmentsOtherMesh,
             List<Tri> trianglesOtherMesh,
             NewPointCreator newPoints,
-            List<ResolverTriangle> resolverTrisOtherMesh)
+            List<ResolverTriangle> resolverTrisOtherMesh,
+            out string details)
         {
+            details = "";
             // Check all triangles adjacent to inserted edges in the cluster
             // If they give inconsistent results, it's a partial cut
             int? firstResult = null;
@@ -1281,10 +1284,11 @@ namespace CSG
                                 if (firstResult == null)
                                 {
                                     firstResult = inNormalDir;
+                                    details = $"First evidence: result triangle {triIndex}, cutter triangle {triOtherSource}, side {inNormalDir}.";
                                 }
                                 else if (firstResult.Value != inNormalDir)
                                 {
-                                    // Inconsistency detected - partial cut
+                                    details += $" Conflicting evidence: result triangle {triIndex}, cutter triangle {triOtherSource}, side {inNormalDir}.";
                                     return true;
                                 }
                             }

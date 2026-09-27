@@ -299,6 +299,19 @@ internal static class NativePack
 {
     static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
+    public static string WritePoints3(List<Vec3D> points)
+    {
+        var sb = new StringBuilder();
+        sb.Append(points.Count.ToString(Inv));
+        sb.Append('\n');
+        for (int i = 0; i < points.Count; i++)
+        {
+            Append3(sb, points[i]);
+            sb.Append('\n');
+        }
+        return sb.ToString();
+    }
+
     public static List<List<Vec2D>> ReadLoops2(string packed)
     {
         var loops = new List<List<Vec2D>>();

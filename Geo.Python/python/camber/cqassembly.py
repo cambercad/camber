@@ -1,7 +1,7 @@
 """Small CadQuery-style assembly facade over Camber's native mate solver.
 
-Components must belong to the same ``Part``. This preserves their named faces
-and avoids silently remeshing/importing a component for assembly placement.
+Components may come from independent ``Part`` instances. The native assembly
+re-expresses exact mesh coordinates in its own lattice for assembly operations.
 """
 
 import math
@@ -53,8 +53,7 @@ class Location:
 class Assembly:
     """CadQuery-shaped add/constrain/solve for supported native mate types.
 
-    The first component determines the shared Part unless ``part`` is supplied.
-    Separate Workplanes should therefore be created with ``part=shared_part``.
+    The first component determines the assembly's coordinate frame unless ``part`` is supplied.
     """
 
     def __init__(self, name=None, part=None):
@@ -82,8 +81,6 @@ class Assembly:
             raise TypeError("assembly component must be a Solid, Surface, or Workplane")
         if self._part is None:
             self._part = solid._part
-        if solid._part is not self._part:
-            raise ValueError("assembly components must share one Part; create Workplane(part=shared_part)")
         if self._assembly is None:
             self._assembly = self._part.assembly(self._name)
         name = name or solid.name

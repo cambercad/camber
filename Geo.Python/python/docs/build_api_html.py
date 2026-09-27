@@ -30,8 +30,9 @@ DUNDERS = {
 
 SECTIONS = [
     ("Core", ["Part", "PartOperation", "Sketch", "SketchCurve", "Solid", "Surface", "ProjectedSketch"]),
+    ("Types", ["EntityName"]),
     ("Inspection", ["Section", "Measurement", "Interference", "section"]),
-    ("Pose", ["Frame", "Curve", "LoftOptions", "frame_from_axis"]),
+    ("Pose", ["Frame", "Curve3D", "LoftOptions", "frame_from_axis"]),
     ("Assembly", [
         "Assembly", "AssemblyLeaf", "AssemblyOccurrence", "AssemblyPart", "AssemblyPointDatum",
         "AssemblyAxisDatum", "AssemblyPlaneDatum", "AssemblyConstraint",
@@ -49,6 +50,7 @@ SECTIONS = [
 
 
 CONST_DOCS = {
+    "EntityName": "Plain str containing a name assigned to a Camber entity; no runtime wrapper or separate string type.",
     "BOOLEAN_UNION": "CSG union. Same as Solid + Solid / Part.union.",
     "BOOLEAN_SUBTRACT": "CSG subtraction. Same as Solid - Solid / Part.subtract.",
     "BOOLEAN_INTERSECT": "CSG intersection. Same as Solid & Solid / Part.intersect.",
@@ -61,7 +63,7 @@ FACTORY_HEAD = {
     "Surface": "Surface  # Part.loft_surface / open mesh import",
     "SketchCurve": "SketchCurve  # Sketch.add_line / add_circle / add_arc",
     "ProjectedSketch": "ProjectedSketch  # Sketch.project_onto",
-    "Curve": "Curve  # Curve.line / helix / circle / arc / spiral",
+    "Curve3D": "Curve3D  # Curve3D.line / arc / circle / helix / spiral / Hermite / sampled / torus_knot",
     "Assembly": "Assembly  # Part.assembly",
     "AssemblyOccurrence": "AssemblyOccurrence  # Assembly.add_subassembly",
     "AssemblyPart": "AssemblyPart  # Assembly.add_part",
@@ -198,6 +200,8 @@ def member_doc(kind, name, target, raw):
 
 
 def describe_value(name, obj):
+    if name == "EntityName":
+        return "type alias", CONST_DOCS[name], "str"
     if inspect.isclass(obj):
         return "class", first_paragraph(inspect.getdoc(obj)), signature_of(obj)
     if inspect.isfunction(obj) or inspect.ismethod(obj):
@@ -220,7 +224,7 @@ def collect():
                 "sig": sig,
                 "members": [],
             }
-            if inspect.isclass(obj):
+            if inspect.isclass(obj) and name != "EntityName":
                 if name in FACTORY_HEAD:
                     entry["sig"] = None
                     entry["head"] = FACTORY_HEAD[name]
@@ -374,7 +378,7 @@ a { color: var(--accent); text-decoration: none; }
 a:hover { color: var(--accent-dark); }
 code, h3 code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
   font-size: 13px; font-weight: 550; }
-.wrap { display: grid; grid-template-columns: 244px minmax(0, 1fr); min-height: 100vh; }
+.wrap { display: grid; grid-template-columns: clamp(220px, 18vw, 300px) minmax(0, 1fr); min-height: 100vh; }
 nav {
   position: sticky; top: 0; height: 100vh; overflow: auto;
   padding: 30px 18px 44px; border-right: 1px solid var(--line);
@@ -392,14 +396,15 @@ nav {
   border-radius: 6px; color: var(--mute); font-size: 13px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .nav-symbol:hover { background: var(--accent-soft); color: var(--accent-dark); }
-main { width: min(100%, 1040px); padding: 48px 52px 96px; }
+main { width: 100%; min-width: 0; max-width: none;
+  padding: clamp(28px, 4vw, 64px) clamp(24px, 4vw, 72px) 96px; }
 .hero { position: relative; overflow: hidden; padding: 28px 30px 30px; margin-bottom: 30px;
   border: 1px solid var(--line); border-radius: 18px; background: var(--paper); box-shadow: var(--shadow); }
 h1 { position: relative; z-index: 1; font-size: clamp(28px, 4vw, 38px);
   font-weight: 750; margin: 0 0 7px; letter-spacing: -.035em; }
-.lead { position: relative; z-index: 1; color: var(--mute); margin: 0 0 22px; max-width: 700px; }
+.lead { position: relative; z-index: 1; color: var(--mute); margin: 0 0 22px; max-width: 900px; }
 .search-row { position: relative; z-index: 1; display: flex; align-items: center;
-  gap: 12px; max-width: 600px; }
+  gap: 12px; max-width: min(100%, 900px); }
 .search { position: relative; flex: 1; }
 .search::before { content: "⌕"; position: absolute; left: 13px; top: 7px;
   color: var(--accent); font-size: 21px; line-height: 1; pointer-events: none; }
@@ -427,14 +432,15 @@ article:hover { border-color: #e5d399; box-shadow: var(--shadow); transform: tra
 article:target { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
 .k { float: right; font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
   color: var(--accent-dark); background: var(--accent-soft); padding: 3px 8px; border-radius: 999px; }
-h3 { margin: 0 0 6px; padding-right: 72px; font-size: 15px; font-weight: 650; }
+h3 { margin: 0 0 6px; padding-right: 72px; font-size: 15px; font-weight: 650;
+  overflow-wrap: anywhere; }
 h4 { margin: 18px 0 4px; color: var(--mute); font-size: 11px;
   font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
 article p { margin: 0 0 8px; color: var(--mute); }
 ul { list-style: none; margin: 8px 0 0; padding: 0; border-top: 1px solid var(--line); }
 li { padding: 7px 0; border-bottom: 1px solid var(--line); }
 li:last-child { border-bottom: 0; }
-li code { display: block; color: #293f48; }
+li code { display: block; color: #293f48; overflow-wrap: anywhere; }
 li span { display: block; color: var(--mute); font-size: 13px; margin-top: 2px; white-space: normal; }
 .hide { display: none !important; }
 #no-results { display: none; padding: 32px; border: 1px dashed #dfce99;

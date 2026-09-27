@@ -11,6 +11,13 @@ namespace Geo.Shelling;
 /// </summary>
 internal sealed class ShellTopologyBuilder
 {
+    internal sealed class OffsetSkin
+    {
+        internal List<Vec3D> Points { get; init; }
+        internal List<Rat3Hybrid> PrecisePoints { get; init; }
+        internal Dictionary<int, IShellSurfaceSupport> Supports { get; init; }
+    }
+
     private readonly CoordinateConverter _converter;
     private readonly ShellSurfaceRegistry _surfaces;
 
@@ -20,13 +27,51 @@ internal sealed class ShellTopologyBuilder
     internal AnchorMesh BuildOffset(AnchorMesh source, HashSet<int> openingGroups,
         double retainedOffset, double openingOffset, int firstGroupId, bool exterior)
     {
+        var skin = ResolveOffsetSkin(source,
+            id => openingGroups.Contains(id) ? openingOffset : retainedOffset);
+        var support = skin.Supports;
+
+        var cavityGroups = new Dictionary<int, string>();
+        var cavityMeta = new Dictionary<string, SurfaceMetaData>();
+        var remap = new Dictionary<int, int>();
+        int next = firstGroupId;
+        foreach (var (id, patch) in source.groupIdToExtendedName)
+        {
+            int target = next++;
+            remap[id] = target;
+            // The opening cutter is intentionally private implementation detail;
+            // retained supports become the public, stable cavity-face names.
+            string name = openingGroups.Contains(id) ? "ShellOpening_" + patch :
+                exterior ? patch : EntityNaming.ShellInner(patch);
+            cavityGroups[target] = name;
+            cavityMeta[name] = support[id].Metadata.Clone();
+        }
+        var corners = new List<MeshTriangle<TriangleVertexNormalUV>>(source.Mesh.TrianglesEx);
+        for (int i = 0; i < corners.Count; i++) { var c = corners[i]; c.GroupId = remap[c.GroupId]; corners[i] = c; }
+        var cavity = new MeshNormalUV {
+            Positions = skin.Points, PrecisionPositions = skin.PrecisePoints,
+            Triangles = new List<Tri>(source.Mesh.Triangles), TrianglesEx = corners
+        };
+        ValidateOffset(source.Mesh, cavity, requireClosedVolume: true);
+        return new AnchorMesh(source.Name + "_shellOffset", cavity, cavityGroups, cavityMeta,
+            deferCoplanarPostProcess: true, isVolume: true);
+    }
+
+    /// <summary>Resolve one signed offset skin without imposing closed-volume topology.</summary>
+    internal OffsetSkin ResolveOffsetSkin(AnchorMesh source, double inwardOffset) =>
+        ResolveOffsetSkin(source, _ => inwardOffset);
+
+    private OffsetSkin ResolveOffsetSkin(AnchorMesh source, Func<int, double> offsetForGroup)
+    {
         var support = new Dictionary<int, IShellSurfaceSupport>();
         foreach (var (id, patch) in source.groupIdToExtendedName)
         {
-            if (!source.surfaceMetaData.TryGetValue(patch, out var meta) ||
-                !source.TryGetTopologySurface(patch, out var uv))
-                throw new ArgumentException($"Shell requires topology metadata for patch '{patch}'.");
-            double amount = openingGroups.Contains(id) ? openingOffset : retainedOffset;
+            if (!source.TryGetTopologySurface(patch, out var uv))
+                throw new ArgumentException($"Shell cannot resolve topology for patch '{patch}'.");
+            SurfaceMetaData meta = null;
+            source.surfaceMetaData?.TryGetValue(patch, out meta);
+            meta ??= new SurfaceMetaData(SurfaceType.Unknown);
+            double amount = offsetForGroup(id);
             var adapter = _surfaces.Resolve(meta, uv, amount);
             if (adapter == null)
                 throw new NotSupportedException($"Shell does not support surface patch '{patch}' ({meta.SurfaceType}).");
@@ -69,44 +114,45 @@ internal sealed class ShellTopologyBuilder
                 cylinder.UpdateTrim(vertices);
             }
 
-        var cavityGroups = new Dictionary<int, string>();
-        var cavityMeta = new Dictionary<string, SurfaceMetaData>();
-        var remap = new Dictionary<int, int>();
-        int next = firstGroupId;
-        foreach (var (id, patch) in source.groupIdToExtendedName)
+        var precise = new List<Rat3Hybrid>(points.Count);
+        for (int i = 0; i < points.Count; i++)
         {
-            int target = next++;
-            remap[id] = target;
-            // The opening cutter is intentionally private implementation detail;
-            // retained supports become the public, stable cavity-face names.
-            string name = openingGroups.Contains(id) ? "ShellOpening_" + patch :
-                exterior ? patch : EntityNaming.ShellInner(patch);
-            cavityGroups[target] = name;
-            cavityMeta[name] = support[id].Metadata.Clone();
+            var converted = _converter.Convert(points[i]);
+            precise.Add(new Rat3Hybrid(converted.X, converted.Y, converted.Z));
         }
-        var corners = new List<MeshTriangle<TriangleVertexNormalUV>>(source.Mesh.TrianglesEx);
-        for (int i = 0; i < corners.Count; i++) { var c = corners[i]; c.GroupId = remap[c.GroupId]; corners[i] = c; }
-        var cavity = new MeshNormalUV {
-            Positions = points, PrecisionPositions = points.Select(_converter.Convert).Select(p => new Rat3Hybrid(p.X, p.Y, p.Z)).ToList(),
-            Triangles = new List<Tri>(source.Mesh.Triangles), TrianglesEx = corners
+        var candidate = new MeshNormalUV {
+            Positions = points, PrecisionPositions = precise,
+            Triangles = new List<Tri>(source.Mesh.Triangles),
+            TrianglesEx = new List<MeshTriangle<TriangleVertexNormalUV>>(source.Mesh.TrianglesEx)
         };
-        ValidateOffset(source.Mesh, cavity);
-        return new AnchorMesh(source.Name + "_shellOffset", cavity, cavityGroups, cavityMeta,
-            deferCoplanarPostProcess: true, isVolume: true);
+        ValidateOffset(source.Mesh, candidate, requireClosedVolume: false);
+        return new OffsetSkin { Points = points, PrecisePoints = precise, Supports = support };
     }
 
     private static Dictionary<int, List<int>> BuildIncidentGroups(AnchorMesh mesh)
     {
-        var answer = Enumerable.Range(0, mesh.Mesh.Positions.Count).ToDictionary(i => i, _ => new HashSet<int>());
+        var exactMap = DuplicatePointRemover.DuplicateMap(mesh.Mesh.PrecisionPositions);
+        var byExactPoint = new Dictionary<int, HashSet<int>>();
+        for (int i = 0; i < mesh.Mesh.Positions.Count; i++)
+            if (!byExactPoint.ContainsKey(exactMap[i])) byExactPoint.Add(exactMap[i], new HashSet<int>());
         for (int i = 0; i < mesh.Mesh.Triangles.Count; i++)
         {
             var t = mesh.Mesh.Triangles[i]; var g = mesh.Mesh.TrianglesEx[i].GroupId;
-            answer[t.A].Add(g); answer[t.B].Add(g); answer[t.C].Add(g);
+            byExactPoint[exactMap[t.A]].Add(g);
+            byExactPoint[exactMap[t.B]].Add(g);
+            byExactPoint[exactMap[t.C]].Add(g);
         }
-        return answer.ToDictionary(x => x.Key, x => x.Value.OrderBy(v => v).ToList());
+        var answer = new Dictionary<int, List<int>>();
+        for (int i = 0; i < mesh.Mesh.Positions.Count; i++)
+        {
+            var groups = byExactPoint[exactMap[i]].ToList();
+            groups.Sort();
+            answer.Add(i, groups);
+        }
+        return answer;
     }
 
-    private static void ValidateOffset(MeshNormalUV source, MeshNormalUV cavity)
+    private static void ValidateOffset(MeshNormalUV source, MeshNormalUV cavity, bool requireClosedVolume)
     {
         for (int i = 0; i < cavity.Triangles.Count; i++)
         {
@@ -121,8 +167,8 @@ internal sealed class ShellTopologyBuilder
             if (Vec3DOps.Dot(sourceNormal, offsetNormal) <= 0)
                 throw new InvalidOperationException($"Shell offset inverted triangle {i}; the requested thickness changes topology.");
         }
-        if (!MeshAnalysis.IsWatertightMesh(cavity.PrecisionPositions, cavity.Triangles, true) ||
-            MeshAnalysis.ComputeSignedMeshVolume(cavity.Positions, cavity.Triangles) <= 0)
+        if (requireClosedVolume && (!MeshAnalysis.IsWatertightMesh(cavity.PrecisionPositions, cavity.Triangles, true) ||
+            MeshAnalysis.ComputeSignedMeshVolume(cavity.Positions, cavity.Triangles) <= 0))
             throw new InvalidOperationException("Shell offset collapsed or changed topology.");
     }
 

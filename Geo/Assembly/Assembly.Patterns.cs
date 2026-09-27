@@ -77,7 +77,8 @@ public partial class Assembly
         {
             for(int i=1;i<placements.Count;i++)
             {
-                var child=seed.Child.CloneHierarchy(GeoAPI.GenerateName(seed.Name+"_pattern"));
+                var child=seed.Child.CloneHierarchy(
+                    GeoAPI.GenerateName(seed.Name+"_pattern"), independentGeometry: true);
                 var target=TransformMath.Compose(placements[i],original);
                 var instance=AddSubAssembly(child,target.Position,target.Orientation);
                 BindPatternPlacement(sourcePart,child.RepresentativePart());

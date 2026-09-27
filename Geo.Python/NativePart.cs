@@ -42,7 +42,7 @@ public class NativePart
         IEnumerable<string> entities = null, string details = null)
     {
         _inner.RecordOperation(result, kind, inputs, entities, details);
-        return new NativeSolid(result);
+        return new NativeSolid(result, _inner);
     }
 
     void TrackPattern(IReadOnlyList<AnchorMesh> results, string kind, AnchorMesh seed, string details)
@@ -246,7 +246,7 @@ public class NativePart
             maxDeviation,
             rightHanded != 0,
             NativeUtil.EmptyToNull(name),
-            outerRadius));
+            outerRadius), _inner);
     }
 
     public NativeSolid CreateMetricThreadForNutNegative(
@@ -267,7 +267,7 @@ public class NativePart
             maxDeviation,
             rightHanded != 0,
             NativeUtil.EmptyToNull(name),
-            includeBoreChamfers != 0));
+            includeBoreChamfers != 0), _inner);
     }
 
     public NativeSolid CreateMetricThreadForHoleNegative(
@@ -288,7 +288,7 @@ public class NativePart
             maxDeviation,
             rightHanded != 0,
             NativeUtil.EmptyToNull(name),
-            includeBoreChamfers != 0));
+            includeBoreChamfers != 0), _inner);
     }
 
     public NativeCurve AddLine(double x0, double y0, double z0, double x1, double y1, double z1, string name)
@@ -299,6 +299,28 @@ public class NativePart
     public NativeCurve AddLineByNames(string startPointName, string endPointName, string lineName)
     {
         return new NativeCurve(_inner.AddLine(startPointName, endPointName, NativeUtil.EmptyToNull(lineName)));
+    }
+
+    public NativeCurve AddLineFromStartName(string startPointName,
+        double x1, double y1, double z1, string lineName)
+    {
+        return new NativeCurve(_inner.AddLine(startPointName,
+            NativeUtil.V3(x1, y1, z1), NativeUtil.EmptyToNull(lineName)));
+    }
+
+    public NativeCurve AddLineToEndName(double x0, double y0, double z0,
+        string endPointName, string lineName)
+    {
+        return new NativeCurve(_inner.AddLine(NativeUtil.V3(x0, y0, z0),
+            endPointName, NativeUtil.EmptyToNull(lineName)));
+    }
+
+    public NativeCurveList IntersectionCurves(NativeSolid surface, NativeSolid other, string name)
+    {
+        var curves = _inner.IntersectionCurves(surface.Native, other.Native, NativeUtil.EmptyToNull(name));
+        var result = new NativeCurveList();
+        foreach (var curve in curves) result.Add(new NativeCurve(curve));
+        return result;
     }
 
     public void AddPlane(string planeName, string originAnchorName)
@@ -312,9 +334,10 @@ public class NativePart
             string.IsNullOrEmpty(referenceDirection) ? null : NativePack.ReadPoints3(referenceDirection)[0]), "Sweep", new[] { sketch.Native.Name, curve.Native.Name });
     }
 
-    public NativeSolid ExtrudeAlongCurveStrip(NativeSketch sketch, NativeCurveList guide, double maxDeviation, double twistRatePerExtrudeDistance, string name)
+    public NativeSolid ExtrudeAlongCurveStrip(NativeSketch sketch, NativeCurveList guide, double maxDeviation, double twistRatePerExtrudeDistance, string name, string referenceDirection)
     {
-        return Track(_inner.ExtrudeAlongCurveStrip(sketch.Native, guide.Items, maxDeviation, twistRatePerExtrudeDistance, NativeUtil.EmptyToNull(name)), "Sweep", new[] { sketch.Native.Name });
+        return Track(_inner.ExtrudeAlongCurveStrip(sketch.Native, guide.Items, maxDeviation, twistRatePerExtrudeDistance, NativeUtil.EmptyToNull(name),
+            string.IsNullOrEmpty(referenceDirection) ? null : NativePack.ReadPoints3(referenceDirection)[0]), "Sweep", new[] { sketch.Native.Name });
     }
 
     public NativeSolid ExtrudeAlongSketch(NativeSketch profile, NativeSketch guide, double maxDeviation, string name)
@@ -337,6 +360,33 @@ public class NativePart
         return Track(_inner.LoftSurface(sections.Items, guides?.Items,
             Tangent(startTangent), Tangent(endTangent), NativeUtil.EmptyToNull(name), maxDeviation), "Surface loft", sections.Items.Select(sketch => sketch.Name));
     }
+
+    public NativeSolid Sew(NativeSolidList surfaces, bool makeSolid, string name)
+    {
+        if (surfaces == null) throw new ArgumentNullException(nameof(surfaces));
+        return Track(_inner.Sew(surfaces.Items, makeSolid, NativeUtil.EmptyToNull(name)),
+            makeSolid ? "Sew solid" : "Sew surfaces", surfaces.Items.Select(surface => surface.Name));
+    }
+
+    public NativeSolid ExtrudeSurface(NativeSketch sketch, double height, double maxDeviation, string name)
+        => Track(_inner.ExtrudeSurface(sketch.Native, height, maxDeviation, NativeUtil.EmptyToNull(name)),
+            "Surface extrude", new[] { sketch.Native.Name }, details: $"height={height:G6}");
+
+    public NativeSolid RevolveSurface(NativeSketch sketch, double angle, double maxDeviation, string name)
+        => Track(_inner.RevolveSurface(sketch.Native, angle, maxDeviation, NativeUtil.EmptyToNull(name)),
+            "Surface revolve", new[] { sketch.Native.Name }, details: $"angle={angle:G6}");
+
+    public NativeSolid SweepSurface(NativeSketch sketch, NativeCurve guide, double maxDeviation,
+        double twistRatePerDistance, string name, string referenceDirection)
+        => Track(_inner.SweepSurface(sketch.Native, guide.Native, maxDeviation, NativeUtil.EmptyToNull(name),
+            twistRatePerDistance, string.IsNullOrEmpty(referenceDirection) ? null : NativePack.ReadPoints3(referenceDirection)[0]),
+            "Surface sweep", new[] { sketch.Native.Name, guide.Native.Name });
+
+    public NativeSolid SweepSurfaceStrip(NativeSketch sketch, NativeCurveList guide, double maxDeviation,
+        double twistRatePerDistance, string name, string referenceDirection)
+        => Track(_inner.SweepSurface(sketch.Native, guide.Items, maxDeviation, NativeUtil.EmptyToNull(name),
+            twistRatePerDistance, string.IsNullOrEmpty(referenceDirection) ? null : NativePack.ReadPoints3(referenceDirection)[0]),
+            "Surface sweep", new[] { sketch.Native.Name }.Concat(guide.Items.Select(curve => curve.Name)));
 
     public NativeSolid Boolean(NativeSolid a, NativeSolid b, int operation, string name)
     {
@@ -384,6 +434,39 @@ public class NativePart
             details: keepNormalSide != 0 ? "side=normal" : "side=opposite");
     }
 
+    public NativeSolid TrimSurface(NativeSolid surface, NativeSolid cutter, int keepNormalSide, string name)
+    {
+        if (surface == null) throw new ArgumentNullException(nameof(surface));
+        if (cutter == null) throw new ArgumentNullException(nameof(cutter));
+        var result = _inner.TrimSurface(surface.Native, cutter.Native, keepNormalSide != 0,
+            NativeUtil.EmptyToNull(name));
+        return Track(result, "Surface trim", new[] { surface.Native.Name, cutter.Native.Name },
+            details: keepNormalSide != 0 ? "side=normal" : "side=opposite");
+    }
+
+    public NativeSolidList SplitSurface(NativeSolid surface, NativeSolid cutter, string name)
+    {
+        if (surface == null) throw new ArgumentNullException(nameof(surface));
+        if (cutter == null) throw new ArgumentNullException(nameof(cutter));
+        var native = _inner.SplitSurface(surface.Native, cutter.Native, NativeUtil.EmptyToNull(name));
+        var result = new NativeSolidList(_inner);
+        for (int i = 0; i < native.Count; i++)
+        {
+            result.Items.Add(native[i]);
+            Track(native[i], "Surface split", new[] { surface.Native.Name, cutter.Native.Name });
+        }
+        return result;
+    }
+
+    public NativeSolid CapPlanarBoundaries(NativeSolid surface, int makeSolid, string name)
+    {
+        if (surface == null) throw new ArgumentNullException(nameof(surface));
+        var result = _inner.CapPlanarBoundaries(surface.Native, makeSolid != 0,
+            NativeUtil.EmptyToNull(name));
+        return Track(result, "Surface cap", new[] { surface.Native.Name },
+            details: makeSolid != 0 ? "solid=true" : "solid=false");
+    }
+
     public NativeSolid BatchUnion(NativeSolidList meshes)
     {
         AnchorMesh result = _inner.BatchUnion(meshes.Items);
@@ -414,7 +497,7 @@ public class NativePart
 
     public NativeSolidList PatternLinear(NativeSolid seed, int count, double x, double y, double z, string name)
     {
-        var result = new NativeSolidList();
+        var result = new NativeSolidList(_inner);
         result.Items.AddRange(_inner.PatternLinear(seed.Native, count, new Vec3D(x, y, z), NativeUtil.EmptyToNull(name)));
         TrackPattern(result.Items, "Linear pattern", seed.Native, $"count={count}, step=({x:G6}, {y:G6}, {z:G6})");
         return result;
@@ -422,7 +505,7 @@ public class NativePart
 
     public NativeSolidList PatternCircular(NativeSolid seed, int count, NativeFrame axis, double angle, string name)
     {
-        var result = new NativeSolidList();
+        var result = new NativeSolidList(_inner);
         result.Items.AddRange(_inner.PatternCircular(seed.Native, count, axis.Native, angle, NativeUtil.EmptyToNull(name)));
         TrackPattern(result.Items, "Circular pattern", seed.Native, $"count={count}, angle={angle:G6}");
         return result;
@@ -478,12 +561,18 @@ public class NativePart
             "Shell", new[] { mesh.Native.Name }, entities, $"thickness={thickness:G6};outward={outward};rounded={rounded}");
     }
 
+    public NativeSolid Thicken(NativeSolid surface, double thickness, bool bothSides, string name)
+    {
+        return Track(_inner.Thicken(surface.Native, thickness, bothSides, NativeUtil.EmptyToNull(name)),
+            "Thicken", new[] { surface.Native.Name }, details: $"thickness={thickness:G6};bothSides={bothSides}");
+    }
+
     public NativeSolid GetMeshFromName(string meshName)
     {
         AnchorMesh mesh = _inner.GetMeshFromName(meshName);
         if (mesh == null)
             return null;
-        return new NativeSolid(mesh);
+        return new NativeSolid(mesh, _inner);
     }
 
     public NativeSolid LoadStlFile(string filePath, double groupBorderAngleThresholdDegree, string name, int requireWatertight)
@@ -1673,10 +1762,12 @@ public class NativePartOperation
 public class NativeSolid
 {
     internal readonly AnchorMesh Native;
+    internal readonly GeoAPI OwnerApi;
 
-    internal NativeSolid(AnchorMesh native)
+    internal NativeSolid(AnchorMesh native, GeoAPI ownerApi = null)
     {
         Native = native;
+        OwnerApi = ownerApi;
     }
 
     public string Name { get { return Native.Name; } }

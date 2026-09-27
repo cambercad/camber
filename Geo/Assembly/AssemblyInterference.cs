@@ -27,7 +27,9 @@ public partial class Assembly
         {
             if (!parts[i].Mesh.IsVolume)
                 throw new InvalidOperationException($"Interference requires solids: '{paths[i]}' is a surface.");
-            var mesh = parts[i].Mesh.SnapshotRigidPose(poses[i], i);
+            CoordinateConverter sourceConverter = parts[i].Assembly.Converter;
+            var mesh = parts[i].Mesh.SnapshotRigidPose(poses[i], i)
+                .Rebase(sourceConverter, _api.Converter);
             meshes.Add(mesh);
             // Boolean meshes may retain unused tool vertices. Bounds describe
             // the actual surface, otherwise unrelated parts reach exact CSG.
@@ -59,7 +61,8 @@ public partial class Assembly
         var localMeshes = new MeshNormalUV[parts.Count];
         var identity = new Transform(new Vec3D(0), TransformMath.IdentityOrientation);
         MeshNormalUV LocalMesh(int index) => localMeshes[index] ??=
-            parts[index].Mesh.SnapshotRigidPose(identity, index);
+            parts[index].Mesh.SnapshotRigidPose(identity, index)
+                .Rebase(parts[index].Assembly.Converter, _api.Converter);
         var result = new List<AssemblyInterference>();
         double unit = _api.Converter.SmallestUnit();
         for (int i = 0; i < meshes.Count; i++)

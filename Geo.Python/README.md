@@ -169,9 +169,10 @@ shell rim, and the generic triangle-mesh fallback on a twisted loft):
 python python\shell_showcase.py
 ```
 
-Outward shelling currently uses sharp, intersecting joins. It does not yet
-create CadQuery's default rounded outward corners. A later fillet can soften
-selected shell edges, but is not necessarily the same as a rounded shell offset.
+Outward shelling defaults to sharp joins; pass `join="round"` to round
+supported convex joins with the wall thickness as radius. The opening rim
+stays sharp. Inward rounded joins and unsupported concave corners still fail
+explicitly rather than returning an open or self-intersecting shell.
 
 ---
 
@@ -462,10 +463,10 @@ result = assembly.solve()
 print(result)
 ```
 
-A seed can be a direct part or a direct subassembly occurrence. Subassembly copies
-retain their hierarchy, local poses and internal mate definitions; their internal
-mechanisms can be edited independently. Repeated standard parts share their solid
-definition. Mirrors create opposite-handed geometry and preserve outward faces.
+A seed can be a direct part or a direct subassembly occurrence. Subassembly pattern
+copies retain their hierarchy, local poses and internal mate definitions. Repeated
+standard parts share their solid definition. Mirrors create opposite-handed geometry
+and preserve outward faces.
 
 `count` includes the original seed, returned as the first list item. Full circles
 omit the duplicate endpoint; partial circular sweeps include both endpoints.
@@ -475,8 +476,14 @@ defines the mirror plane. Steps and planes use the owning assembly's coordinates
 Assembly copies are connected to the seed by recorded rigid placement mates. The
 pattern or mirror determines their initial placement; subsequent movement follows
 the seed rigidly. This is not a continuously reflected symmetry constraint across
-a stationary world plane. As with existing nested assemblies, the parent treats
-each child as rigid while retaining the child's internal mates.
+a stationary world plane. By default, ``add_subassembly`` treats the child as rigid
+and reuses its internal pose. Pass ``flexible=True`` when each occurrence needs its
+own internal joint state; Camber makes an independent geometry/mate copy for it.
+
+An assembly can contain a subassembly created by another `Part`. The child
+keeps its own solver and coordinate lattice; the parent occurrence supplies
+only the rigid placement, and parent sections/interference checks convert exact
+mesh coordinates as needed.
 
 ### Independent construction with Python threads
 
@@ -505,14 +512,14 @@ with ThreadPoolExecutor(max_workers=4) as workers:
 part = Part(low, high, tolerance=.01)
 assembly = part.assembly("components")
 for index, solid in enumerate(solids):
-    local = part.copy_solid(solid, name=f"component_{index}")
-    assembly.add_part(local, (0, 0, 3 * index))
+    assembly.add_part(solid, (0, 0, 3 * index))
 ```
 
-Assembly mutation and transfers occur sequentially. `copy_solid` preserves exact
-coordinates and face provenance; cross-Part copies require matching coordinate
-lattice origins and steps. Matching working volumes satisfy that requirement.
-Directly adding another Part's solid to an assembly is rejected.
+Assembly mutation occurs sequentially. Independent parts can use different
+working boxes and tolerances; assembly placement preserves their exact mesh
+coordinates and face provenance without requiring `copy_solid`. That operation
+remains useful when geometry itself needs to enter another Part's feature or CSG
+history.
 
 Constructing a `Part` does not reset other sessions. The native instance registry
 retains sessions until an explicit global reset or process exit, so dropping a

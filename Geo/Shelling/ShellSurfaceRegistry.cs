@@ -312,23 +312,27 @@ public sealed class SphericalShellSurfaceAdapter : IShellSurfaceAdapter
 public sealed class MeshShellSupport : IShellSurfaceSupport
 {
     private readonly Dictionary<int, (Vec3D Point, Vec3D Normal)> _vertices;
+    private readonly Dictionary<Vec3D, (Vec3D Point, Vec3D Normal)> _positions;
     public SurfaceMetaData Metadata { get; } = new(SurfaceType.Unknown);
 
     internal MeshShellSupport(UVSurface source, UVSurface offset, double normalSense)
     {
         _vertices = new Dictionary<int, (Vec3D, Vec3D)>();
+        _positions = new Dictionary<Vec3D, (Vec3D, Vec3D)>();
         foreach (int index in source.Triangles.SelectMany(t => new[] { t.A, t.B, t.C }).Distinct())
         {
             Vec3D normal = source.Normals[index] * normalSense;
             if (normal.LengthSquared() == 0)
                 throw new ArgumentException($"Mesh shell support has no normal at vertex {index}.");
-            _vertices[index] = (offset.Points[index], normal.Normalized());
+            var value = (offset.Points[index], normal.Normalized());
+            _vertices[index] = value;
+            _positions[source.Points[index]] = value;
         }
     }
 
-    internal bool TryGet(int sourceVertex, out Vec3D point, out Vec3D normal)
+    internal bool TryGet(int sourceVertex, Vec3D sourcePoint, out Vec3D point, out Vec3D normal)
     {
-        if (_vertices.TryGetValue(sourceVertex, out var value))
+        if (_vertices.TryGetValue(sourceVertex, out var value) || _positions.TryGetValue(sourcePoint, out value))
         {
             point = value.Point; normal = value.Normal; return true;
         }
@@ -404,7 +408,7 @@ public sealed class MeshShellSurfaceAdapter : IShellSurfaceAdapter
     private static bool TryTangent(IShellSurfaceSupport support, int sourceVertex, Vec3D sourcePoint,
         out (Vec3D Point, Vec3D Normal) tangent)
     {
-        if (support is MeshShellSupport mesh && mesh.TryGet(sourceVertex, out var point, out var normal))
+        if (support is MeshShellSupport mesh && mesh.TryGet(sourceVertex, sourcePoint, out var point, out var normal))
         { tangent = (point, normal); return true; }
         if (support is PlanarShellSupport plane)
         { tangent = (plane.Plane.Origin, plane.Plane.Normal.Normalized()); return true; }

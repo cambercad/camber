@@ -187,9 +187,7 @@ Creates a part in the given operating space.
 Adds a 3D line segment to the API's curve list. lineName auto-generated if null. Returned curve can be used as a sweep guide (ExtrudeAlongCurve).")]
         public Line3D AddLine(Vec3D start, Vec3D end, string lineName = null)
         {
-            var line = new Line3D(start, end, lineName);
-            lock (_meshRegistryLock) curves3D.Add(line);
-            return line;
+            return RegisterLine(start, end, lineName);
         }
         [APIDescription(@"AddLine(pointNameStart: str, pointNameEnd: str, lineName: str = None) -> Line3D
 Adds a 3D line between two named points (mesh anchors / DefaultPoints.Origin). Throws if either name does not resolve.")]
@@ -197,8 +195,28 @@ Adds a 3D line between two named points (mesh anchors / DefaultPoints.Origin). T
         {
             var startPoint = GetPointFromName(pointNameStart);
             var endPoint = GetPointFromName(pointNameEnd);
+            return RegisterLine(startPoint, endPoint, lineName);
+        }
 
-            var line = new Line3D(startPoint, endPoint, lineName);
+        [APIDescription(@"AddLine(pointNameStart: str, end: Vec3D, lineName: str = None) -> Line3D
+Adds a 3D line from a named mesh point to a coordinate.")]
+        public Line3D AddLine(string pointNameStart, Vec3D end, string lineName = null)
+        {
+            var start = GetPointFromName(pointNameStart);
+            return RegisterLine(start, end, lineName);
+        }
+
+        [APIDescription(@"AddLine(start: Vec3D, pointNameEnd: str, lineName: str = None) -> Line3D
+Adds a 3D line from a coordinate to a named mesh point.")]
+        public Line3D AddLine(Vec3D start, string pointNameEnd, string lineName = null)
+        {
+            var end = GetPointFromName(pointNameEnd);
+            return RegisterLine(start, end, lineName);
+        }
+
+        Line3D RegisterLine(Vec3D start, Vec3D end, string lineName)
+        {
+            var line = new Line3D(start, end, lineName);
             lock (_meshRegistryLock) curves3D.Add(line);
             return line;
         }
@@ -727,11 +745,12 @@ End caps generated for open guides; closed guides give no caps.")]
         /// Like <see cref="ExtrudeAlongCurve"/> but with a connected strip of guide curves; same profile / frame rules apply.
         /// </summary>
         /// <param name="twistRatePerExtrudeDistance">Radians of twist per unit arc length along the flattened guide polyline.</param>
-        [APIDescription(@"ExtrudeAlongCurveStrip(sketch: PlotterSketcherCoordSys, guideCurveStrip: List[Curve3D], maxDeviation: float = -1, twistRatePerExtrudeDistance: float = 0, name: str = None) -> AnchorMesh
-Like ExtrudeAlongCurve but the guide is a tangent-connected strip of curves (unit tangent difference <= 1e-6). Sharp-corner miter sweeps are not supported; a non-tangent join reports the adjacent curve names. The strip is auto-ordered/auto-reversed via endpoint matching (tolerance 1e-6); throws if the curves cannot form a single connected strip.
+        [APIDescription(@"ExtrudeAlongCurveStrip(sketch: PlotterSketcherCoordSys, guideCurveStrip: List[Curve3D], maxDeviation: float = -1, twistRatePerExtrudeDistance: float = 0, name: str = None, referenceDirection: Vec3D = None) -> AnchorMesh
+Like ExtrudeAlongCurve but the guide is an auto-ordered connected strip of curves. Sharp joins use one shared bisector section; nearly reversing paths are rejected. The strip is auto-ordered/auto-reversed via endpoint matching (tolerance 1e-6); throws if the curves cannot form a single connected strip.
+  referenceDirection: optional world-space up direction that controls roll; it must not become parallel to the guide tangent.
   maxDeviation: -1 uses the GeoAPI instance default.
 Each per-segment surface patch is named ""<meshName>-<contourSegmentName>-<guideCurveName>"".")]
-        public AnchorMesh ExtrudeAlongCurveStrip(PlotterSketcherCoordSys sketch, List<Curve3D> guideCurveStrip, double maxDeviation = -1, double twistRatePerExtrudeDistance = 0, string name = null)
+        public AnchorMesh ExtrudeAlongCurveStrip(PlotterSketcherCoordSys sketch, List<Curve3D> guideCurveStrip, double maxDeviation = -1, double twistRatePerExtrudeDistance = 0, string name = null, Vec3D? referenceDirection = null)
         {
             maxDeviation = ResolveMaxDeviation(maxDeviation);
             name = name ?? GenerateName("ExtrudeAlongCurve");
@@ -740,8 +759,6 @@ Each per-segment surface patch is named ""<meshName>-<contourSegmentName>-<guide
 
             // Connect and order the guide curves to form a proper strip
             List<Curve3D> orderedCurves = ConnectAndOrderCurves(guideCurveStrip);
-            ValidateSweepGuideTangency(orderedCurves);
-
             List<List<List<Vec2D>>> contour = sketch.Tessellate(maxDeviation, out var contourN, out var names, out var metaData2D, maxDeviation);
 
             // Tessellate each guide curve and collect names
@@ -755,9 +772,11 @@ Each per-segment surface patch is named ""<meshName>-<contourSegmentName>-<guide
                 guideCurveNames.Add(curve.Name ?? $"GuideCurve{i}");
             }
 
+            MiterSweepGuideJoins(s, orderedCurves);
+
             // Orient the curve vertex frames to match the profile's coordinate system
             // This ensures the profile is placed correctly at each point along the guide
-            var curveSegments = OrientCurveFramesToProfile(s, sketch.CoordinateSystem, out Vec3D sweepStartTangent, out int startSegment, profileCenter: SweepProfileCenter(contour, sketch.CoordinateSystem));
+            var curveSegments = OrientCurveFramesToProfile(s, sketch.CoordinateSystem, out Vec3D sweepStartTangent, out int startSegment, referenceDirection, SweepProfileCenter(contour, sketch.CoordinateSystem));
             // Keep named surfaces attached to their guide segment after rotation.
             guideCurveNames = Enumerable.Range(0, guideCurveNames.Count)
                 .Select(i => guideCurveNames[(i + startSegment) % guideCurveNames.Count]).ToList();
@@ -1029,31 +1048,56 @@ Extrudes profileSketch along the curves of guideSketch (lifted to 3D using the g
             return result;
         }
 
-        // Frame transport preserves profile roll between smooth segments. A kink
-        // needs a separate miter construction; copying the incoming frame there
-        // silently tilts all subsequent sections away from the guide tangent.
-        private static void ValidateSweepGuideTangency(IReadOnlyList<Curve3D> curves)
+        // Give both sides of a sharp guide join the same bisector frame. This creates
+        // one shared miter section while leaving every interior sample and both end
+        // caps aligned to their actual guide tangents.
+        private static void MiterSweepGuideJoins(List<List<CurveVertex3D>> segments,
+            IReadOnlyList<Curve3D> curves)
         {
-            const double directionToleranceSquared = 1e-12;
-            void Check(int before, int after)
+            int joinCount = curves.Count - 1;
+            bool closed = (curves[0].Start - curves[^1].End).LengthSquared() <= 1e-12;
+            if (closed) joinCount++;
+            for (int i = 0; i < joinCount; i++)
             {
+                int before = i;
+                int after = (i + 1) % curves.Count;
+                if (after == 0 && !closed) break;
                 Vec3D incoming = curves[before].Evaluate(1).Tangent;
                 Vec3D outgoing = curves[after].Evaluate(0).Tangent;
-                if (incoming.LengthSquared() > 0 && outgoing.LengthSquared() > 0)
+                if (!double.IsFinite(incoming.LengthSquared()) || incoming.LengthSquared() <= 1e-24 ||
+                    !double.IsFinite(outgoing.LengthSquared()) || outgoing.LengthSquared() <= 1e-24)
+                    throw new ArgumentException("Sweep guide has a degenerate endpoint tangent at a join.", "guideCurveStrip");
+                incoming.Normalize();
+                outgoing.Normalize();
+                double alignment = Math.Clamp(Vec3DOps.Dot(incoming, outgoing), -1, 1);
+                if (alignment >= 1 - 1e-12) continue;
+                Vec3D bisector = incoming + outgoing;
+                if (bisector.LengthSquared() <= 1e-12)
+                    throw new ArgumentException($"Sweep guide reverses direction between '{curves[before].Name}' and '{curves[after].Name}'.", "guideCurveStrip");
+                bisector.Normalize();
+
+                var beforeSegment = segments[before];
+                var afterSegment = segments[after];
+                CurveVertex3D incomingFrame = beforeSegment[^1];
+                Vec3D up = incomingFrame.Up - bisector * Vec3DOps.Dot(incomingFrame.Up, bisector);
+                if (up.LengthSquared() <= 1e-20)
                 {
-                    incoming.Normalize();
-                    outgoing.Normalize();
-                    if ((incoming - outgoing).LengthSquared() <= directionToleranceSquared)
-                        return;
+                    Vec3D x = incomingFrame.X;
+                    x -= bisector * Vec3DOps.Dot(x, bisector);
+                    if (x.LengthSquared() <= 1e-20)
+                        throw new ArgumentException("Sweep miter frame is degenerate at a guide join.", "guideCurveStrip");
+                    x.Normalize();
+                    up = Vec3DOps.Cross(bisector, x);
                 }
-                string first = curves[before].Name ?? $"segment {before}";
-                string second = curves[after].Name ?? $"segment {after}";
-                throw new ArgumentException($"Sweep guide join between '{first}' and '{second}' is not tangent. " +
-                    "Use tangent-connected guide curves; sharp-corner miter sweeps are not supported.", "guideCurveStrip");
+                up.Normalize();
+                Vec3D origin = incomingFrame.Origin;
+                if ((origin - afterSegment[0].Origin).LengthSquared() > 1e-12)
+                    throw new ArgumentException("Sweep guide endpoints do not coincide at a miter join.", "guideCurveStrip");
+
+                var miter = new CurveVertex3D(origin, bisector, up, incomingFrame.Uniform);
+                beforeSegment[^1] = miter;
+                afterSegment[0] = miter;
             }
-            for (int i = 1; i < curves.Count; i++) Check(i - 1, i);
-            if ((curves[0].Start - curves[^1].End).LengthSquared() <= 1e-12)
-                Check(curves.Count - 1, 0);
         }
 
         private static Vec3D SweepProfileCenter(List<List<List<Vec2D>>> contours, CoordinateSystem profileCS)
@@ -1807,7 +1851,7 @@ Lofts an ordered list of profile sketches into a mesh. Each sketch contains a si
     CapTriangulation: LoftCapTriangulationMode.Robust (default) | EarClipping (strict winding preflight only).
     AlignmentMode: AsAuthored (u=0 = sketch strip start) | OriginFootRoll (default: u=0 = closest point to sketch origin) | MinimumTwist (continuous alignment to previous closed profile).
     ProfileSeamPoints: optional list of LoftProfileSeamHint (one per profile); entries with HasPoint override AlignmentMode for that closed profile.
-    CorrespondenceMode / CreasePolicy: defaults MergedArcLengthAnchors + FromAllProfiles. For NACA propeller blades use LoftOptions.PropellerBlade (tessellation-driven u, CreasePolicy.None). UniformUOnly is a fast preview mode that ignores tessellation anchors.
+    CorrespondenceMode / CreasePolicy: defaults MergedArcLengthAnchors + FromAllProfiles. UniformUOnly is a fast preview mode that ignores tessellation anchors; CreasePolicy.None omits crease columns for a smoother skin.
     ProfileSampling: see enum docs; defaults via LoftOptions.Default.
   Open profiles always keep authored start/end (seam u0=0). name auto-generated if null.")]
         public AnchorMesh Loft(IReadOnlyList<PlotterSketcherCoordSys> sketches, LoftOptions options, string name = null, double maxDeviation = -1)

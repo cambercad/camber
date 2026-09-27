@@ -1,10 +1,18 @@
+from __future__ import annotations
+
 import math
 import json
 import os
 import sys
 from collections import namedtuple
+from typing import Callable, Iterable, Literal, Sequence
 
 from .vec import _xy, _xyz, vec2, vec3
+
+Point2Like = vec2 | Sequence[float]
+Point3Like = vec3 | Sequence[float] | float
+EntityName = str
+EntitySelection = EntityName | Sequence[EntityName]
 
 BOOLEAN_UNION = 0  # a + b / Part.union
 BOOLEAN_SUBTRACT = 1  # a - b / Part.subtract
@@ -20,7 +28,7 @@ _NACA_TE_TRIM = 0.01
 _TYPES = None
 
 
-def api_group(name):
+def api_group(name: str) -> Callable[[Callable[..., object]], Callable[..., object]]:
     """Attach a reference-page category without changing call behavior."""
     def decorate(method):
         method.__api_group__ = name
@@ -40,13 +48,13 @@ def _env_flag(name, default=True):
 _progress_log = _env_flag("CAMBER_PROGRESS", True)
 
 
-def set_progress_log(enabled):
+def set_progress_log(enabled: bool) -> None:
     """Print ``camber: <call>`` before each native API call. On by default."""
     global _progress_log
     _progress_log = bool(enabled)
 
 
-def progress_log_enabled():
+def progress_log_enabled() -> bool:
     return _progress_log
 
 
@@ -499,7 +507,8 @@ def _solid_list(solids):
 class Frame(object):
     """World pose: origin + right-handed orthonormal axes (GeoAPI CoordinateSystem)."""
 
-    def __init__(self, origin=None, x=None, y=None, z=None):
+    def __init__(self, origin: Point3Like | None = None, x: Point3Like | None = None,
+                 y: Point3Like | None = None, z: Point3Like | None = None) -> None:
         """World origin plus orthonormal axes. Defaults to identity at (0,0,0)."""
         self.origin = vec3(0, 0, 0) if origin is None else vec3(origin)
         self.x = vec3(1, 0, 0) if x is None else vec3(x)
@@ -507,19 +516,20 @@ class Frame(object):
         self.z = vec3(0, 0, 1) if z is None else vec3(z)
 
     @staticmethod
-    def from_plane(origin, normal, x, y):
+    def from_plane(origin: Point3Like, normal: Point3Like,
+                   x: Point3Like, y: Point3Like) -> Frame:
         """Same pose as Curves.Plane3D(origin, normal, x, y).GetCoordinateSystem()."""
         return Frame(origin, x=x, y=y, z=normal)
 
-    def offset(self, delta):
+    def offset(self, delta: Point3Like) -> Frame:
         """Translate origin by ``delta`` (vec3 or 3-tuple). Axes unchanged."""
         return Frame(self.origin + delta, self.x, self.y, self.z)
 
-    def to_local(self, other):
+    def to_local(self, other: Frame) -> Frame:
         """Express ``other`` in this frame. Returns a Frame."""
         return Frame._from_native(self._native().to_local(_as_frame(other)._native()))
 
-    def to_global(self, local):
+    def to_global(self, local: Frame) -> Frame:
         """Map a frame given in this local space into world. Returns a Frame."""
         return Frame._from_native(self._native().to_global(_as_frame(local)._native()))
 
@@ -536,7 +546,7 @@ class Frame(object):
         return "Frame(origin={0}, x={1}, y={2}, z={3})".format(self.origin, self.x, self.y, self.z)
 
 
-def frame_from_axis(origin, axis="z"):
+def frame_from_axis(origin: Point3Like, axis: Literal["x", "y", "z"] = "z") -> Frame:
     """Pose whose local +Z is world +axis (CreateCylinder extrudes along local +Z)."""
     origin = vec3(origin)
     axis = (axis or "z").lower()
@@ -547,26 +557,33 @@ def frame_from_axis(origin, axis="z"):
     return Frame(origin)
 
 
-class Curve(object):
-    """3D guide curve (Line3D / Helix3D / Circle3D / Arc3D / Spiral3D)."""
+class Curve3D(object):
+    """Generic handle for any 3D curve (analytic, spline, or sampled)."""
 
-    def __init__(self, native):
+    def __init__(self, native: object, part: Part | None = None) -> None:
         self._n = native
+        self._part = part
 
     @property
-    def name(self):
+    def name(self) -> EntityName:
         """Kernel entity name."""
         return self._n.name
 
     @staticmethod
-    def line(start, end, name=None):
-        """World-space line from ``start`` to ``end`` (vec3 or 3-tuple)."""
+    def line(start: Point3Like, end: Point3Like, name: EntityName | None = None, *,
+             up: Point3Like | None = None) -> Curve3D:
+        """World-space line; optional ``up`` controls its sweep frame orientation."""
         x0, y0, z0 = _xyz(start)
         x1, y1, z1 = _xyz(end)
-        return Curve(_require(_native_mod()["NativeCurve"], "line")(x0, y0, z0, x1, y1, z1, _name(name)))
+        if up is not None:
+            ux, uy, uz = _xyz(up)
+            return Curve3D(_require(_native_mod()["NativeCurve"], "linear")(
+                x0, y0, z0, x1, y1, z1, ux, uy, uz, _name(name)))
+        return Curve3D(_require(_native_mod()["NativeCurve"], "line")(x0, y0, z0, x1, y1, z1, _name(name)))
 
     @staticmethod
-    def hermite(points, tangent_directions, name=None):
+    def hermite(points: Sequence[Point3Like], tangent_directions: Sequence[Point3Like],
+                name: EntityName | None = None) -> Curve3D:
         """Cubic guide through points, with one nonzero tangent direction per knot.
 
         Direction magnitudes are ignored; adjacent chord lengths set derivative
@@ -575,73 +592,114 @@ class Curve(object):
         Cubic interpolation does not guarantee C2 acceleration continuity.
         """
         from .geom import _pack_points3
-        return Curve(_require(_native_mod()["NativeCurve"], "hermite")(
+        return Curve3D(_require(_native_mod()["NativeCurve"], "hermite")(
             _pack_points3(points), _pack_points3(tangent_directions), _name(name)))
 
-    def point(self, u):
+    @staticmethod
+    def sampled(points: Sequence[Point3Like], name: EntityName | None = None) -> Curve3D:
+        """Create a generic piecewise-linear 3D curve through sampled points."""
+        from .geom import _pack_points3
+        return Curve3D(_require(_native_mod()["NativeCurve"], "sampled")(
+            _pack_points3(points), _name(name)))
+
+    def point(self, u: float) -> vec3:
         """Point at normalized parameter u in [0,1], not normalized arc length."""
         return vec3(tuple(map(float, _require(self._n, "point")(float(u)).split())))
 
-    def tangent(self, u):
+    def tangent(self, u: float) -> vec3:
         """Unit tangent at normalized parameter u in [0,1]."""
         return vec3(tuple(map(float, _require(self._n, "tangent")(float(u)).split())))
 
+    def tessellate(self, max_deviation: float | None = None) -> list[vec3]:
+        """Sample this 3D curve within a deviation tolerance in world units.
+
+        Curves returned by ``Surface.intersection_curves`` inherit their owning
+        Part's default tolerance when this argument is omitted. Standalone
+        curves default to 0.01 world units.
+        """
+        deviation = (self._part.max_deviation if self._part is not None else 0.01) \
+            if max_deviation is None else float(max_deviation)
+        if not math.isfinite(deviation) or deviation <= 0:
+            raise ValueError("max_deviation must be finite and positive")
+        from .geom import _unpack_points3
+        return _unpack_points3(_require(self._n, "tessellate")(deviation))
+
     @staticmethod
-    def helix(origin, x_axis, y_axis, radius, pitch, turns, right_handed=True, name=None):
+    def helix(origin: Point3Like, x_axis: Point3Like, y_axis: Point3Like,
+              radius: float, pitch: float, turns: float, right_handed: bool = True,
+              name: EntityName | None = None) -> Curve3D:
         """Helix in the plane of ``x_axis``/``y_axis``; axis is their cross. ``pitch`` is z per turn."""
         ox, oy, oz = _xyz(origin)
         xx, xy, xz = _xyz(x_axis)
         yx, yy, yz = _xyz(y_axis)
-        return Curve(_require(_native_mod()["NativeCurve"], "helix")(
+        return Curve3D(_require(_native_mod()["NativeCurve"], "helix")(
             ox, oy, oz, xx, xy, xz, yx, yy, yz,
             float(radius), float(pitch), float(turns), 1 if right_handed else 0, _name(name)))
 
     @staticmethod
-    def circle(origin, x_axis, y_axis, radius, name=None):
+    def circle(origin: Point3Like, x_axis: Point3Like, y_axis: Point3Like,
+               radius: float, name: EntityName | None = None) -> Curve3D:
         """Full circle in the x/y plane of the given axes."""
         ox, oy, oz = _xyz(origin)
         xx, xy, xz = _xyz(x_axis)
         yx, yy, yz = _xyz(y_axis)
-        return Curve(_require(_native_mod()["NativeCurve"], "circle")(
+        return Curve3D(_require(_native_mod()["NativeCurve"], "circle")(
             ox, oy, oz, xx, xy, xz, yx, yy, yz, float(radius), _name(name)))
 
     @staticmethod
-    def arc(origin, x_axis, y_axis, radius, start_angle, sweep_angle, name=None):
+    def arc(origin: Point3Like, x_axis: Point3Like, y_axis: Point3Like, radius: float,
+            start_angle: float, sweep_angle: float, name: EntityName | None = None) -> Curve3D:
         """Circular arc. Angles in radians, from ``x_axis`` toward ``y_axis``."""
         ox, oy, oz = _xyz(origin)
         xx, xy, xz = _xyz(x_axis)
         yx, yy, yz = _xyz(y_axis)
-        return Curve(_require(_native_mod()["NativeCurve"], "arc")(
+        return Curve3D(_require(_native_mod()["NativeCurve"], "arc")(
             ox, oy, oz, xx, xy, xz, yx, yy, yz,
             float(radius), float(start_angle), float(sweep_angle), _name(name)))
 
     @staticmethod
-    def spiral(origin, x_axis, y_axis, start_radius, end_radius, z_per_turn, turns, right_handed=True, name=None):
+    def spiral(origin: Point3Like, x_axis: Point3Like, y_axis: Point3Like,
+               start_radius: float, end_radius: float, z_per_turn: float, turns: float,
+               right_handed: bool = True, name: EntityName | None = None) -> Curve3D:
         """Planar spiral with optional z advance (``z_per_turn``). Radii in the x/y plane."""
         ox, oy, oz = _xyz(origin)
         xx, xy, xz = _xyz(x_axis)
         yx, yy, yz = _xyz(y_axis)
-        return Curve(_require(_native_mod()["NativeCurve"], "spiral")(
+        return Curve3D(_require(_native_mod()["NativeCurve"], "spiral")(
             ox, oy, oz, xx, xy, xz, yx, yy, yz,
             float(start_radius), float(end_radius), float(z_per_turn), float(turns),
             1 if right_handed else 0, _name(name)))
 
+    @staticmethod
+    def torus_knot(p: float, q: float, radius: float,
+                   name: EntityName | None = None) -> Curve3D:
+        """Create a torus-knot curve with the kernel's parameterization."""
+        return Curve3D(_require(_native_mod()["NativeCurve"], "torus_knot")(
+            float(p), float(q), float(radius), _name(name)))
+
     def __repr__(self):
-        return "Curve(name={0!r})".format(self.name)
+        return "Curve3D(name={0!r})".format(self.name)
 
 
 class LoftOptions(object):
-    """GeoAPI LoftOptions. Enum fields are ints (see LOFT_STYLE_*)."""
+    """General settings for profile correspondence, loft shape and crease handling."""
 
-    def __init__(self, native=None, *, correspondence=None):
-        """Empty options, or wrap an existing native LoftOptions."""
+    def __init__(self, *,
+                 correspondence: Literal["arc_length", "uniform", "features", "vertices"] | None = None,
+                 style: Literal["ruled", "smooth_catmull_rom", "hermite"] | None = None,
+                 crease_policy: Literal["all_profiles", "first_profile", "none"] | None = None) -> None:
+        """Create general loft settings; omitted values use the kernel defaults."""
         NativeLoftOptions = _native_mod()["NativeLoftOptions"]
-        self._n = native if native is not None else NativeLoftOptions()
+        self._n = NativeLoftOptions()
         if correspondence is not None:
             self.correspondence = correspondence
+        if style is not None:
+            self.style = style
+        if crease_policy is not None:
+            self.crease_policy = crease_policy
 
     @property
-    def correspondence(self):
+    def correspondence(self) -> Literal["arc_length", "uniform", "features", "vertices"]:
         """Section matching: 'arc_length', 'uniform', 'features', or 'vertices'.
 
         'vertices' matches ordered polygon corners; all sections must have the
@@ -650,16 +708,35 @@ class LoftOptions(object):
         return ("arc_length", "uniform", "features", "vertices")[self._n.correspondence_mode]
 
     @correspondence.setter
-    def correspondence(self, value):
+    def correspondence(self, value: Literal["arc_length", "uniform", "features", "vertices"]) -> None:
         choices = ("arc_length", "uniform", "features", "vertices")
         if value not in choices:
             raise ValueError("correspondence must be one of " + ", ".join(choices))
         self._n.correspondence_mode = choices.index(value)
 
-    @staticmethod
-    def propeller_blade():
-        """Preset loft options for a propeller blade (smooth + robust caps)."""
-        return LoftOptions(_require(_native_mod()["NativeLoftOptions"], "propeller_blade")())
+    @property
+    def style(self) -> Literal["ruled", "smooth_catmull_rom", "hermite"]:
+        """Loft interpolation between sections."""
+        return ("ruled", "smooth_catmull_rom", "hermite")[self._n.style]
+
+    @style.setter
+    def style(self, value: Literal["ruled", "smooth_catmull_rom", "hermite"]) -> None:
+        choices = ("ruled", "smooth_catmull_rom", "hermite")
+        if value not in choices:
+            raise ValueError("style must be one of " + ", ".join(choices))
+        self._n.style = choices.index(value)
+
+    @property
+    def crease_policy(self) -> Literal["all_profiles", "first_profile", "none"]:
+        """Which profile joints create crease columns in the loft mesh."""
+        return ("all_profiles", "first_profile", "none")[self._n.crease_policy]
+
+    @crease_policy.setter
+    def crease_policy(self, value: Literal["all_profiles", "first_profile", "none"]) -> None:
+        choices = ("all_profiles", "first_profile", "none")
+        if value not in choices:
+            raise ValueError("crease_policy must be one of " + ", ".join(choices))
+        self._n.crease_policy = choices.index(value)
 
     def __repr__(self):
         return "LoftOptions(...)"
@@ -708,43 +785,43 @@ def _datum_entity(native, part, reference):
 
 class AssemblyPart(object):
     """An instance of a Solid in an Assembly (pose + named datums)."""
-    def __init__(self, native):
+    def __init__(self, native: object) -> None:
         self._n = native
 
     @property
-    def name(self):
+    def name(self) -> EntityName:
         """Instance name."""
         return self._n.name
 
     @property
-    def pose(self):
+    def pose(self) -> tuple[float, float, float]:
         """Translation in the owning assembly as ``(x, y, z)``."""
         return (self._n.pose_x, self._n.pose_y, self._n.pose_z)
 
-    def axis(self, reference):
+    def axis(self, reference: EntityName) -> AssemblyAxisDatum:
         """Axis datum from a named entity on this part (edge/axis string)."""
         return AssemblyAxisDatum(_invoke(self._n, "add_axis_datum", str(reference)), self, str(reference))
 
-    def point(self, reference):
+    def point(self, reference: EntityName) -> AssemblyPointDatum:
         """Point datum from a named entity on this part."""
         return AssemblyPointDatum(_invoke(self._n, "add_point_datum", str(reference)), self, str(reference))
 
-    def plane(self, reference):
+    def plane(self, reference: EntityName) -> AssemblyPlaneDatum:
         """Plane datum from a named entity on this part."""
         return AssemblyPlaneDatum(_invoke(self._n, "add_plane_datum", str(reference)), self, str(reference))
 
-    def axis_at(self, point, direction):
+    def axis_at(self, point: Point3Like, direction: Point3Like) -> AssemblyAxisDatum:
         """Axis through ``point`` along ``direction`` in part-local coordinates."""
         px, py, pz = _xyz(point)
         dx, dy, dz = _xyz(direction)
         return AssemblyAxisDatum(_invoke(self._n, "add_axis_datum_at", px, py, pz, dx, dy, dz), self)
 
-    def point_at(self, point):
+    def point_at(self, point: Point3Like) -> AssemblyPointDatum:
         """Point datum in part-local coordinates."""
         px, py, pz = _xyz(point)
         return AssemblyPointDatum(_invoke(self._n, "add_point_datum_at", px, py, pz), self)
 
-    def plane_at(self, origin, normal):
+    def plane_at(self, origin: Point3Like, normal: Point3Like) -> AssemblyPlaneDatum:
         """Plane datum at ``origin`` with ``normal``, both in part-local coordinates."""
         px, py, pz = _xyz(origin)
         nx, ny, nz = _xyz(normal)
@@ -752,41 +829,49 @@ class AssemblyPart(object):
 
 
 class AssemblyOccurrence(object):
-    """Rigid instance of a nested Assembly inside a parent Assembly."""
+    """Placement of an Assembly definition inside a parent Assembly.
 
-    def __init__(self, native, parent=None):
+    ``parts`` and ``subassemblies`` return references scoped to this placement
+    for parent mates. Flexible placements have independent internal mate state.
+    """
+
+    def __init__(self, native: object, parent: Assembly | None = None) -> None:
         self._n = native
         self._parent = parent
 
     @property
-    def name(self):
+    def name(self) -> str:
         """Nested assembly name."""
         return self._n.name
 
     @property
-    def pose(self):
+    def flexible(self) -> bool:
+        """Whether this placement has independent internal mates and geometry."""
+        return bool(self._n.flexible)
+
+    @property
+    def pose(self) -> tuple[float, float, float]:
         """Translation of this occurrence in the parent assembly as ``(x, y, z)``."""
         return (self._n.pose_x, self._n.pose_y, self._n.pose_z)
 
     @property
-    def assembly(self):
+    def assembly(self) -> Assembly:
         """The nested Assembly (its parts, mates, and further sub-assemblies)."""
         part = self._parent._part if self._parent is not None else None
         return Assembly(_invoke(self._n, "get_child"), part)
 
     @property
-    def parts(self):
-        """Direct parts of the nested assembly."""
+    def parts(self) -> list[AssemblyPart]:
+        """Direct parts in this occurrence, suitable for parent-level mates."""
         count = int(self._n.part_count)
         return [AssemblyPart(_invoke(self._n, "get_part", i)) for i in range(count)]
 
     @property
-    def subassemblies(self):
-        """Direct sub-assemblies of the nested assembly."""
+    def subassemblies(self) -> list[AssemblyOccurrence]:
+        """Nested occurrences in this placement, scoped to the parent assembly."""
         count = int(self._n.sub_assembly_count)
-        nested_parent = self.assembly
         return [
-            AssemblyOccurrence(_invoke(self._n, "get_sub_assembly", i), nested_parent)
+            AssemblyOccurrence(_invoke(self._n, "get_sub_assembly", i), self._parent)
             for i in range(count)
         ]
 
@@ -846,7 +931,7 @@ class AssemblySolveResult(namedtuple("AssemblySolveResult", "converged sum_squar
     __slots__ = ()
 
     @property
-    def unsatisfied(self):
+    def unsatisfied(self) -> tuple[MateResidual, ...]:
         """Unsatisfied mates, largest normalized error first."""
         return tuple(sorted((mate for mate in self.mates if not mate.satisfied),
                             key=lambda mate: (-mate.max_residual, mate.index)))
@@ -874,20 +959,20 @@ class AssemblySolveResult(namedtuple("AssemblySolveResult", "converged sum_squar
 
 
 class Assembly(object):
-    """Rigid-part assembly solved by C# Geo Assembly constraints.
+    """Part assembly solved by C# Geo assembly constraints.
 
     Parts and nested assemblies can be mixed: ``add_part`` places a Solid,
     ``add_subassembly`` places another Assembly (which may itself contain
-    parts and sub-assemblies). Nested internals stay rigid; parent mates may
-    still use datums on nested parts.
+    parts and sub-assemblies). Nested assemblies are rigid by default; use a
+    flexible occurrence when its internal joints must move independently.
     """
 
-    def __init__(self, native, part=None):
+    def __init__(self, native: object, part: Part | None = None) -> None:
         self._n = native
         self._part = part
 
     @property
-    def constraints(self):
+    def constraints(self) -> tuple[AssemblyConstraint, ...]:
         """Immutable authored constraints with local and solved world anchors."""
         records = json.loads(_require(self._n, "constraint_records")())
         def datum(value):
@@ -901,20 +986,20 @@ class Assembly(object):
             tuple(item["entities"])) for item in records)
 
     @property
-    def name(self):
+    def name(self) -> EntityName:
         """Assembly instance name."""
         return self._n.name
 
     @property
-    def solve_after_every_constraint(self):
+    def solve_after_every_constraint(self) -> bool:
         """If True, the kernel solves after each constraint."""
         return bool(self._n.solve_after_every_constraint)
 
     @solve_after_every_constraint.setter
-    def solve_after_every_constraint(self, value):
+    def solve_after_every_constraint(self, value: bool) -> None:
         self._n.solve_after_every_constraint = 1 if value else 0
 
-    def leaves(self):
+    def leaves(self) -> tuple[AssemblyLeaf, ...]:
         """Return recursive part occurrences with world frames and exact surface bounds.
 
         The leaf's ``solid`` remains in its own local coordinates; ``frame`` maps
@@ -936,7 +1021,7 @@ class Assembly(object):
                           _body(_invoke(leaf, "get_solid"), self._part), frame, bounds))
         return tuple(result)
 
-    def bounds(self):
+    def bounds(self) -> tuple[vec3, vec3] | None:
         """World-space ``(minimum, maximum)`` over recursive part occurrences, or None when empty."""
         leaves = self.leaves()
         if not leaves:
@@ -948,7 +1033,7 @@ class Assembly(object):
                        max(leaf.bounds[1].y for leaf in leaves),
                        max(leaf.bounds[1].z for leaf in leaves))
         return minimum, maximum
-    def interferences(self, *, min_volume=0):
+    def interferences(self, *, min_volume: float = 0) -> list[Interference]:
         """Return positive overlaps, largest first, including nested parts.
 
         Uses current occurrence poses without solving or modifying the model.
@@ -968,8 +1053,9 @@ class Assembly(object):
                              Solid(_invoke(result, "geometry", i), self._part))
                 for i in range(int(result.count))]
 
-    def add_part(self, solid, position=(0, 0, 0), orientation=(0, 0, 0, 1)):
-        """Place ``solid`` at ``position`` with quaternion ``orientation`` (x,y,z,w). Returns AssemblyPart."""
+    def add_part(self, solid: Solid, position: Point3Like = (0, 0, 0),
+                 orientation: Sequence[float] = (0, 0, 0, 1)) -> AssemblyPart:
+        """Place a solid from any Part at ``position`` with quaternion ``orientation`` (x,y,z,w). Returns AssemblyPart."""
         px, py, pz = _xyz(position)
         if len(orientation) != 4:
             raise ValueError("orientation must be quaternion (x, y, z, w)")
@@ -978,7 +1064,8 @@ class Assembly(object):
             self._n, "add_part",
             solid._n, px, py, pz, float(qx), float(qy), float(qz), float(qw)))
 
-    def pattern_linear(self, seed, count, step):
+    def pattern_linear(self, seed: AssemblyPart | AssemblyOccurrence, count: int,
+                       step: Point3Like) -> list[AssemblyPart | AssemblyOccurrence]:
         """Return ``count`` instances including seed, spaced by assembly-frame step.
 
         Copies share the solid definition and are mated rigidly to the seed,
@@ -997,7 +1084,9 @@ class Assembly(object):
                          else AssemblyPart(_invoke(result, "get", i)))
                         for i in range(1, int(result.count))]
 
-    def pattern_circular(self, seed, count, axis=None, angle=2*math.pi):
+    def pattern_circular(self, seed: AssemblyPart | AssemblyOccurrence, count: int,
+                         axis: Frame | None = None,
+                         angle: float = 2*math.pi) -> list[AssemblyPart | AssemblyOccurrence]:
         """Pattern around axis.z; a full circle omits the duplicate endpoint.
 
         A partial sweep includes both endpoints. Count includes the seed.
@@ -1016,7 +1105,8 @@ class Assembly(object):
                          else AssemblyPart(_invoke(result, "get", i)))
                         for i in range(1, int(result.count))]
 
-    def mirror(self, seed, plane=None, name=None):
+    def mirror(self, seed: AssemblyPart | AssemblyOccurrence, plane: Frame | None = None,
+               name: EntityName | None = None) -> AssemblyPart | AssemblyOccurrence:
         """Mirror a direct part or subassembly in the XY plane of a Frame.
 
         Creates opposite-handed geometry and retains nested parts and mates.
@@ -1032,11 +1122,16 @@ class Assembly(object):
         return AssemblyPart(_invoke(self._n, "mirror_part",
             seed._n, plane._native(), _name(name)))
 
-    def add_subassembly(self, assembly, position=(0, 0, 0), orientation=(0, 0, 0, 1)):
-        """Place ``assembly`` as a rigid child. Returns AssemblyOccurrence.
+    def add_subassembly(self, assembly: Assembly, position: Point3Like = (0, 0, 0),
+                        orientation: Sequence[float] = (0, 0, 0, 1), *,
+                        flexible: bool = False) -> AssemblyOccurrence:
+        """Place an assembly definition as a rigid or flexible child.
 
-        The child may contain parts and further sub-assemblies. Solve the child
-        first; parent mates may use datums created on nested parts.
+        Returns an occurrence. Use ``occurrence.parts`` (or its nested
+        ``subassemblies``) when making parent-level mates so repeated placements
+        remain unambiguous. By default occurrences share the child definition's
+        internal pose. ``flexible=True`` makes an independent copy of its mate
+        state and geometry, allowing each occurrence's joints to move separately.
         """
         px, py, pz = _xyz(position)
         if len(orientation) != 4:
@@ -1044,16 +1139,17 @@ class Assembly(object):
         qx, qy, qz, qw = orientation
         return AssemblyOccurrence(_invoke(
             self._n, "add_sub_assembly",
-            assembly._n, px, py, pz, float(qx), float(qy), float(qz), float(qw)), self)
+            assembly._n, px, py, pz, float(qx), float(qy), float(qz), float(qw),
+            1 if flexible else 0), self)
 
     @property
-    def parts(self):
+    def parts(self) -> list[AssemblyPart]:
         """Parts added with ``add_part`` on this assembly (not nested leaves)."""
         count = int(self._n.part_count)
         return [AssemblyPart(_invoke(self._n, "get_part", i)) for i in range(count)]
 
     @property
-    def subassemblies(self):
+    def subassemblies(self) -> list[AssemblyOccurrence]:
         """Child assemblies added with ``add_subassembly``."""
         count = int(self._n.sub_assembly_count)
         return [
@@ -1061,7 +1157,7 @@ class Assembly(object):
             for i in range(count)
         ]
 
-    def world_pose(self, part):
+    def world_pose(self, part: AssemblyPart | AssemblyOccurrence) -> tuple[float, float, float]:
         """Translation of a direct or nested part in this assembly's frame."""
         return (
             _invoke(self._n, "get_world_pose_x", part._n),
@@ -1069,14 +1165,16 @@ class Assembly(object):
             _invoke(self._n, "get_world_pose_z", part._n),
         )
 
-    def fix(self, part):
+    def fix(self, part: AssemblyPart | AssemblyOccurrence) -> None:
         """Lock an AssemblyPart or AssemblyOccurrence in world (ground)."""
         if isinstance(part, AssemblyOccurrence):
             _invoke(self._n, "fix_sub_assembly", part._n)
             return
         _invoke(self._n, "fix_part", part._n)
 
-    def coincident(self, a, b, opposite_normals=None):
+    def coincident(self, a: AssemblyPointDatum | AssemblyAxisDatum | AssemblyPlaneDatum,
+                   b: AssemblyPointDatum | AssemblyAxisDatum | AssemblyPlaneDatum,
+                   opposite_normals: bool | None = None) -> None:
         """Coincide two matching datums (point/point, axis/axis, plane/plane)."""
         if isinstance(a, AssemblyPlaneDatum) and isinstance(b, AssemblyPlaneDatum):
             if opposite_normals is None:
@@ -1095,7 +1193,8 @@ class Assembly(object):
         else:
             raise TypeError("coincident datums must have matching point, axis, or plane types")
 
-    def parallel(self, a, b):
+    def parallel(self, a: AssemblyAxisDatum | AssemblyPlaneDatum,
+                 b: AssemblyAxisDatum | AssemblyPlaneDatum) -> None:
         """Keep two matching axis or plane datums parallel."""
         if isinstance(a, AssemblyAxisDatum) and isinstance(b, AssemblyAxisDatum):
             _invoke(self._n, "set_parallel_axes", a._n, b._n)
@@ -1104,11 +1203,12 @@ class Assembly(object):
         else:
             raise TypeError("parallel expects two axis datums or two plane datums")
 
-    def concentric(self, a, b):
+    def concentric(self, a: AssemblyAxisDatum, b: AssemblyAxisDatum) -> None:
         """Concentric axes/cylinders (two datums)."""
         _invoke(self._n, "set_concentric", a._n, b._n)
 
-    def perpendicular(self, a, b):
+    def perpendicular(self, a: AssemblyAxisDatum | AssemblyPlaneDatum,
+                      b: AssemblyAxisDatum | AssemblyPlaneDatum) -> None:
         """Keep two matching axis or plane datums perpendicular."""
         if isinstance(a, AssemblyAxisDatum) and isinstance(b, AssemblyAxisDatum):
             _invoke(self._n, "set_perpendicular_axes", a._n, b._n)
@@ -1117,13 +1217,14 @@ class Assembly(object):
         else:
             raise TypeError("perpendicular expects two axis datums or two plane datums")
 
-    def angle(self, a, b, radians):
+    def angle(self, a: AssemblyAxisDatum, b: AssemblyAxisDatum, radians: float) -> None:
         """Angle between two axis datums, in radians."""
         if not isinstance(a, AssemblyAxisDatum) or not isinstance(b, AssemblyAxisDatum):
             raise TypeError("angle currently expects two axis datums")
         _invoke(self._n, "set_angle_axes", a._n, b._n, float(radians))
 
-    def distance(self, a, b, value):
+    def distance(self, a: AssemblyPointDatum | AssemblyPlaneDatum,
+                 b: AssemblyPointDatum | AssemblyPlaneDatum, value: float) -> None:
         """Distance between two point datums, or a signed plane offset along B's normal."""
         if isinstance(a, AssemblyPointDatum) and isinstance(b, AssemblyPointDatum):
             _invoke(self._n, "set_distance_points", a._n, b._n, float(value))
@@ -1132,33 +1233,33 @@ class Assembly(object):
         else:
             raise TypeError("distance expects two point datums or two plane datums")
 
-    def on_plane(self, point, plane):
+    def on_plane(self, point: AssemblyPointDatum, plane: AssemblyPlaneDatum) -> None:
         """Constrain a point datum to lie on a plane datum."""
         if not isinstance(point, AssemblyPointDatum) or not isinstance(plane, AssemblyPlaneDatum):
             raise TypeError("on_plane expects a point datum and a plane datum")
         _invoke(self._n, "set_point_on_plane", point._n, plane._n)
 
-    def contact(self, point, plane):
+    def contact(self, point: AssemblyPointDatum, plane: AssemblyPlaneDatum) -> None:
         """Keep a point on the positive side of a plane datum."""
         if not isinstance(point, AssemblyPointDatum) or not isinstance(plane, AssemblyPlaneDatum):
             raise TypeError("contact expects a point datum and a plane datum")
         _invoke(self._n, "set_contact", point._n, plane._n)
 
-    def solve(self):
+    def solve(self) -> AssemblySolveResult:
         """Solve assembly mates and return an immutable AssemblySolveResult.
 
         Inspect ``result.converged`` and ``result.unsatisfied`` for diagnostics.
         """
         return AssemblySolveResult._from_json(_invoke(self._n, "solve_constraints"))
 
-    def plane_frame(self, reference):
+    def plane_frame(self, reference: EntityName) -> Frame | None:
         """World Frame of a named assembly plane, or None."""
         native = _require(self._n, "get_plane_frame")(str(reference))
         if native is None:
             return None
         return Frame._from_native(native)
 
-    def show(self, title="Camber"):
+    def show(self, title: str = "Camber") -> None:
         """Open the 3D viewer on this assembly."""
         from .view import show as _show
         _show(self, title=title)
@@ -1172,7 +1273,7 @@ class Part(object):
     Solids support ``a + b`` (union), ``a - b`` (cut), ``a & b`` (intersect).
     """
 
-    def __init__(self, low, high, tolerance=0.01):
+    def __init__(self, low: Point3Like, high: Point3Like, tolerance: float = 0.01) -> None:
         """Create an independent CAD session without resetting other sessions."""
         NativePart, _, _ = _native()
         lx, ly, lz = _xyz(low)
@@ -1181,12 +1282,12 @@ class Part(object):
         self._n = NativePart(lx, ly, lz, hx, hy, hz, float(tolerance))
 
     @property
-    def name(self):
+    def name(self) -> str:
         """Part instance name."""
         return self._n.name
 
     @property
-    def operations(self):
+    def operations(self) -> tuple[PartOperation, ...]:
         """Successful solid-producing features in chronological order.
 
         Each record has ``kind``, ``result``, input names, selected entities, and
@@ -1202,7 +1303,7 @@ class Part(object):
                           operation.details))
         return tuple(result)
     @property
-    def max_deviation(self):
+    def max_deviation(self) -> float:
         """Default tessellation tolerance (world units)."""
         return self._n.max_deviation
 
@@ -1213,21 +1314,21 @@ class Part(object):
         return tuple(at(i) for i in range(count))
 
     @property
-    def patch_names(self):
+    def patch_names(self) -> tuple[EntityName, ...]:
         """Canonical renderer patch names across all solids in this Part."""
         return self._selectable_names("patch")
 
     @property
-    def curve_names(self):
+    def curve_names(self) -> tuple[EntityName, ...]:
         """Canonical renderer mesh-edge curve names across all solids in this Part."""
         return self._selectable_names("curve")
 
     @property
-    def point_names(self):
+    def point_names(self) -> tuple[EntityName, ...]:
         """Canonical renderer edge-anchor names across all solids in this Part."""
         return self._selectable_names("point")
 
-    def smallest_unit(self):
+    def smallest_unit(self) -> float:
         """Lattice step: operating-box extent / slices (~1e-6 of the box)."""
         return _require(self._n, "smallest_unit")()
 
@@ -1236,12 +1337,14 @@ class Part(object):
         return _require(_native_mod()["NativePart"], "generate_name")(prefix)
 
     @api_group("Create")
-    def assembly(self, name=None):
+    def assembly(self, name: EntityName | None = None) -> Assembly:
         """Create or get an Assembly attached to this part."""
         return Assembly(_require(self._n, "get_assembly")(_name(name)), self)
 
     @api_group("Create")
-    def sketch(self, plane="xy", name=None, origin_name=None, frame=None, constrained=False):
+    def sketch(self, plane: str = "xy", name: EntityName | None = None,
+               origin_name: EntityName | None = None, frame: Frame | None = None,
+               constrained: bool = False) -> Sketch:
         """2D sketch. ``plane`` is ``xy``/``xz``/``yz``; or pass ``frame=``.
 
         ``constrained=True`` attaches the constraint solver (coincident, length, …).
@@ -1259,7 +1362,8 @@ class Part(object):
 
 
     @api_group("Create")
-    def section_sketch(self, solid, plane=None, name=None):
+    def section_sketch(self, solid: Solid, plane: Frame | None = None,
+                       name: EntityName | None = None) -> Sketch:
         """Return the cross-section of ``solid`` as sampled curves in a Sketch.
 
         ``plane`` is a Frame and defaults to XY. Coplanar face overlap is omitted;
@@ -1334,7 +1438,9 @@ class Part(object):
         return Solid(_require(self._n, "revolve")(sketch._n, float(angle), float(max_deviation), _name(name)), self)
 
     @api_group("Primitives")
-    def cylinder(self, origin, radius, height, name=None, axis="z", max_deviation=-1):
+    def cylinder(self, origin: Point3Like, radius: float, height: float,
+                 name: EntityName | None = None, axis: Literal["x", "y", "z"] = "z",
+                 max_deviation: float = -1) -> Solid:
         """Cylinder from a point or Frame. ``axis`` is ``x``/``y``/``z`` if origin is a point.
 
         Along ``pose.z`` when ``origin`` is a Frame; base at origin, height in +Z.
@@ -1347,24 +1453,28 @@ class Part(object):
             _as_frame(pose)._native(), float(radius), float(height), float(max_deviation), _name(name)), self)
 
     @api_group("Primitives")
-    def cylinder_revolve(self, pose, radius, height, name=None, max_deviation=-1):
+    def cylinder_revolve(self, pose: Frame, radius: float, height: float,
+                         name: EntityName | None = None, max_deviation: float = -1) -> Solid:
         """Cylinder as a revolve of a rectangle (same pose convention as cylinder)."""
         return Solid(_require(self._n, "create_cylinder_revolve")(
             _as_frame(pose)._native(), float(radius), float(height), float(max_deviation), _name(name)), self)
 
     @api_group("Primitives")
-    def sphere(self, center, radius, name=None, max_deviation=-1):
+    def sphere(self, center: Point3Like, radius: float,
+               name: EntityName | None = None, max_deviation: float = -1) -> Solid:
         """Sphere at ``center`` (point or Frame)."""
         return Solid(_require(self._n, "create_sphere")(
             _as_frame(center)._native(), float(radius), float(max_deviation), _name(name)), self)
 
     @api_group("Primitives")
-    def cube(self, pose, extent, name=None):
+    def cube(self, pose: Frame | Point3Like, extent: float,
+             name: EntityName | None = None) -> Solid:
         """Axis-aligned cube of side ``extent`` in the pose (center at origin)."""
         return Solid(_require(self._n, "create_cube")(_as_frame(pose)._native(), float(extent), _name(name)), self)
 
     @api_group("Primitives")
-    def cuboid(self, pose_or_min, extents_or_max, name=None):
+    def cuboid(self, pose_or_min: Frame | Point3Like,
+               extents_or_max: Point3Like, name: EntityName | None = None) -> Solid:
         """Pose + local extents, or world AABB min/max."""
         if isinstance(pose_or_min, Frame):
             ex, ey, ez = _xyz(extents_or_max)
@@ -1376,8 +1486,9 @@ class Part(object):
             mn.x, mn.y, mn.z, mx.x, mx.y, mx.z, _name(name)), self)
 
     def create_metric_thread_for_bolt_negative(
-            self, pose, major_diameter, pitch, length, name=None, max_deviation=-1,
-            right_handed=True, outer_radius=-1):
+            self, pose: Frame, major_diameter: float, pitch: float, length: float,
+            name: EntityName | None = None, max_deviation: float = -1,
+            right_handed: bool = True, outer_radius: float = -1) -> Solid:
         """ISO 60° external-thread cutter (subtract from a shank). Axis is pose.z."""
         return Solid(_require(self._n, "create_metric_thread_for_bolt_negative")(
             _as_frame(pose)._native(),
@@ -1390,8 +1501,9 @@ class Part(object):
             float(outer_radius)), self)
 
     def create_metric_thread_for_nut_negative(
-            self, pose, major_diameter, pitch, length, name=None, max_deviation=-1,
-            right_handed=True, include_bore_chamfers=True):
+            self, pose: Frame, major_diameter: float, pitch: float, length: float,
+            name: EntityName | None = None, max_deviation: float = -1,
+            right_handed: bool = True, include_bore_chamfers: bool = True) -> Solid:
         """ISO 60° internal-thread cutter (subtract from a nut). Axis is pose.z."""
         fn = _require(self._n, "create_metric_thread_for_nut_negative")
         args = (
@@ -1409,8 +1521,9 @@ class Part(object):
             return Solid(fn(*args), self)
 
     def create_metric_thread_for_hole_negative(
-            self, pose, major_diameter, pitch, length, name=None, max_deviation=-1,
-            right_handed=True, include_bore_chamfers=False):
+            self, pose: Frame, major_diameter: float, pitch: float, length: float,
+            name: EntityName | None = None, max_deviation: float = -1,
+            right_handed: bool = True, include_bore_chamfers: bool = False) -> Solid:
         """ISO 60° internal-thread cutter (subtract from a holed plate). Axis is pose.z.
 
         Same solid as create_metric_thread_for_nut_negative. Bore chamfers default off.
@@ -1433,21 +1546,31 @@ class Part(object):
         except TypeError:
             return Solid(native(*args), self)
 
-    def add_line(self, start, end, name=None):
-        """3D construction line (not a sketch). Returns Curve."""
+    def add_line(self, start: Point3Like | EntityName, end: Point3Like | EntityName,
+                 name: EntityName | None = None) -> Curve3D:
+        """3D construction line from coordinates, named points, or one of each."""
+        start_is_name = isinstance(start, str)
+        end_is_name = isinstance(end, str)
+        if start_is_name and end_is_name:
+            native = _require(self._n, "add_line_by_names")
+            return Curve3D(native(start.strip(), end.strip(), _name(name)))
+        if start_is_name:
+            x1, y1, z1 = _xyz(end)
+            native = _require(self._n, "add_line_from_start_name")
+            return Curve3D(native(start.strip(), x1, y1, z1, _name(name)))
+        if end_is_name:
+            x0, y0, z0 = _xyz(start)
+            native = _require(self._n, "add_line_to_end_name")
+            return Curve3D(native(x0, y0, z0, end.strip(), _name(name)))
         x0, y0, z0 = _xyz(start)
         x1, y1, z1 = _xyz(end)
-        return Curve(_require(self._n, "add_line")(x0, y0, z0, x1, y1, z1, _name(name)))
+        return Curve3D(_require(self._n, "add_line")(x0, y0, z0, x1, y1, z1, _name(name)))
 
-    def add_line_by_names(self, start_name, end_name, name=None):
-        """3D line between two named points already on the part."""
-        return Curve(_require(self._n, "add_line_by_names")(start_name, end_name, _name(name)))
-
-    def add_plane(self, plane_name, origin_anchor_name):
+    def add_plane(self, plane_name: EntityName, origin_anchor_name: EntityName) -> None:
         """Named construction plane at a named origin point."""
         _require(self._n, "add_plane")(plane_name, origin_anchor_name)
 
-    def plane_frame(self, plane):
+    def plane_frame(self, plane: str) -> Frame | None:
         """Frame of a named part plane, or None."""
         native = _require(self._n, "get_plane_frame")(str(plane))
         if native is None:
@@ -1456,7 +1579,7 @@ class Part(object):
 
     def _extrude_along_curve(self, sketch, curve, name=None, max_deviation=-1, twist=0,
                             reference_direction=None):
-        """Sweep a profile along a 3D Curve.
+        """Sweep a profile along a 3D Curve3D.
 
         Optional reference_direction projects a fixed world direction onto
         each normal plane to control profile orientation. It must never be
@@ -1467,10 +1590,14 @@ class Part(object):
         return Solid(_require(self._n, "extrude_along_curve")(
             sketch._n, curve._n, float(max_deviation), float(twist), _name(name), reference), self)
 
-    def _extrude_along_curve_strip(self, sketch, curves, name=None, max_deviation=-1, twist=0):
-        """Sweep the sketch along a sequence of Curves (G1 strip)."""
+    def _extrude_along_curve_strip(self, sketch, curves, name=None, max_deviation=-1,
+                                   twist=0, reference_direction=None):
+        """Sweep the sketch along connected Curves with mitered sharp joins."""
+        from .geom import _pack_points3
+        reference = "" if reference_direction is None else _pack_points3([reference_direction])
         return Solid(_require(self._n, "extrude_along_curve_strip")(
-            sketch._n, _curve_list(curves), float(max_deviation), float(twist), _name(name)), self)
+            sketch._n, _curve_list(curves), float(max_deviation), float(twist),
+            _name(name), reference), self)
 
     def _extrude_along_sketch(self, profile, guide, name=None, max_deviation=-1):
         """Sweep ``profile`` along a 3D path taken from ``guide`` sketch curves."""
@@ -1478,7 +1605,9 @@ class Part(object):
             profile._n, guide._n, float(max_deviation), _name(name)), self)
 
     @api_group("Multi-profile")
-    def loft(self, sketches, options=None, name=None, max_deviation=-1, *, first_curves=None):
+    def loft(self, sketches: Sequence[Sketch], options: LoftOptions | None = None,
+             name: EntityName | None = None, max_deviation: float = -1, *,
+             first_curves: Sequence[str] | None = None) -> Solid:
         """Loft through Sketches, preserving their authored start points as connectors.
 
         ``options`` is LoftOptions. Symmetric sections are not automatically
@@ -1508,14 +1637,16 @@ class Part(object):
             "" if first_curves is None else _join_names(first_curves)), self)
 
     @api_group("Multi-profile")
-    def loft_surface(self, sections, *, guides=None, start_tangent=None,
-                     end_tangent=None, name=None, max_deviation=-1):
+    def loft_surface(self, sections: Sequence[Sketch], *, guides: Sequence[Curve3D] | None = None,
+                     start_tangent: Point3Like | None = None,
+                     end_tangent: Point3Like | None = None,
+                     name: EntityName | None = None, max_deviation: float = -1) -> Surface:
         """Create an uncapped NURBS sheet through sketch sections.
 
         Sections retain authored curve order; degrees and knots are matched exactly.
         Rational sections must share weights after this conversion.
         Optional ``guides`` control the two side boundaries: use lines or
-        ``Curve.hermite`` curves with one point at each section endpoint, in order.
+        ``Curve3D.hermite`` curves with one point at each section endpoint, in order.
         Optional tangents are world-space derivative vectors (direction and magnitude)
         for the start/end of the loft. Both point in the direction of section order.
         The loft parameter runs from zero to one with equal intervals per section.
@@ -1528,23 +1659,41 @@ class Part(object):
             _sketch_list(sections), _curve_list(() if guides is None else guides),
             tangent(start_tangent), tangent(end_tangent), float(max_deviation), _name(name)), self)
 
+    @api_group("Surface modeling")
+    def sew(self, surfaces: Iterable[Surface], *, make_solid: bool = False,
+            name: EntityName | None = None) -> Surface | Solid:
+        """Sew exactly coincident surface boundaries.
+
+        Orientations are reconciled automatically. ``make_solid=True`` requires
+        every exact boundary edge to be paired and returns a Solid; otherwise an
+        open Surface is returned. No distance-based snapping is performed.
+        """
+        surfaces = list(surfaces)
+        if not surfaces or any(not isinstance(surface, Surface) or surface._part is not self
+                               for surface in surfaces):
+            raise TypeError("surfaces must contain Surfaces from this Part")
+        native = _require(self._n, "sew")(
+            _solid_list(surfaces), bool(make_solid), _name(name))
+        return Solid(native, self) if make_solid else Surface(native, self)
+
     @api_group("Booleans")
-    def boolean(self, a, b, operation, name=None):
+    def boolean(self, a: Solid, b: Solid, operation: int,
+                name: EntityName | None = None) -> Solid:
         """CSG: ``operation`` is BOOLEAN_UNION / SUBTRACT / INTERSECT."""
         return Solid(_require(self._n, "boolean")(a._n, b._n, int(operation), _name(name)), self)
 
     @api_group("Booleans")
-    def union(self, a, b, name=None):
+    def union(self, a: Solid, b: Solid, name: EntityName | None = None) -> Solid:
         """Boolean union. Same as ``a + b``."""
         return Solid(_invoke(self._n, "union", a._n, b._n, _name(name)), self)
 
     @api_group("Booleans")
-    def subtract(self, a, b, name=None):
+    def subtract(self, a: Solid, b: Solid, name: EntityName | None = None) -> Solid:
         """Boolean subtraction ``a minus b``. Same as ``a - b``."""
         return Solid(_invoke(self._n, "subtract", a._n, b._n, _name(name)), self)
 
     @api_group("Booleans")
-    def intersect(self, a, b, name=None):
+    def intersect(self, a: Solid, b: Solid, name: EntityName | None = None) -> Solid:
         """Boolean intersection. Same as ``a & b``."""
         return Solid(_invoke(self._n, "intersect", a._n, b._n, _name(name)), self)
 
@@ -1569,7 +1718,7 @@ class Part(object):
             solid._n, surface._n, keep_normal, _name(name)), self)
 
     @api_group("Booleans")
-    def batch_union(self, meshes):
+    def batch_union(self, meshes: Iterable[Solid], name: EntityName | None = None) -> Solid | None:
         """Union many solids. Empty list → None; one item returned as-is."""
         if not meshes:
             return None
@@ -1578,7 +1727,8 @@ class Part(object):
         return Solid(_require(self._n, "batch_union")(_solid_list(meshes)), self)
 
     @api_group("Booleans")
-    def batch_subtract(self, base, cutters, name=None):
+    def batch_subtract(self, base: Solid, cutters: Iterable[Solid],
+                       name: EntityName | None = None) -> Solid:
         """Subtract the union of ``cutters`` from ``base`` in one Boolean step.
 
         ``cutters`` may be any iterable of solids. An empty iterable leaves
@@ -1596,7 +1746,8 @@ class Part(object):
             base._n, _solid_list(cutters), _name(name)), self)
 
     @api_group("Booleans")
-    def batch_boolean_chain(self, mesh_a, steps):
+    def batch_boolean_chain(self, mesh_a: Solid,
+                            steps: Sequence[tuple[Solid, int]]) -> Solid:
         """Apply ``steps`` as ``[(solid, BOOLEAN_*), ...]`` in order onto ``mesh_a``."""
         chain = _native_mod()["NativeBooleanChain"]()
         for solid, op in steps:
@@ -1604,7 +1755,9 @@ class Part(object):
         return Solid(_require(self._n, "batch_boolean_chain")(mesh_a._n, chain), self)
 
     @api_group("Import")
-    def solid_from_mesh(self, positions, triangles, name=None):
+    def solid_from_mesh(self, positions: Sequence[Point3Like],
+                        triangles: Sequence[Sequence[int]],
+                        name: EntityName | None = None) -> Surface | Solid:
         """Build a Solid or open Surface from world-space vertices and triangles."""
         from .geom import _pack_points3, _pack_triangles
         native = _require(self._n, "solid_from_mesh")(
@@ -1660,7 +1813,7 @@ class Part(object):
         return Solid(_invoke(self._n, "mirror", solid._n, plane._native(), _name(name)), self)
 
     @api_group("Create")
-    def copy_solid(self, source, name):
+    def copy_solid(self, source: Solid, name: EntityName) -> Solid:
         """Deep-copy a solid, rewriting its entity prefixes to the required new name.
 
         Cross-Part copies require the same coordinate lattice (origin and step).
@@ -1748,6 +1901,13 @@ class Part(object):
         return Solid(_require(self._n, "shell")(
             solid._n, float(thickness), _join_names(faces or []), float(max_deviation), _name(name), bool(outward), join == "round"), self)
 
+    def _thicken(self, surface, thickness, *, both_sides=False, name=None):
+        """Turn an oriented surface into a solid using its surface normals."""
+        if not isinstance(surface, Surface) or surface._part is not self:
+            raise TypeError("surface must be a Surface from this Part")
+        return Solid(_require(self._n, "thicken")(
+            surface._n, float(thickness), bool(both_sides), _name(name)), self)
+
     def _rib(self, base, path, thickness, to, *, frame=None, name=None, max_deviation=-1):
         """Union a constant-width polyline rib, terminated by an exact extrusion.
 
@@ -1806,7 +1966,7 @@ class Part(object):
         return self.union(base, rib, name=base.name if name is None else name)
 
     @api_group("Inspect")
-    def solid(self, name):
+    def solid(self, name: EntityName) -> Surface | Solid | None:
         """Look up a Solid or Surface already registered on this part, or None."""
         found = _require(self._n, "get_mesh_from_name")(name)
         if found is None:
@@ -1814,21 +1974,24 @@ class Part(object):
         return _body(found, self)
 
     @api_group("Import")
-    def load_stl(self, path, group_border_angle_deg, name=None, require_watertight=True):
+    def load_stl(self, path: str, group_border_angle_deg: float,
+                 name: EntityName | None = None, require_watertight: bool = True) -> Surface | Solid:
         """Import STL as a Solid or, when allowed, an open Surface."""
         native = _require(self._n, "load_stl_file")(
             path, float(group_border_angle_deg), _name(name), 1 if require_watertight else 0)
         return _body(native, self)
 
     @api_group("Import")
-    def load_off(self, path, group_border_angle_deg, name=None, require_watertight=True):
+    def load_off(self, path: str, group_border_angle_deg: float,
+                 name: EntityName | None = None, require_watertight: bool = True) -> Surface | Solid:
         """Import OFF as a Solid or, when allowed, an open Surface."""
         native = _require(self._n, "load_off_file")(
             path, float(group_border_angle_deg), _name(name), 1 if require_watertight else 0)
         return _body(native, self)
 
     @api_group("Import")
-    def load_obj(self, path, group_border_angle_deg=-1, name=None, scale=1.0):
+    def load_obj(self, path: str, group_border_angle_deg: float = -1,
+                 name: EntityName | None = None, scale: float = 1.0) -> Surface | Solid:
         """Import Wavefront OBJ. ``group_border_angle_deg`` splits patches at sharp edges
         (viewer edges are drawn on patch borders; use e.g. 22 when the OBJ has no ``g`` tags).
         ``scale`` multiplies vertex positions (e.g. 0.01 for cm→m)."""
@@ -1836,14 +1999,15 @@ class Part(object):
             path, float(group_border_angle_deg), _name(name), float(scale))
         return _body(native, self)
 
-    def show(self, title="Camber"):
+    def show(self, title: str = "Camber") -> None:
         """Open the 3D viewer on all meshes in this part."""
         from .view import show as _show
         _show(self, title=title)
 
     def sketch_interactive(
-            self, plane="xy", name=None, part_var="part", sketch_var="sk",
-            frame=None, emit_frame=False):
+            self, plane: str = "xy", name: EntityName | None = None,
+            part_var: str = "part", sketch_var: str = "sk",
+            frame: Frame | None = None, emit_frame: bool = False) -> tuple[Sketch | None, str | None]:
         """Draw a sketch in the viewer. Finish copies camber Python to the clipboard.
 
         Returns (Sketch, code) or (None, None) if cancelled. Requires pyglet + imgui.
@@ -1865,71 +2029,113 @@ class Sketch(object):
     unless ``solve_after_every_constraint`` is True (default).
     """
 
-    def __init__(self, native, part):
+    def __init__(self, native: object, part: Part) -> None:
         self._n = native
         self._part = part
 
     @api_group("Build solids")
-    def extrude(self, height, name=None, both_sides=False, max_deviation=-1,
-                twist=0, taper_angle=0) -> "Solid":
+    def extrude(self, height: float, name: EntityName | None = None, both_sides: bool = False,
+                max_deviation: float = -1, twist: float = 0,
+                taper_angle: float = 0) -> Solid:
         """Extrude this sketch; positive taper narrows the far end (radians)."""
         return self._part._extrude(self, height, name, both_sides, max_deviation,
                                    twist, taper_angle)
 
+    @api_group("Surface modeling")
+    def extrude_surface(self, height: float, name: EntityName | None = None,
+                        max_deviation: float = -1) -> Surface:
+        """Extrude the sketch boundary into an uncapped side surface."""
+        return Surface(_require(self._part._n, "extrude_surface")(
+            self._n, float(height), float(max_deviation), _name(name)), self._part)
+
     @api_group("Build solids")
-    def extrude_two_sides(self, plus_z, minus_z=0.0, name=None, max_deviation=-1, twist=0) -> "Solid":
+    def extrude_two_sides(self, plus_z: float, minus_z: float = 0.0,
+                          name: EntityName | None = None, max_deviation: float = -1,
+                          twist: float = 0) -> Solid:
         """Extrude along both sides of the sketch plane."""
         return self._part._extrude_two_sides(self, plus_z, minus_z, name, max_deviation, twist)
 
     @api_group("Build solids")
-    def extrude_until_next(self, target, name=None, max_deviation=-1) -> "Solid":
+    def extrude_until_next(self, target: Solid, name: EntityName | None = None,
+                           max_deviation: float = -1) -> Solid:
         """Extrude to the first intersection with a target solid."""
         return self._part._extrude_until_next(self, target, name, max_deviation)
 
     @api_group("Build solids")
-    def extrude_until_surface(self, surface, name=None, max_deviation=-1) -> "Solid":
+    def extrude_until_surface(self, surface: Surface, name: EntityName | None = None,
+                              max_deviation: float = -1) -> Solid:
         """Extrude to an open surface spanning the entire profile."""
         return self._part._extrude_until_surface(self, surface, name, max_deviation)
 
     @api_group("Build solids")
-    def extrude_until_face(self, target, patch_name, name=None, max_deviation=-1) -> "Solid":
+    def extrude_until_face(self, target: Solid, patch_name: EntityName,
+                           name: EntityName | None = None, max_deviation: float = -1) -> Solid:
         """Extrude to a named face of a target solid."""
         return self._part._extrude_until_face(self, target, patch_name, name, max_deviation)
 
     @api_group("Build solids")
-    def revolve(self, angle, name=None, max_deviation=-1) -> "Solid":
+    def revolve(self, angle: float, name: EntityName | None = None,
+                max_deviation: float = -1) -> Solid:
         """Revolve this sketch around its X axis by an angle in radians."""
         return self._part._revolve(self, angle, name, max_deviation)
 
+    @api_group("Surface modeling")
+    def revolve_surface(self, angle: float, name: EntityName | None = None,
+                        max_deviation: float = -1) -> Surface:
+        """Revolve the sketch into an uncapped surface around its X axis."""
+        return Surface(_require(self._part._n, "revolve_surface")(
+            self._n, float(angle), float(max_deviation), _name(name)), self._part)
+
     @api_group("Build solids")
-    def extrude_along_curve(self, curve, name=None, max_deviation=-1, twist=0,
-                            reference_direction=None) -> "Solid":
+    def extrude_along_curve(self, curve: Curve3D, name: EntityName | None = None,
+                            max_deviation: float = -1, twist: float = 0,
+                            reference_direction: Point3Like | None = None) -> Solid:
         """Sweep this profile along a 3D curve."""
         return self._part._extrude_along_curve(self, curve, name, max_deviation,
                                                twist, reference_direction)
 
-    @api_group("Build solids")
-    def extrude_along_curve_strip(self, curves, name=None, max_deviation=-1, twist=0) -> "Solid":
-        """Sweep this profile along a G1 strip of 3D curves."""
-        return self._part._extrude_along_curve_strip(self, curves, name, max_deviation, twist)
+    @api_group("Surface modeling")
+    def sweep_surface(self, guide: Curve3D | Sequence[Curve3D], name: EntityName | None = None,
+                      max_deviation: float = -1, twist: float = 0,
+                      reference_direction: Point3Like | None = None) -> Surface:
+        """Sweep the sketch boundary along a 3D curve or connected curve list."""
+        from .geom import _pack_points3
+        reference = "" if reference_direction is None else _pack_points3([reference_direction])
+        if isinstance(guide, Curve3D):
+            native = _require(self._part._n, "sweep_surface")(
+                self._n, guide._n, float(max_deviation), float(twist), _name(name), reference)
+        else:
+            native = _require(self._part._n, "sweep_surface_strip")(
+                self._n, _curve_list(guide), float(max_deviation), float(twist), _name(name), reference)
+        return Surface(native, self._part)
 
     @api_group("Build solids")
-    def extrude_along_sketch(self, guide, name=None, max_deviation=-1) -> "Solid":
+    def extrude_along_curve_strip(self, curves: Sequence[Curve3D], name: EntityName | None = None,
+                                  max_deviation: float = -1, twist: float = 0,
+                                  reference_direction: Point3Like | None = None) -> Solid:
+        """Sweep a profile along connected curves; sharp joins use a miter section."""
+        return self._part._extrude_along_curve_strip(self, curves, name, max_deviation,
+                                                     twist, reference_direction)
+
+    @api_group("Build solids")
+    def extrude_along_sketch(self, guide: Sketch, name: EntityName | None = None,
+                             max_deviation: float = -1) -> Solid:
         """Sweep this profile along a guide sketch."""
         return self._part._extrude_along_sketch(self, guide, name, max_deviation)
 
     @api_group("Project")
-    def project_onto(self, solid, name=None, max_deviation=-1) -> "ProjectedSketch":
+    def project_onto(self, solid: Solid, name: EntityName | None = None,
+                     max_deviation: float = -1) -> ProjectedSketch:
         """Project this sketch onto a solid along its plane normal."""
         return self._part._project_sketch(self, solid, name, max_deviation)
 
     @property
-    def name(self):
+    def name(self) -> str:
         """Kernel sketch name."""
         return self._n.name
 
     @property
-    def solve_after_every_constraint(self):
+    def solve_after_every_constraint(self) -> bool:
         """If True, the kernel solves after each constraint (default)."""
         flag = getattr(self._n, "solve_after_every_constraint", None)
         if flag is None:
@@ -1937,11 +2143,11 @@ class Sketch(object):
         return bool(flag)
 
     @solve_after_every_constraint.setter
-    def solve_after_every_constraint(self, value):
+    def solve_after_every_constraint(self, value: bool) -> None:
         self._n.solve_after_every_constraint = 1 if value else 0
 
     @property
-    def curve_count(self):
+    def curve_count(self) -> int:
         """Number of stored curves in this sketch, including sampled curves."""
         n = getattr(self._n, "curve_count", None)
         if n is None:
@@ -1951,29 +2157,30 @@ class Sketch(object):
         return int(n)
 
     @property
-    def constraint_count(self):
+    def constraint_count(self) -> int:
         """Number of constraints, or -1 if this is a plotter-only sketch."""
         n = getattr(self._n, "constraint_count", None)
         if n is None:
             return -1
         return int(n)
 
-    def remove_last_constraint(self):
+    def remove_last_constraint(self) -> Sketch:
         """Undo the last constraint. Returns self."""
         _require(self._n, "remove_last_constraint")()
         return self
 
-    def remove_last_curve(self):
+    def remove_last_curve(self) -> Sketch:
         """Undo the last constraint-solver curve. Returns self."""
         _require(self._n, "remove_last_constraint_curve")()
         return self
 
     @property
-    def frame(self):
+    def frame(self) -> Frame:
         """World Frame of this sketch plane."""
         return Frame._from_native(_require(self._n, "frame")())
 
-    def add_line(self, start, end, name=None, construction=False):
+    def add_line(self, start: Point2Like | str, end: Point2Like | str,
+                 name: EntityName | None = None, construction: bool = False) -> SketchCurve:
         """Segment from start to end (XY or named points). Returns SketchCurve."""
         start_xy, start_name = self._resolved_endpoint(start)
         end_xy, end_name = self._resolved_endpoint(end)
@@ -1993,7 +2200,9 @@ class Sketch(object):
             self._snap_added_point(curve_name, "line", 1, end_name)
         return SketchCurve(curve_name, "line")
 
-    def add_ellipse(self, center, radii, rotation=0, name=None, construction=False):
+    def add_ellipse(self, center: Point2Like | str, radii: Sequence[float],
+                    rotation: float = 0, name: EntityName | None = None,
+                    construction: bool = False) -> SketchCurve:
         """Ellipse with two semiaxes; rotation is in radians from sketch X.
 
         Dimension axes with ``distance(e @ "center", e @ 0, rx)`` and
@@ -2015,7 +2224,8 @@ class Sketch(object):
             self.coincident(curve_name + "@center", center_name)
         return SketchCurve(curve_name, "ellipse")
 
-    def add_circle(self, center, radius, name=None, construction=False):
+    def add_circle(self, center: Point2Like | str, radius: float,
+                   name: EntityName | None = None, construction: bool = False) -> SketchCurve:
         """Circle. ``center`` is XY or a named point. Returns SketchCurve."""
         center_xy, center_name = self._resolved_endpoint(center)
         cx, cy = center_xy
@@ -2031,7 +2241,9 @@ class Sketch(object):
             self._snap_added_point(curve_name, "circle", 2, center_name)
         return SketchCurve(curve_name, "circle")
 
-    def add_arc(self, start, mid, end, name=None, construction=False):
+    def add_arc(self, start: Point2Like | str, mid: Point2Like | str,
+                end: Point2Like | EntityName, name: EntityName | None = None,
+                construction: bool = False) -> SketchCurve:
         """Circular arc through three points. Returns SketchCurve."""
         start_xy, start_name = self._resolved_endpoint(start)
         mid_xy, mid_name = self._resolved_endpoint(mid)
@@ -2076,7 +2288,7 @@ class Sketch(object):
         from . import naming as _naming
         self.coincident(_naming.format_sketch_handle_address(curve_name, kind, role), other_name)
 
-    def set_construction(self, curve, construction=True):
+    def set_construction(self, curve: SketchCurve | str, construction: bool = True) -> Sketch:
         """Mark a sketch curve as construction geometry (excluded from extrude/loft)."""
         named = getattr(self._n, "set_curve_construction_named", None)
         if named is not None:
@@ -2106,7 +2318,8 @@ class Sketch(object):
             raise ValueError("use a name or XY for add_line/add_circle/add_arc endpoints")
         return value, None
 
-    def add_rectangle(self, corner_a, corner_b, names=None):
+    def add_rectangle(self, corner_a: Point2Like, corner_b: Point2Like,
+                      names: Sequence[str] | None = None) -> tuple[SketchCurve, ...]:
         """Axis-aligned rectangle, CCW from the lower-left corner.
 
         Returns (south, east, north, west) as SketchCurves. Optional `names` is
@@ -2140,7 +2353,8 @@ class Sketch(object):
             raise RuntimeError("add_rectangle expected 4 sides, got {0}".format(len(sides)))
         return tuple(sides[:4])
 
-    def add_text(self, text, origin, family="Arial", em_size=0.2, bold=False, italic=False):
+    def add_text(self, text: str, origin: Point2Like, family: str = "Arial",
+                 em_size: float = 0.2, bold: bool = False, italic: bool = False) -> Sketch:
         """Add TrueType glyph outlines at the baseline origin (sketch XY)."""
         x, y = _xy(origin)
         flags = 0
@@ -2151,7 +2365,7 @@ class Sketch(object):
         _require(self._n, "add_text")(str(text), float(x), float(y), family or "", float(em_size), int(flags))
         return self
 
-    def polylines(self, max_deviation=-1):
+    def polylines(self, max_deviation: float = -1) -> list[list[vec2]]:
         """Tessellated sketch strips as a list of ``vec2`` polylines."""
         from .geom import _unpack_loops2
         md = float(max_deviation)
@@ -2159,7 +2373,8 @@ class Sketch(object):
             md = float(self._part.max_deviation)
         return _unpack_loops2(_require(self._n, "tessellate_polylines")(md))
 
-    def triangulate(self, max_deviation=-1, working_volume=None, slices=None):
+    def triangulate(self, max_deviation: float = -1, working_volume: Part | None = None,
+                    slices: int | None = None) -> tuple[list[vec2], list[tuple[int, int, int]]]:
         """Fill closed sketch contours. Nested holes and islands are handled by the kernel polygon tree.
 
         Returns ``(points, triangles)`` as ``vec2`` and ``(i, j, k)``. Construction
@@ -2173,7 +2388,8 @@ class Sketch(object):
             self._part if working_volume is None else working_volume, slices)
         return _unpack_indexed2(_require(self._n, "triangulate")(md, vol))
 
-    def surface(self, name=None, max_deviation=-1):
+    def surface(self, name: EntityName | None = None,
+                max_deviation: float = -1) -> Surface:
         """Fill closed contours and register an open sheet on the part.
 
         Returns a planar ``Surface`` with ``is_volume`` False, not a solid.
@@ -2185,17 +2401,17 @@ class Sketch(object):
         pts3 = [fr.origin + fr.x * p.x + fr.y * p.y for p in pts2]
         return self._part.solid_from_mesh(pts3, tris, name=name)
 
-    def horizontal(self, curve):
+    def horizontal(self, curve: SketchCurve | str) -> Sketch:
         """Keep a line parallel to sketch X. Returns self."""
         _require(self._n, "set_horizontal")(_curve_index(self, curve))
         return self
 
-    def vertical(self, curve):
+    def vertical(self, curve: SketchCurve | str) -> Sketch:
         """Keep a line parallel to sketch Y. Returns self."""
         _require(self._n, "set_vertical")(_curve_index(self, curve))
         return self
 
-    def coincident(self, point_a, point_b):
+    def coincident(self, point_a: str | Point2Like, point_b: str | Point2Like) -> Sketch:
         """Coincident two points. Each is a name (\"Line1@1.000\") or (\"xy\", x, y)."""
         self._lock_named_derived_radius(point_a)
         self._lock_named_derived_radius(point_b)
@@ -2244,7 +2460,8 @@ class Sketch(object):
             start = action["start"]
             self.radius(curve, math.hypot(start[0] - center[0], start[1] - center[1]))
 
-    def coincident_on_curve(self, point, curve, uniform):
+    def coincident_on_curve(self, point: str, curve: SketchCurve | str,
+                            uniform: float) -> Sketch:
         """Place a named point on another curve at uniform parameter u in [0, 1]."""
         kind, value = _classify_point(point)
         if kind == "name":
@@ -2253,29 +2470,30 @@ class Sketch(object):
             return self
         raise ValueError("coincident_on_curve needs a named point")
 
-    def parallel(self, curve_a, curve_b):
+    def parallel(self, curve_a: SketchCurve | str, curve_b: SketchCurve | str) -> Sketch:
         """Keep two lines parallel. Returns self."""
         _require(self._n, "set_parallel")(_curve_index(self, curve_a), _curve_index(self, curve_b))
         return self
 
-    def perpendicular(self, curve_a, curve_b):
+    def perpendicular(self, curve_a: SketchCurve | str, curve_b: SketchCurve | str) -> Sketch:
         """Keep two lines perpendicular. Returns self."""
         _require(self._n, "set_perpendicular")(
             _curve_index(self, curve_a), _curve_index(self, curve_b))
         return self
 
-    def tangent(self, line_curve, circular_curve):
+    def tangent(self, line_curve: SketchCurve | str,
+                circular_curve: SketchCurve | str) -> Sketch:
         """Line tangent to a circle/arc. Returns self."""
         _require(self._n, "set_tangent")(
             _curve_index(self, line_curve), _curve_index(self, circular_curve))
         return self
 
-    def equal(self, curve_a, curve_b):
+    def equal(self, curve_a: SketchCurve | str, curve_b: SketchCurve | str) -> Sketch:
         """Equal length (lines) or equal radius (circles/arcs). Returns self."""
         _require(self._n, "set_equal")(_curve_index(self, curve_a), _curve_index(self, curve_b))
         return self
 
-    def midpoint(self, point, line_curve):
+    def midpoint(self, point: str, line_curve: SketchCurve | str) -> Sketch:
         """Named point at the midpoint of a line. Returns self."""
         kind, value = _classify_point(point)
         curve = _curve_index(self, line_curve)
@@ -2284,7 +2502,7 @@ class Sketch(object):
             return self
         raise ValueError("midpoint needs a named point")
 
-    def point_on_line(self, point, line_curve):
+    def point_on_line(self, point: str, line_curve: SketchCurve | str) -> Sketch:
         """Put a named point on a line (infinite line through the segment).
 
         ``line_curve`` may be a sketch curve or a sketch axis (``sk @ \"x\"`` / ``sk @ \"y\"``).
@@ -2303,7 +2521,7 @@ class Sketch(object):
         _require(self._n, "set_point_on_line_named")(_native_point_name(value), curve)
         return self
 
-    def point_on_circle(self, point, circle_curve):
+    def point_on_circle(self, point: str, circle_curve: SketchCurve | str) -> Sketch:
         """Put a named point on a circle circumference."""
         kind, value = _classify_point(point)
         if kind != "name":
@@ -2312,7 +2530,8 @@ class Sketch(object):
             _native_point_name(value), _curve_index(self, circle_curve))
         return self
 
-    def distance_to_line(self, point, line_curve, value):
+    def distance_to_line(self, point: str, line_curve: SketchCurve | str,
+                         value: float) -> Sketch:
         """Perpendicular distance from a named point to a line."""
         kind, value_pt = _classify_point(point)
         if kind != "name":
@@ -2321,13 +2540,14 @@ class Sketch(object):
             _native_point_name(value_pt), _curve_index(self, line_curve), float(value))
         return self
 
-    def tangent_circles(self, curve_a, curve_b):
+    def tangent_circles(self, curve_a: SketchCurve | str,
+                        curve_b: SketchCurve | str) -> Sketch:
         """Two circles/arcs tangent to each other. Returns self."""
         _require(self._n, "set_tangent_circles")(
             _curve_index(self, curve_a), _curve_index(self, curve_b))
         return self
 
-    def vertical_distance(self, point_a, point_b, value):
+    def vertical_distance(self, point_a: str, point_b: str, value: float) -> Sketch:
         """Signed vertical offset ``b.y - a.y = value``."""
         kind_a, a = _classify_point(point_a)
         kind_b, b = _classify_point(point_b)
@@ -2337,7 +2557,7 @@ class Sketch(object):
             _native_point_name(a), _native_point_name(b), float(value))
         return self
 
-    def horizontal_distance(self, point_a, point_b, value):
+    def horizontal_distance(self, point_a: str, point_b: str, value: float) -> Sketch:
         """Signed horizontal offset ``b.x - a.x = value``."""
         kind_a, a = _classify_point(point_a)
         kind_b, b = _classify_point(point_b)
@@ -2347,13 +2567,13 @@ class Sketch(object):
             _native_point_name(a), _native_point_name(b), float(value))
         return self
 
-    def concentric(self, curve_a, curve_b):
+    def concentric(self, curve_a: SketchCurve | str, curve_b: SketchCurve | str) -> Sketch:
         """Share a center (circles/arcs). Returns self."""
         _require(self._n, "set_concentric")(
             _curve_index(self, curve_a), _curve_index(self, curve_b))
         return self
 
-    def fix(self, point):
+    def fix(self, point: str | Point2Like) -> Sketch:
         """Pin a named point in the sketch plane. XY constants are ignored."""
         kind, value = _classify_point(point)
         if kind == "xy":
@@ -2363,17 +2583,18 @@ class Sketch(object):
             return self
         raise ValueError("fix needs a named point")
 
-    def length(self, curve, value):
+    def length(self, curve: SketchCurve | str, value: float) -> Sketch:
         """Set line length. Returns self."""
         _require(self._n, "set_length")(_curve_index(self, curve), float(value))
         return self
 
-    def radius(self, curve, value):
+    def radius(self, curve: SketchCurve | str, value: float) -> Sketch:
         """Set circle/arc radius. Returns self."""
         _require(self._n, "set_radius")(_curve_index(self, curve), float(value))
         return self
 
-    def distance(self, point_a, point_b, value):
+    def distance(self, point_a: str | Point2Like, point_b: str | Point2Like,
+                 value: float) -> Sketch:
         """Distance between two points. Each is a name or (\"xy\", x, y)."""
         _dispatch_two_points(
             self._n,
@@ -2386,18 +2607,19 @@ class Sketch(object):
         )
         return self
 
-    def angle(self, curve_a, curve_b, degrees):
+    def angle(self, curve_a: SketchCurve | str, curve_b: SketchCurve | str,
+              degrees: float) -> Sketch:
         """Angle between two lines, or a line and an arc tangent, in degrees. Returns self."""
         _require(self._n, "set_angle_degrees")(
             _curve_index(self, curve_a), _curve_index(self, curve_b), float(degrees))
         return self
 
-    def solve(self):
+    def solve(self) -> Sketch:
         """Solve constraints, raising on nonconvergence. Returns self."""
         _require(self._n, "solve_constraints")()
         return self
 
-    def eval_xy(self, point):
+    def eval_xy(self, point: str | Point2Like) -> vec2:
         """Sketch-plane XY of a named point (``line @ 1.000``, ``sk @ \"origin\"``)."""
         kind, value = _endpoint_value(point)
         if kind == "name":
@@ -2406,7 +2628,11 @@ class Sketch(object):
             return value
         raise ValueError("eval_xy needs a named point or XY pair")
 
-    def offset(self, curves, distance, side="both", join="miter", end_cap="square", open_mode=None):
+    def offset(self, curves: EntitySelection, distance: float,
+               side: Literal["both", "out", "in", "left", "right"] = "both",
+               join: Literal["miter", "square", "round"] = "miter",
+               end_cap: Literal["square", "butt", "round"] = "square",
+               open_mode: Literal["network", "outline", "parallel"] | None = None) -> list[SketchCurve]:
         """Offset curves. Closed loops without forks use ``side='out'`` / ``'in'``.
 
         Returns sampled sketch curves named ``{source}@in_offset`` / ``{source}@out_offset``,
@@ -2491,7 +2717,8 @@ class Sketch(object):
             return actions
         return _parse_sketch_curve_dump(text)
 
-    def add_rectangle_centered(self, center, size_x, size_y, names=None):
+    def add_rectangle_centered(self, center: Point2Like, size_x: float, size_y: float,
+                               names: Sequence[EntityName] | None = None) -> Sketch:
         """Axis-aligned rectangle. `names` is (south, east, north, west) for the four sides."""
         cx, cy = _xy(center)
         sx, sy = float(size_x), float(size_y)
@@ -2514,49 +2741,52 @@ class Sketch(object):
         _require(self._n, "add_rectangle_centered")(cx, cy, sx, sy)
         return self
 
-    def append_line(self, end):
+    def append_line(self, end: Point2Like) -> Sketch:
         """Plotter: line from the current pen to ``end``. Returns self."""
         x, y = _xy(end)
         _require(self._n, "append_line")(x, y)
         return self
 
-    def set_start(self, point):
+    def set_start(self, point: Point2Like) -> Sketch:
         """Set the strip pen without drawing (plotter ``Append*`` methods)."""
         x, y = _xy(point)
         _require(self._n, "set_start_point")(x, y)
         return self
 
-    def move_to(self, point):
+    def move_to(self, point: Point2Like) -> Sketch:
         """Start a new disconnected strip at ``point``."""
         x, y = _xy(point)
         _require(self._n, "move_to")(x, y)
         return self
 
-    def append_line_horizontal(self, end_x):
+    def append_line_horizontal(self, end_x: float) -> Sketch:
         """Plotter: horizontal line to sketch X = ``end_x``. Returns self."""
         _require(self._n, "append_line_horizontal")(float(end_x))
         return self
 
-    def append_line_vertical(self, end_y):
+    def append_line_vertical(self, end_y: float) -> Sketch:
         """Plotter: vertical line to sketch Y = ``end_y``. Returns self."""
         _require(self._n, "append_line_vertical")(float(end_y))
         return self
 
-    def append_arc_left(self, radius, angle=None):
+    def append_arc_left(self, radius: float, angle: float | None = None) -> Sketch:
         """Tangential left turn of ``angle`` radians (default π/2) at ``radius``."""
         if angle is None:
             angle = 0.5 * math.pi
         _require(self._n, "append_arc_tangential_left")(float(radius), float(angle))
         return self
 
-    def append_arc_right(self, radius, angle=None):
+    def append_arc_right(self, radius: float, angle: float | None = None) -> Sketch:
         """Tangential right turn of ``angle`` radians (default π/2) at ``radius``."""
         if angle is None:
             angle = 0.5 * math.pi
         _require(self._n, "append_arc_tangential_right")(float(radius), float(angle))
         return self
 
-    def add_spline(self, points, start_tangent=None, end_tangent=None, name=None):
+    def add_spline(self, points: Sequence[Point2Like],
+                   start_tangent: Point2Like | None = None,
+                   end_tangent: Point2Like | None = None,
+                   name: EntityName | None = None) -> SketchCurve:
         """Cubic Hermite spline through 2D points."""
         joined = _join_xy_points(points)
         stx, sty, etx, ety, has_s, has_e = _optional_tangents(start_tangent, end_tangent)
@@ -2570,7 +2800,9 @@ class Sketch(object):
         curve_name = self._added_curve_name(None, "spline", index)
         return SketchCurve(curve_name, "spline")
 
-    def add_sampled_curve(self, points, name=None, construction=False):
+    def add_sampled_curve(self, points: Sequence[Point2Like],
+                          name: EntityName | None = None,
+                          construction: bool = False) -> SketchCurve:
         """Add one curve represented by the supplied 2D samples."""
         joined = _join_xy_points(points)
         if len(joined.split("|")) < 2:
@@ -2582,7 +2814,9 @@ class Sketch(object):
             self.set_construction(curve_name, True)
         return SketchCurve(curve_name, "sampled")
 
-    def add_involute(self, center, base_radius, t_start, t_end, rotation=0, name=None, max_deviation=-1):
+    def add_involute(self, center: Point2Like, base_radius: float, t_start: float,
+                     t_end: float, rotation: float = 0,
+                     name: EntityName | None = None, max_deviation: float = -1) -> SketchCurve:
         """Circle involute as a cubic Hermite spline (same idea as NACA airfoils).
 
         ``t_start`` / ``t_end`` are unroll angles on the base circle. Knots follow
@@ -2599,8 +2833,9 @@ class Sketch(object):
         return SketchCurve(curve_name, "spline")
 
     def add_involute_gear(
-            self, center, module, teeth, pressure_angle=None, addendum=1.0, dedendum=1.25,
-            max_deviation=-1):
+            self, center: Point2Like, module: float, teeth: int,
+            pressure_angle: float | None = None, addendum: float = 1.0,
+            dedendum: float = 1.25, max_deviation: float = -1) -> Sketch:
         """External involute spur gear. Flanks are Hermite fits; tip and root are arcs.
 
         Center the gear on the sketch origin before a twist extrude. Cut the bore
@@ -2616,8 +2851,9 @@ class Sketch(object):
         return self
 
     def add_involute_internal_gear(
-            self, center, module, teeth, pressure_angle=None, addendum=1.0, dedendum=1.25,
-            max_deviation=-1):
+            self, center: Point2Like, module: float, teeth: int,
+            pressure_angle: float | None = None, addendum: float = 1.0,
+            dedendum: float = 1.25, max_deviation: float = -1) -> Sketch:
         """Inner hole of an internal ring gear (external involute, addendum/dedendum swapped).
 
         Extrude and subtract from a disc so the cut-outs match a mating pinion.
@@ -2632,7 +2868,9 @@ class Sketch(object):
             float(addendum), float(dedendum), md)
         return self
 
-    def append_spline(self, points, start_tangent=None, end_tangent=None):
+    def append_spline(self, points: Sequence[Point2Like],
+                      start_tangent: Point2Like | None = None,
+                      end_tangent: Point2Like | None = None) -> Sketch:
         """Hermite spline from the current strip end through ``points``."""
         joined = _join_xy_points(points)
         stx, sty, etx, ety, has_s, has_e = _optional_tangents(start_tangent, end_tangent)
@@ -2654,7 +2892,9 @@ class Sketch(object):
         except Exception:
             pass
 
-    def repeat_circular(self, curves, center, count, total_angle=None, include_original=False):
+    def repeat_circular(self, curves: EntitySelection, center: Point2Like, count: int,
+                        total_angle: float | None = None,
+                        include_original: bool = False) -> list[SketchCurve]:
         """Rotational copies about ``center``. Skips the 0° instance unless ``include_original``."""
         names = _curve_name_list(curves)
         cx, cy = _xy(center)
@@ -2664,7 +2904,9 @@ class Sketch(object):
             "|".join(names), cx, cy, int(count), float(total_angle), 1 if include_original else 0)
         return _offset_result_curves(joined)
 
-    def repeat_grid(self, curves, count_x, count_y, step_x, step_y, include_original=False):
+    def repeat_grid(self, curves: EntitySelection, count_x: int, count_y: int,
+                    step_x: Point2Like, step_y: Point2Like,
+                    include_original: bool = False) -> list[SketchCurve]:
         """Grid copies. Skips the (0, 0) cell unless ``include_original``."""
         names = _curve_name_list(curves)
         sxx, sxy = _xy(step_x)
@@ -2674,8 +2916,10 @@ class Sketch(object):
             1 if include_original else 0)
         return _offset_result_curves(joined)
 
-    def add_naca4(self, code, leading_edge, chord_length, chord_angle=0.0, samples_per_side=36,
-                  analytic_end_tangents=True, te_trim=_NACA_TE_TRIM):
+    def add_naca4(self, code: str | int, leading_edge: Point2Like, chord_length: float,
+                  chord_angle: float = 0.0, samples_per_side: int = 36,
+                  analytic_end_tangents: bool = True,
+                  te_trim: float = _NACA_TE_TRIM) -> Sketch:
         """Closed NACA 4-digit airfoil. ``code`` is ``2412`` or the integer 2412."""
         lx, ly = _xy(leading_edge)
         ae = 1 if analytic_end_tangents else 0
@@ -2693,7 +2937,7 @@ class Sketch(object):
             fn(int(code), lx, ly, float(chord_length), float(chord_angle), int(samples_per_side), ae, float(te_trim))
         return self
 
-    def show(self, title="Camber"):
+    def show(self, title: str = "Camber") -> Sketch:
         """Open the sketch viewer on this sketch's plane (default planes: xy, yz, zx)."""
         from .sketch_ui import show_sketch
         show_sketch(self, title=title)
@@ -2830,26 +3074,26 @@ def _dump_name_and_nums(fields, count):
 class ProjectedSketch(object):
     """Result of Sketch.project_onto: named 3D polylines with surface normals."""
 
-    def __init__(self, native, part):
+    def __init__(self, native: object, part: Part) -> None:
         self._n = native
         self._part = part
 
     @api_group("Build solids")
-    def extrude(self, height, name=None) -> "Solid":
+    def extrude(self, height: float, name: EntityName | None = None) -> Solid:
         """Extrude along stored surface normals; negative goes into the solid."""
         return self._part._extrude_projected(self, height, name)
 
     @property
-    def name(self):
+    def name(self) -> EntityName:
         """Kernel name of the projected sketch."""
         return self._n.name
 
     @property
-    def curve_count(self):
+    def curve_count(self) -> int:
         """Number of projected 3D polylines."""
         return int(self._n.curve_count)
 
-    def curve_name_at(self, index):
+    def curve_name_at(self, index: int) -> EntityName:
         """Name of the polyline at ``index``."""
         return _invoke(self._n, "curve_name_at", int(index))
 
@@ -2865,17 +3109,17 @@ class _MeshBody(object):
         self._part = part
 
     @property
-    def name(self):
+    def name(self) -> EntityName:
         """Kernel mesh name."""
         return self._n.name
 
     @property
-    def triangle_count(self):
+    def triangle_count(self) -> int:
         """Number of triangles in the kernel mesh."""
         return self._n.triangle_count
 
     @property
-    def is_volume(self):
+    def is_volume(self) -> bool:
         """True if the kernel treats this mesh as a closed volume."""
         flag = getattr(self._n, "is_volume", None)
         if flag is None:
@@ -2883,57 +3127,57 @@ class _MeshBody(object):
         return bool(flag)
 
     @property
-    def patch_names(self):
+    def patch_names(self) -> tuple[str, ...]:
         """Canonical patch names, identical to the renderer's face names."""
         return tuple(_require(self._n, "patch_name_at")(i) for i in range(int(self._n.patch_count)))
 
-    def patch_frame_at(self, index):
+    def patch_frame_at(self, index: int) -> Frame:
         """Area-centroid frame of a tessellated patch (normal from its winding)."""
         return Frame._from_native(_require(self._n, "patch_frame_at")(int(index)))
 
     @property
-    def curve_names(self):
+    def curve_names(self) -> tuple[str, ...]:
         """Canonical mesh-edge curve names, accepted by fillet and chamfer."""
         return tuple(_require(self._n, "curve_name_at")(i) for i in range(int(self._n.curve_count)))
 
     @property
-    def point_names(self):
+    def point_names(self) -> tuple[str, ...]:
         """Canonical displayed edge-anchor names (start, midpoint, end, and closed-loop quarters)."""
         return tuple(_require(self._n, "point_name_at")(i) for i in range(int(self._n.point_count)))
-    def mesh(self):
+    def mesh(self) -> tuple[list[vec3], list[tuple[int, int, int]]]:
         """Raw kernel triangles: ``(points, triangles)`` as ``vec3`` and ``(i, j, k)``."""
         from .geom import _unpack_indexed3
         return _unpack_indexed3(_require(self._n, "pack_mesh")())
 
-    def is_watertight(self):
+    def is_watertight(self) -> bool:
         """True if every edge is shared by exactly two triangles."""
         return bool(_require(self._n, "is_watertight")())
 
-    def save_stl(self, path, binary=True):
+    def save_stl(self, path: str, binary: bool = True) -> None:
         """Write STL. ``binary=False`` is ASCII."""
         _invoke(self._part._n, "save_stl", self._n, path, 1 if binary else 0)
 
-    def save_step(self, path):
+    def save_step(self, path: str) -> None:
         """Write STEP (faceted)."""
         _invoke(self._part._n, "save_step", self._n, path)
 
-    def save_iges(self, path):
+    def save_iges(self, path: str) -> None:
         """Write IGES (faceted)."""
         _invoke(self._part._n, "save_iges", self._n, path)
 
-    def save_off(self, path):
+    def save_off(self, path: str) -> None:
         """Write OFF mesh."""
         _require(self._part._n, "save_off")(self._n, path)
 
-    def save_obj(self, path):
+    def save_obj(self, path: str) -> None:
         """Write Wavefront OBJ."""
         _require(self._part._n, "save_wavefront_obj")(self._n, path)
 
-    def save_usda(self, path):
+    def save_usda(self, path: str) -> None:
         """Write USDA triangle mesh (per-vertex normals, UVs, named face subsets)."""
         _require(self._part._n, "save_usda")(self._n, path)
 
-    def show(self, title="Camber"):
+    def show(self, title: str = "Camber") -> None:
         """Open the 3D viewer on this solid."""
         from .view import show as _show
         _show(self, title=title)
@@ -2954,79 +3198,94 @@ class Solid(_MeshBody):
             raise ValueError("Solid requires a closed volume mesh")
 
     @api_group("Edge treatment")
-    def fillet(self, edges, radius, name=None, max_deviation=-1) -> "Solid":
+    def fillet(self, edges: EntitySelection, radius: float,
+               name: EntityName | None = None, max_deviation: float = -1) -> Solid:
         """Round named edges."""
         return self._part._fillet(self, edges, radius, name, max_deviation)
 
     @api_group("Edge treatment")
-    def chamfer(self, edges, distance, name=None, max_deviation=-1) -> "Solid":
+    def chamfer(self, edges: EntitySelection, distance: float,
+                name: EntityName | None = None, max_deviation: float = -1) -> Solid:
         """Bevel named edges."""
         return self._part._chamfer(self, edges, distance, name, max_deviation)
 
     @api_group("Hollow and draft")
-    def shell(self, thickness, faces=None, name=None, max_deviation=-1,
-              outward=False, join="sharp") -> "Solid":
+    def shell(self, thickness: float, faces: EntitySelection | None = None,
+              name: EntityName | None = None, max_deviation: float = -1,
+              outward: bool = False, join: Literal["sharp", "round"] = "sharp") -> Solid:
         """Hollow inward or outward; optionally remove named opening faces."""
         return self._part._shell(self, thickness, faces, name, max_deviation, outward, join)
 
     @api_group("Hollow and draft")
-    def draft_faces(self, faces, neutral_frame, angle, *, pull_direction=None,
-                    name=None, max_deviation=-1) -> "Solid":
+    def draft_faces(self, faces: EntitySelection, neutral_frame: Frame, angle: float, *,
+                    pull_direction: Point3Like | None = None,
+                    name: EntityName | None = None, max_deviation: float = -1) -> Solid:
         """Draft named prism side faces about a neutral cap plane."""
         return self._part._draft_faces(self, faces, neutral_frame, angle,
                                        pull_direction=pull_direction, name=name,
                                        max_deviation=max_deviation)
 
     @api_group("Add material")
-    def rib(self, path, thickness, to, *, frame=None, name=None, max_deviation=-1) -> "Solid":
+    def rib(self, path: Sequence[Point2Like], thickness: float, to: float, *,
+            frame: Frame | None = None, name: EntityName | None = None,
+            max_deviation: float = -1) -> Solid:
         """Add a constant-width polyline rib to this solid."""
         return self._part._rib(self, path, thickness, to, frame=frame,
                                name=name, max_deviation=max_deviation)
 
     @api_group("Holes")
-    def hole(self, mouth, diameter, depth=None, *, name=None, max_deviation=-1) -> "Solid":
+    def hole(self, mouth: Frame, diameter: float, depth: float | None = None, *,
+             name: EntityName | None = None, max_deviation: float = -1) -> Solid:
         """Drill a flat-bottom hole; no depth means through."""
         return self._part._hole(self, mouth, diameter, depth, name=name,
                                 max_deviation=max_deviation)
 
     @api_group("Holes")
-    def counterbore_hole(self, mouth, diameter, counterbore_diameter,
-                         counterbore_depth, depth=None, *, name=None, max_deviation=-1) -> "Solid":
+    def counterbore_hole(self, mouth: Frame, diameter: float, counterbore_diameter: float,
+                         counterbore_depth: float, depth: float | None = None, *,
+                         name: EntityName | None = None, max_deviation: float = -1) -> Solid:
         """Drill a hole with a flat-bottom counterbore."""
         return self._part._counterbore_hole(self, mouth, diameter, counterbore_diameter,
                                             counterbore_depth, depth, name=name,
                                             max_deviation=max_deviation)
 
     @api_group("Holes")
-    def countersink_hole(self, mouth, diameter, countersink_diameter,
-                         included_angle, depth=None, *, name=None, max_deviation=-1) -> "Solid":
+    def countersink_hole(self, mouth: Frame, diameter: float, countersink_diameter: float,
+                         included_angle: float, depth: float | None = None, *,
+                         name: EntityName | None = None, max_deviation: float = -1) -> Solid:
         """Drill a hole with a conical countersink; angle is in radians."""
         return self._part._countersink_hole(self, mouth, diameter, countersink_diameter,
                                             included_angle, depth, name=name,
                                             max_deviation=max_deviation)
 
     @api_group("Transforms")
-    def pattern_linear(self, count, step, name=None) -> list:
+    def pattern_linear(self, count: int, step: Point3Like,
+                       name: EntityName | None = None) -> list[Solid]:
         """Return independent copies at equal XYZ steps, including this seed."""
         return self._part._pattern_linear(self, count, step, name)
 
     @api_group("Transforms")
-    def pattern_circular(self, count, axis=None, angle=2*math.pi, name=None) -> list:
+    def pattern_circular(self, count: int,
+                         axis: Curve3D | tuple[Point3Like, Point3Like] | None = None,
+                         angle: float = 2*math.pi,
+                         name: EntityName | None = None) -> list[Solid]:
         """Return copies rotated around an axis, including this seed."""
         return self._part._pattern_circular(self, count, axis, angle, name)
 
     @api_group("Transforms")
-    def mirror(self, plane=None, name=None) -> "Solid":
+    def mirror(self, plane: Frame | None = None,
+               name: EntityName | None = None) -> Solid:
         """Return a reflected copy across a Frame's XY plane."""
         return self._part._mirror(self, plane, name)
 
     @api_group("Inspect")
-    def raycast(self, origin, direction):
+    def raycast(self, origin: Point3Like, direction: Point3Like) -> object | None:
         """Return the nearest mesh hit from origin along direction, or None."""
         return self._part._raycast(self, origin, direction)
 
     @api_group("Inspect")
-    def face_surface(self, patch_name, name=None) -> "Surface":
+    def face_surface(self, patch_name: EntityName,
+                     name: EntityName | None = None) -> Surface:
         """Extract a named face as an oriented open surface."""
         return self._part._face_surface(self, patch_name, name)
 
@@ -3034,7 +3293,7 @@ class Solid(_MeshBody):
         """Boolean union. Result keeps this solid's name."""
         return self._part.union(self, other, name=self.name)
 
-    def located(self, location):
+    def located(self, location: Point3Like) -> Solid:
         """Return this solid translated to a world-space location."""
         target = _xyz(location)
         copies = self.pattern_linear(2, target)
@@ -3048,7 +3307,8 @@ class Solid(_MeshBody):
         """Boolean intersection. Result keeps this solid's name."""
         return self._part.intersect(self, other, name=self.name)
 
-    def trim(self, surface, *, side="normal", name=None):
+    def trim(self, surface: Surface, *, side: Literal["normal", "opposite"] = "normal",
+             name: EntityName | None = None) -> Solid:
         """Trim this closed solid by an open Surface.
 
         ``side`` is ``"normal"`` or ``"opposite"`` relative to the surface
@@ -3057,11 +3317,11 @@ class Solid(_MeshBody):
         return self._part._trim_by_surface(self, surface, side=side,
                                           name=self.name if name is None else name)
 
-    def signed_volume(self):
+    def signed_volume(self) -> float:
         """Signed tetrahedron volume. Negative means inward orientation."""
         return float(_require(self._n, "signed_volume")())
 
-    def volume(self):
+    def volume(self) -> float:
         """Absolute volume of this closed solid."""
         return abs(self.signed_volume())
 
@@ -3080,6 +3340,65 @@ class Surface(_MeshBody):
         super(Surface, self).__init__(native, part)
         if self.is_volume:
             raise ValueError("Surface requires an open mesh")
+
+    @api_group("Hollow and draft")
+    def thicken(self, thickness: float, *, both_sides: bool = False,
+                name: EntityName | None = None) -> Solid:
+        """Create a solid from this surface.
+
+        Positive thickness follows the authored triangle normals and negative
+        thickness goes against them. ``both_sides=True`` applies the absolute
+        distance on each side, so the total wall thickness is twice that value.
+        """
+        return self._part._thicken(self, thickness, both_sides=both_sides, name=name)
+
+    @api_group("Surface modeling")
+    def trim(self, cutter: Surface, *, side: Literal["normal", "opposite"] = "normal",
+             name: EntityName | None = None) -> Surface:
+        """Trim this sheet with another sheet using the exact CSG resolver."""
+        if not isinstance(cutter, Surface) or cutter._part is not self._part:
+            raise TypeError("cutter must be a Surface from this Part")
+        if side == "normal":
+            keep_normal = 1
+        elif side == "opposite":
+            keep_normal = 0
+        else:
+            raise ValueError("side must be 'normal' or 'opposite'")
+        native = _require(self._part._n, "trim_surface")(
+            self._n, cutter._n, keep_normal, _name(name))
+        return Surface(native, self._part)
+
+    @api_group("Surface modeling")
+    def split(self, cutter: Surface, *, name: EntityName | None = None) -> list[Surface]:
+        """Return the normal and opposite sides of an exact surface trim."""
+        if not isinstance(cutter, Surface) or cutter._part is not self._part:
+            raise TypeError("cutter must be a Surface from this Part")
+        native = _require(self._part._n, "split_surface")(
+            self._n, cutter._n, _name(name))
+        return [Surface(native.get(i), self._part) for i in range(native.count)]
+
+    @api_group("Surface modeling")
+    def intersection_curves(self, other: Surface | Solid, *,
+                            name: EntityName | None = None) -> list[Curve3D]:
+        """Return connected 3D intersection curves with another surface or solid.
+
+        Curves follow the current triangle meshes exactly. Curved source geometry
+        is therefore limited by each body's tessellation tolerance. Coplanar
+        overlap has no unique 1D intersection and is omitted.
+        """
+        if not isinstance(other, (Surface, Solid)) or other._part is not self._part:
+            raise TypeError("other must be a Surface or Solid from this Part")
+        native = _require(self._part._n, "intersection_curves")(
+            self._n, other._n, _name(name))
+        return [Curve3D(native.get(i), self._part) for i in range(int(native.count))]
+
+    @api_group("Surface modeling")
+    def cap_planar_boundaries(self, *, make_solid: bool = True,
+                              name: EntityName | None = None) -> Surface | Solid:
+        """Fill exact planar boundary loops, returning a Solid by default."""
+        native = _require(self._part._n, "cap_planar_boundaries")(
+            self._n, int(bool(make_solid)), _name(name))
+        return _body(native, self._part)
 
     def __repr__(self):
         return "Surface(name={0!r}, triangle_count={1})".format(self.name, self.triangle_count)

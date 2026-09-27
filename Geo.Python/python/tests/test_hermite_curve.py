@@ -1,14 +1,14 @@
 """Public guide evaluation and asymmetric closed milling sweep regressions."""
 import math
 import unittest
-from camber import Curve, Frame, Part, set_progress_log
+from camber import Curve3D, Frame, Part, set_progress_log
 
 set_progress_log(False)
 
 
 class HermiteCurveTests(unittest.TestCase):
     def test_directions_and_normalized_parameter(self):
-        curve = Curve.hermite([(0, 0, 0), (2, 0, 0), (2, 3, 0)],
+        curve = Curve3D.hermite([(0, 0, 0), (2, 0, 0), (2, 3, 0)],
                               [(7, 0, 0), (1, 1, 0), (0, 8, 0)])
         self.assertEqual(tuple(curve.point(.5)), (2, 0, 0))
         self.assertEqual(tuple(curve.tangent(0)), (1, 0, 0))
@@ -26,7 +26,7 @@ class HermiteCurveTests(unittest.TestCase):
                   [(1, 0, 0), (0, 1, 0), (0, -1, 0)])]
         for points, directions in cases:
             with self.subTest(points=points), self.assertRaises(Exception):
-                Curve.hermite(points, directions)
+                Curve3D.hermite(points, directions)
 
     def test_closed_asymmetric_profile_and_reference_orientation(self):
         points, directions = [], []
@@ -35,7 +35,7 @@ class HermiteCurveTests(unittest.TestCase):
             points.append((20*math.cos(angle), 20*math.sin(angle), 2*math.sin(2*angle)))
             directions.append((-20*math.sin(angle), 20*math.cos(angle), 4*math.cos(2*angle)))
         points.append(points[0]); directions.append(directions[0])
-        curve = Curve.hermite(points, directions)
+        curve = Curve3D.hermite(points, directions)
         tangent = curve.tangent(0)
         self.assertEqual(tuple(curve.point(0)), tuple(curve.point(1)))
         for reference in (None, (0, 0, 1)):

@@ -124,6 +124,93 @@ public class AssemblyTests : IDisposable
     }
 
     [Fact]
+    public void AddPart_FromIndependentParts_PreservesExactGeometryAndSharesDefinition()
+    {
+        var assemblyApi = new GeoAPI(new Box3D(new Vec3D(-500), new Vec3D(500)), 0.02, 4097);
+        var sourceA = new GeoAPI(new Box3D(new Vec3D(-20), new Vec3D(20)), 0.001, 100003);
+        var sourceB = new GeoAPI(new Box3D(new Vec3D(0, -80, -5), new Vec3D(120, 80, 25)), 0.05, 8191);
+        var solidA = sourceA.CreateCuboid(new Vec3D(1.25, -2.5, 0.125), new Vec3D(11.25, 7.5, 10.125), "componentA");
+        var solidB = sourceB.CreateCuboid(new Vec3D(0), new Vec3D(10), "componentB");
+        Rat3Hybrid[] sourcePositions = solidA.Mesh.PrecisionPositions.ToArray();
+        Vec3D[] sourceDisplayPositions = solidA.Mesh.Positions.ToArray();
+
+        var assembly = assemblyApi.GetAssembly("mixed_parts");
+        var first = assembly.AddPart(sourceA, solidA, new Vec3D(0));
+        var second = assembly.AddPart(sourceA, solidA, new Vec3D(20, 0, 0));
+        var third = assembly.AddPart(sourceB, solidB, new Vec3D(5, 0, 0));
+
+        Assert.Same(first.Mesh, second.Mesh);
+        Assert.NotSame(solidA, first.Mesh);
+        Assert.Equal(sourcePositions, solidA.Mesh.PrecisionPositions);
+        Assert.Equal(sourceDisplayPositions, solidA.Mesh.Positions);
+        Assert.Equal(sourcePositions.Length, first.Mesh.Mesh.PrecisionPositions.Count);
+        Assert.NotNull(first.AddPlaneDatum(FindPlanarTopPatch(solidA)));
+        for (int i = 0; i < sourcePositions.Length; i++)
+        {
+            Rat3Hybrid expected = assemblyApi.Converter.ConvertExact(sourcePositions[i], sourceA.Converter);
+            Rat3Hybrid actual = first.Mesh.Mesh.PrecisionPositions[i];
+            Assert.Equal(0, expected.X.CompareTo(actual.X));
+            Assert.Equal(0, expected.Y.CompareTo(actual.Y));
+            Assert.Equal(0, expected.Z.CompareTo(actual.Z));
+        }
+
+        var overlaps = assembly.Interferences();
+        Assert.Single(overlaps);
+        Assert.InRange(overlaps[0].Volume, 460, 465);
+        Assert.Contains(first, assembly.GetParts());
+        Assert.Contains(second, assembly.GetParts());
+        Assert.Contains(third, assembly.GetParts());
+    }
+
+    [Fact]
+    public void AddSubAssembly_FromIndependentPart_PreservesMatesAndSupportsParentGeometryQueries()
+    {
+        var childApi = new GeoAPI(new Box3D(new Vec3D(-50), new Vec3D(50)), 0.01, 100001);
+        var secondPartApi = new GeoAPI(new Box3D(new Vec3D(-100), new Vec3D(100)), 0.02, 200001);
+        var parentApi = new GeoAPI(new Box3D(new Vec3D(-500), new Vec3D(500)), 0.03, 600001);
+        var collisionApi = new GeoAPI(new Box3D(new Vec3D(-300), new Vec3D(300)), 0.01, 600001);
+
+        var child = childApi.GetAssembly("motor_module");
+        child.SolveAfterEveryConstraint = false;
+        var baseSolid = childApi.CreateCuboid(new Vec3D(0), new Vec3D(10), "motor_base");
+        var gearSolid = secondPartApi.CreateCuboid(new Vec3D(0), new Vec3D(10), "gear_block");
+        var basePart = child.AddPart(baseSolid, new Vec3D(0));
+        var gearPart = child.AddPart(secondPartApi, gearSolid, new Vec3D(20, 0, 0));
+        child.FixPart(basePart);
+        child.SetDistance(basePart.AddPointDatumAt(new Vec3D(0)),
+            gearPart.AddPointDatumAt(new Vec3D(0)), 20);
+        child.SolveConstraints();
+
+        var parent = parentApi.GetAssembly("machine");
+        var occurrence = parent.AddSubAssembly(child, new Vec3D(100, 0, 0));
+        var collider = collisionApi.CreateCuboid(new Vec3D(0), new Vec3D(10), "housing_wall");
+        parent.AddPart(collisionApi, collider, new Vec3D(105, 0, 0));
+
+        Assert.Equal(100, parent.WorldPoseOf(basePart).Position.X, 8);
+        Assert.Equal(120, parent.WorldPoseOf(gearPart).Position.X, 8);
+        Assert.Equal(100, occurrence.EvaluatePose().Position.X, 8);
+        var interferences = parent.Interferences();
+        Assert.Single(interferences);
+        Assert.InRange(interferences[0].Volume, 490, 510);
+    }
+
+    [Fact]
+    public void AddSubAssembly_FromDifferentLatticeCanBeSectionedInParent()
+    {
+        var childApi = new GeoAPI(new Box3D(new Vec3D(-20), new Vec3D(20)), 0.01, 4001);
+        var parentApi = new GeoAPI(new Box3D(new Vec3D(-100), new Vec3D(100)), 0.01, 6001);
+        var child = childApi.GetAssembly("sectioned_module");
+        var solid = childApi.CreateCuboid(new Vec3D(0), new Vec3D(10), "module_body");
+        child.AddPart(solid, new Vec3D(0));
+        var parent = parentApi.GetAssembly("section_parent");
+        parent.AddSubAssembly(child, new Vec3D(30, 0, 0));
+
+        var section = parent.Section(new CoordinateSystem(new Vec3D(0, 0, 5)));
+        Assert.Equal(1, section.Meshes.Count);
+        Assert.InRange(MeshVolume(section.Meshes[0]), 498.5, 501.5);
+    }
+
+    [Fact]
     public void AddPart_Ownership_RejectsForeignAssemblyPart()
     {
         var api = MakeApi();

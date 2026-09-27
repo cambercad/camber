@@ -46,7 +46,10 @@ public class NativeAssembly
         double qw)
     {
         Quaternion orientation = new Quaternion(qx, qy, qz, qw);
-        return new NativeAssemblyPart(_inner.AddPart(solid.Native, new Vec3D(px, py, pz), orientation));
+        AssemblyPart part = solid.OwnerApi == null
+            ? _inner.AddPart(solid.Native, new Vec3D(px, py, pz), orientation)
+            : _inner.AddPart(solid.OwnerApi, solid.Native, new Vec3D(px, py, pz), orientation);
+        return new NativeAssemblyPart(part);
     }
 
     public NativeAssemblyOccurrence AddSubAssembly(
@@ -57,10 +60,12 @@ public class NativeAssembly
         double qx,
         double qy,
         double qz,
-        double qw)
+        double qw,
+        int flexible)
     {
         Quaternion orientation = new Quaternion(qx, qy, qz, qw);
-        return new NativeAssemblyOccurrence(_inner.AddSubAssembly(child.Native, new Vec3D(px, py, pz), orientation));
+        return new NativeAssemblyOccurrence(_inner.AddSubAssembly(child.Native,
+            new Vec3D(px, py, pz), orientation, flexible != 0));
     }
 
     public NativeAssemblyOccurrences PatternLinearSubassembly(NativeAssemblyOccurrence seed,int count,double x,double y,double z)
@@ -390,24 +395,26 @@ public class NativeAssemblyLeaves
     {
         if ((uint)index >= (uint)_items.Count) throw new ArgumentOutOfRangeException(nameof(index));
         AssemblyLeaf item = _items[index];
-        return new NativeAssemblyLeaf(item.Part, item.Pose, item.Path);
+        return new NativeAssemblyLeaf(item);
     }
 }
 [DotWrapExpose]
 public class NativeAssemblyLeaf
 {
     readonly AssemblyPart _part;
+    readonly AssemblyLeaf _leaf;
     readonly Transform _pose;
     readonly string _path;
     readonly Vec3D _min;
     readonly Vec3D _max;
 
-    internal NativeAssemblyLeaf(AssemblyPart part, Transform pose, string path)
+    internal NativeAssemblyLeaf(AssemblyLeaf leaf)
     {
-        _part = part;
-        _pose = pose;
-        _path = path;
-        (_min, _max) = Bounds(part.Mesh, pose);
+        _leaf = leaf;
+        _part = leaf.Part;
+        _pose = leaf.Pose;
+        _path = leaf.Path;
+        (_min, _max) = Bounds(_part.Mesh, _pose);
     }
 
     static (Vec3D Min, Vec3D Max) Bounds(AnchorMesh mesh, Transform pose)
@@ -438,7 +445,7 @@ public class NativeAssemblyLeaf
 
     public string Path => _path;
     public NativeAssemblyPart GetPart() => new(_part);
-    public NativeSolid GetSolid() => new(_part.Mesh);
+    public NativeSolid GetSolid() => new(_leaf.Snapshot());
     public double Ox => _pose.Position.X;
     public double Oy => _pose.Position.Y;
     public double Oz => _pose.Position.Z;
@@ -469,6 +476,8 @@ public class NativeAssemblyOccurrence
     }
 
     public string Name { get { return Native.Name; } }
+
+    public int Flexible { get { return Native.IsFlexible ? 1 : 0; } }
 
     public double PoseX { get { return Native.EvaluatePose().Position.X; } }
     public double PoseY { get { return Native.EvaluatePose().Position.Y; } }
