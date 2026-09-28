@@ -22,13 +22,9 @@ if (-not (Test-Path $pkg)) {
     throw "DotWrap did not create python_project_root. Check the publish log."
 }
 
-# Replace the overlay package. Copy-Item into an existing `camber` folder
-# nests as camber/camber and ships a stale api.py.
 $camberDst = Join-Path $pkg "camber"
-if (Test-Path $camberDst) {
-    Remove-Item -Recurse -Force $camberDst
-}
-Copy-Item -Recurse (Join-Path $root "python\camber") $camberDst
+python (Join-Path $root "stage_python_package.py") (Join-Path $root "python\camber") $camberDst
+if ($LASTEXITCODE -ne 0) { throw "Python package staging failed." }
 
 $readme = Join-Path $repoRoot "README.md"
 python (Join-Path $root "patch_wheel_metadata.py") $pkg $readme $WheelVersion

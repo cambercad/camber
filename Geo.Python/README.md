@@ -141,32 +141,32 @@ Classic CSG example (sphere ∩ cube, minus three cylinders — like the screens
 ```powershell
 .\publish-wheel.ps1
 python -m pip install --force-reinstall (Get-ChildItem dist\camber*.whl | Select-Object -Last 1).FullName
-python python\csg_sphere_cube.py
+python python\examples\standalone\csg_sphere_cube.py
 ```
 
 Triangulate a sketch into an open sheet (not a volume) and show it with a cube:
 
 ```powershell
-python python\sketch_triangulate.py
+python python\examples\standalone\sketch_triangulate.py
 ```
 
 Herringbone (double-helical) involute gear — Citroën chevron:
 
 ```powershell
-python python\v_gear.py
+python python\examples\standalone\v_gear.py
 ```
 
 3:1 planetary gearbox (ring fixed, carrier output; involute sun / planets / internal ring):
 
 ```powershell
-python python\planetary_gearbox.py
+python python\examples\standalone\planetary_gearbox.py
 ```
 
 Shell gallery (analytic cylinder and sphere offsets, CSG trimming, a filleted
 shell rim, and the generic triangle-mesh fallback on a twisted loft):
 
 ```powershell
-python python\shell_showcase.py
+python python\examples\standalone\shell_showcase.py
 ```
 
 Outward shelling defaults to sharp joins; pass `join="round"` to round
@@ -210,12 +210,7 @@ python -m pip install --force-reinstall (Get-ChildItem dist\camber*.whl | Select
 | `python/camber/` | Public package (`Part`, `show`, sketch UI) |
 | `python/smoke.py` | Kernel smoke test (no viewer) |
 | `python/view_smoke.py` | Same part, opens Polyscope |
-| `python/csg_sphere_cube.py` | Sphere ∩ cube − 3 holes |
-| `python/sketch_triangulate.py` | Sketch fill as an open sheet + a volume |
-| `python/v_gear.py` | Citroën-style herringbone involute gear |
-| `python/gears.py` | Involute spur / internal ring / herringbone helpers |
-| `python/planetary_gearbox.py` | 3:1 planetary assembly (sun, planets, ring, carrier, housing) |
-| `python/shell_showcase.py` | Analytic, CSG, rim-fillet, and mesh-fallback shell gallery |
+| `python/examples/standalone/` | Standalone modeling examples and their helpers |
 | `NativePart.cs` | Thin C# FFI for the wheel |
 | `publish-wheel.ps1` | Publish AOT + build `dist\*.whl` |
 | `dist/` | Output wheels (generated) |
@@ -361,7 +356,7 @@ curvature matching are not implied by the vector controls.
 Run the constrained-sketch example (opens the existing viewer by default):
 
 ```bash
-.venv/bin/python Geo.Python/python/surface_loft.py
+.venv/bin/python Geo.Python/python/examples/standalone/surface_loft.py
 ```
 
 ### Matched loft faces and explicit first curves
@@ -390,8 +385,8 @@ The inspection example has four constrained rectangular sections, varying dimens
 and twist, four side faces and two caps:
 
 ```bash
-.venv/bin/python Geo.Python/python/loft_transition.py
-.venv/bin/python Geo.Python/python/loft_transition.py --sections
+.venv/bin/python Geo.Python/python/examples/standalone/loft_transition.py
+.venv/bin/python Geo.Python/python/examples/standalone/loft_transition.py --sections
 ```
 
 ### Tessellation density

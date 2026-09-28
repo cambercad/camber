@@ -6,7 +6,7 @@ tolerance (same idea as NACA airfoils — not a separate curve type).
 Writes OBJ, STL, STEP, IGES, and USDA next to this script. From Geo.Python, venv
 active:
 
-  python python\\v_gear.py
+  python python\\examples\\standalone\\v_gear.py
 """
 import math
 import os

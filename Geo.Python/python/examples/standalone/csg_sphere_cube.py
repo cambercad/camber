@@ -4,7 +4,7 @@ Needs a wheel with sphere + cylinder(axis=...). From Geo.Python, venv active:
 
   .\\publish-wheel.ps1
   python -m pip install --force-reinstall (Get-ChildItem dist\\camber*.whl | Select-Object -Last 1).FullName
-  python python\\csg_sphere_cube.py
+  python python\\examples\\standalone\\csg_sphere_cube.py
 """
 from camber import Part, vec3
 

@@ -7,7 +7,7 @@ import unittest
 from camber import Part, set_progress_log
 from camber.display import decode_native_solid
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "examples", "standalone"))
 from planetary_gearbox import HOUSING_R, TOLERANCE, build_carrier
 
 

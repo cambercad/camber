@@ -57,6 +57,9 @@ namespace Geo
         private bool _rigidBodyActive;
         private Vec3D[] _rigidRestLocal;
         private Rat3Hybrid[] _rigidRestExact;
+        private MeshTriangle<TriangleVertexNormalUV>[] _rigidRestCorners;
+        private Quaternion _rigidDisplayOrientation;
+        private bool _rigidDisplayNormalsCurrent;
         private Dictionary<string, SurfaceMetaData> _rigidRestMeta;
         private CoordinateConverter _rigidConverter;
         private bool _rigidConverterSet;
@@ -1129,6 +1132,8 @@ namespace Geo
             int count = Mesh.Positions.Count;
             _rigidRestLocal = new Vec3D[count];
             _rigidRestExact = Mesh.PrecisionPositions.ToArray();
+            _rigidRestCorners = Mesh.TrianglesEx.ToArray();
+            _rigidDisplayNormalsCurrent = false;
             _rigidConverter = converter;
             _rigidConverterSet = true;
 
@@ -1144,7 +1149,7 @@ namespace Geo
         {
             if (!_rigidBodyActive || _rigidRestExact == null)
                 throw new InvalidOperationException($"Mesh '{Name}' is not an assembly body.");
-            return Mesh.SnapshotRigidPose(_rigidRestExact, _rigidConverter, transform, groupId);
+            return Mesh.SnapshotRigidPose(_rigidRestExact, _rigidConverter, transform, groupId, _rigidRestCorners);
         }
 
         /// <summary>Copy a body definition with its original display and exact coordinates.</summary>
@@ -1190,6 +1195,25 @@ namespace Geo
                 Vec3D world = worldFromLocal.TransformPoint(_rigidRestLocal[i]);
                 Mesh.Positions[i] = world;
                 Mesh.PrecisionPositions[i] = preciseTransform.Apply(_rigidRestExact[i]);
+            }
+
+            // Solving mates often changes only translation. Recompute normals from
+            // the rest pose only when the shared display mesh changes orientation.
+            Quaternion orientation = TransformMath.NormalizeDefault(transform.Orientation);
+            if (!_rigidDisplayNormalsCurrent || orientation.X != _rigidDisplayOrientation.X
+                || orientation.Y != _rigidDisplayOrientation.Y || orientation.Z != _rigidDisplayOrientation.Z
+                || orientation.W != _rigidDisplayOrientation.W)
+            {
+                for (int i = 0; i < _rigidRestCorners.Length; i++)
+                {
+                    var corner = _rigidRestCorners[i];
+                    corner.V0.Normal = worldFromLocal.TransformDirection(corner.V0.Normal);
+                    corner.V1.Normal = worldFromLocal.TransformDirection(corner.V1.Normal);
+                    corner.V2.Normal = worldFromLocal.TransformDirection(corner.V2.Normal);
+                    Mesh.TrianglesEx[i] = corner;
+                }
+                _rigidDisplayOrientation = orientation;
+                _rigidDisplayNormalsCurrent = true;
             }
 
             RestoreSurfaceMetaFromRest(in worldFromLocal);

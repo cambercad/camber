@@ -18,7 +18,7 @@ and those cylinders' end caps, then solved.
 
 From Geo.Python, venv active (rebuild the wheel once for internal gears):
 
-  python python\\planetary_gearbox.py
+  python python\\examples\\standalone\\planetary_gearbox.py
 """
 import math
 import os

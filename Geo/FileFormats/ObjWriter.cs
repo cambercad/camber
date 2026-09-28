@@ -1,110 +1,82 @@
-﻿using GeoCore;
+using System.Globalization;
+using GeoCore;
 
 namespace Geo
 {
     public static class ObjWriter
     {
-        public static void Write(string fileName, List<Vec3D> points, List<Vec3D> normals, List<Vec2D> uv, List<Tri> triangles, 
-            List<int> groupPerTriangle, Dictionary<int, string> groupToName)
+        public static void Write(string fileName, List<Vec3D> points, List<Vec3D> normals, List<Vec2D> uv,
+            List<Tri> triangles, List<int> groupPerTriangle, Dictionary<int, string> groupToName)
         {
-            // Group triangles by their group IDs
-            Dictionary<int, List<Tri>> trianglesPerGroup = new Dictionary<int, List<Tri>>();
-            Dictionary<int, List<int>> triangleIndicesPerGroup = new Dictionary<int, List<int>>();
-            
+            using var writer = new StreamWriter(fileName);
+            WriteMesh(writer, points, normals, uv, triangles, groupPerTriangle, groupToName, 1);
+        }
+
+        public static void WriteAssembly(string fileName, IReadOnlyList<AssemblyLeaf> leaves)
+        {
+            using var writer = new StreamWriter(fileName);
+            int offset = 1;
+            foreach (var leaf in leaves)
+            {
+                var mesh = leaf.Snapshot();
+                mesh.EnsureCoplanarPostProcessed();
+                mesh.Mesh.Decompose(out var positions, out var normals, out var uvs,
+                    out var triangles, out var groups);
+                if (triangles.Count == 0) continue;
+                writer.WriteLine("o " + ObjName(leaf.Path));
+                WriteMesh(writer, positions, normals, uvs, triangles, groups,
+                    mesh.groupIdToExtendedName, offset);
+                offset += positions.Count;
+            }
+        }
+
+        private static string ObjName(string name) => string.IsNullOrWhiteSpace(name)
+            ? "unnamed"
+            : string.Join("_", name.Split((char[])null, StringSplitOptions.RemoveEmptyEntries));
+
+        private static void WriteMesh(StreamWriter writer, List<Vec3D> positions, List<Vec3D> normals,
+            List<Vec2D> uvs, List<Tri> triangles, List<int> groups,
+            Dictionary<int, string> groupNames, int offset)
+        {
+            if (normals != null && normals.Count != positions.Count)
+                throw new ArgumentException("OBJ normals must match decomposed positions.");
+            if (uvs != null && uvs.Count != positions.Count)
+                throw new ArgumentException("OBJ UVs must match decomposed positions.");
+            bool hasNormals = normals != null && normals.Count > 0;
+            bool hasUvs = uvs != null && uvs.Count > 0;
+            foreach (var p in positions)
+                writer.WriteLine(string.Format(CultureInfo.InvariantCulture, "v {0:G17} {1:G17} {2:G17}", p.X, p.Y, p.Z));
+            if (hasUvs)
+                foreach (var t in uvs)
+                    writer.WriteLine(string.Format(CultureInfo.InvariantCulture, "vt {0:G17} {1:G17}", t.X, t.Y));
+            if (hasNormals)
+                foreach (var n in normals)
+                    writer.WriteLine(string.Format(CultureInfo.InvariantCulture, "vn {0:G17} {1:G17} {2:G17}", n.X, n.Y, n.Z));
+
+            // A position may occur more than once: each decomposed index owns its
+            // normal and UV, so hard edges and texture seams survive OBJ import.
+            int previousGroup = int.MinValue;
             for (int i = 0; i < triangles.Count; i++)
             {
-                int groupId = (groupPerTriangle != null && i < groupPerTriangle.Count) ? groupPerTriangle[i] : 0;
-                
-                if (!trianglesPerGroup.ContainsKey(groupId))
+                int group = groups != null && i < groups.Count ? groups[i] : 0;
+                if (group != previousGroup)
                 {
-                    trianglesPerGroup[groupId] = new List<Tri>();
-                    triangleIndicesPerGroup[groupId] = new List<int>();
+                    writer.WriteLine("g " + ObjName(groupNames != null && groupNames.TryGetValue(group, out var name)
+                        ? name : "group_" + group.ToString(CultureInfo.InvariantCulture)));
+                    previousGroup = group;
                 }
-                
-                trianglesPerGroup[groupId].Add(triangles[i]);
-                triangleIndicesPerGroup[groupId].Add(i);
+                var tri = triangles[i];
+                writer.WriteLine("f " + Corner(tri.A) + " " + Corner(tri.B) + " " + Corner(tri.C));
             }
 
-            using (StreamWriter sw = new StreamWriter(fileName))
+            string Corner(int index)
             {
-                // Write vertices
-                for (int i = 0; i < points.Count; i++)
-                {
-                    Vec3D p = points[i];
-                    sw.WriteLine($"v {p.X:F6} {p.Y:F6} {p.Z:F6}");
-                }
-
-                // Write normals if available
-                if (normals != null && normals.Count > 0)
-                {
-                    for (int i = 0; i < normals.Count; i++)
-                    {
-                        Vec3D n = normals[i];
-                        sw.WriteLine($"vn {n.X:F6} {n.Y:F6} {n.Z:F6}");
-                    }
-                }
-
-                // Write texture coordinates if available
-                if (uv != null && uv.Count > 0)
-                {
-                    for (int i = 0; i < uv.Count; i++)
-                    {
-                        Vec2D t = uv[i];
-                        sw.WriteLine($"vt {t.X:F6} {t.Y:F6}");
-                    }
-                }
-
-                // Write groups with their triangles
-                foreach (var groupEntry in trianglesPerGroup.OrderBy(kvp => kvp.Key))
-                {
-                    int groupId = groupEntry.Key;
-                    List<Tri> groupTriangles = groupEntry.Value;
-
-                    // Generate group name
-                    string groupName;
-                    if (groupToName != null && groupToName.ContainsKey(groupId))
-                    {
-                        groupName = groupToName[groupId];
-                    }
-                    else
-                    {
-                        groupName = $"group_{groupId}";
-                    }
-
-                    // Write group header
-                    sw.WriteLine($"g {groupName}");
-
-                    // Write faces for this group
-                    foreach (Tri tri in groupTriangles)
-                    {
-                        // OBJ indices are 1-based
-                        int a = tri.A + 1;
-                        int b = tri.B + 1;
-                        int c = tri.C + 1;
-
-                        // Determine face format based on available data
-                        if (normals != null && normals.Count > 0 && uv != null && uv.Count > 0)
-                        {
-                            // Format: f v1/vt1/vn1 v2/vt2/vn2 v3/vt3/vn3
-                            sw.WriteLine($"f {a}/{a}/{a} {b}/{b}/{b} {c}/{c}/{c}");
-                        }
-                        else if (normals != null && normals.Count > 0)
-                        {
-                            // Format: f v1//vn1 v2//vn2 v3//vn3
-                            sw.WriteLine($"f {a}//{a} {b}//{b} {c}//{c}");
-                        }
-                        else if (uv != null && uv.Count > 0)
-                        {
-                            // Format: f v1/vt1 v2/vt2 v3/vt3
-                            sw.WriteLine($"f {a}/{a} {b}/{b} {c}/{c}");
-                        }
-                        else
-                        {
-                            // Format: f v1 v2 v3
-                            sw.WriteLine($"f {a} {b} {c}");
-                        }
-                    }
-                }
+                int obj = offset + index;
+                string value = obj.ToString(CultureInfo.InvariantCulture);
+                if (hasUvs && hasNormals) return value + "/" + value + "/" + value;
+                if (hasUvs) return value + "/" + value;
+                if (hasNormals) return value + "//" + value;
+                return value;
             }
         }
     }

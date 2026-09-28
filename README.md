@@ -2,6 +2,10 @@
 
 **Alpha.** AI-ready CAD for people and agents: the same Python API, a small dependency footprint, and an optional OpenGL viewer.
 
+![Photo-referenced PTO shaft assembly modeled in Camber](assets/pto-shaft-hero.png)
+
+The [PTO shaft example](Geo.Python/python/examples/pto_shaft/README.md) builds the detailed assembly from Python parts and mates.
+
 Parts are **triangle meshes** (ideally watertight). Exact-rational CSG, constrained sketches, and optional NURBS all work on that mesh. Curves and surfaces are recovered when you need them for export; they do not own the model. You can also load and edit STL/OBJ from elsewhere.
 
 This is **not** a fork of CadQuery, build123d, FreeCAD, or OpenSCAD. Those use OpenCascade B-rep (or OpenSCAD’s language / a full GUI). Camber is a separate mesh kernel; `camber.cqcompat` is only a familiarity shim, not OCCT.

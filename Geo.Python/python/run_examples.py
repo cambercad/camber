@@ -6,8 +6,9 @@ import subprocess
 import sys
 
 
-ROOT = Path(__file__).resolve().parent
-EXCLUDED = {"run_examples.py", "validate_step_occ.py"}
+PACKAGE_ROOT = Path(__file__).resolve().parent
+ROOT = PACKAGE_ROOT / "examples" / "standalone"
+EXCLUDED = {"gears.py"}
 RUNNER = r'''
 import runpy
 import sys
@@ -41,7 +42,7 @@ def main():
         print(f"== {path.name} ==", flush=True)
         try:
             subprocess.run(
-                [sys.executable, "-c", RUNNER, str(path)], cwd=ROOT,
+                [sys.executable, "-c", RUNNER, str(path)], cwd=PACKAGE_ROOT,
                 check=True, timeout=180)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
             failures.append(f"{path.name}: {error}")

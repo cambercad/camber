@@ -1,9 +1,9 @@
 # Sculpted lofts and edge treatments
 
 ```bash
-.venv/bin/python Geo.Python/python/loft_edge_treatments.py
-.venv/bin/python Geo.Python/python/loft_edge_treatments.py --case helical_crown
-.venv/bin/python Geo.Python/python/loft_edge_treatments.py --render /tmp/sculpted-gallery.png
+.venv/bin/python Geo.Python/python/examples/standalone/loft_edge_treatments.py
+.venv/bin/python Geo.Python/python/examples/standalone/loft_edge_treatments.py --case helical_crown
+.venv/bin/python Geo.Python/python/examples/standalone/loft_edge_treatments.py --render /tmp/sculpted-gallery.png
 ```
 
 UV checkerboard is on by default. The palette uses blue, clear red, violet, yellow, orange and green; chamfers are yellow and rounds bright green.
@@ -98,8 +98,8 @@ remaining limitations. Failed treatments are never silently replaced.
 For example:
 
 ```bash
-.venv/bin/python Geo.Python/python/loft_edge_treatments.py --probe curved_round
-.venv/bin/python Geo.Python/python/loft_edge_treatments.py --probe inward_chamfer_network
+.venv/bin/python Geo.Python/python/examples/standalone/loft_edge_treatments.py --probe curved_round
+.venv/bin/python Geo.Python/python/examples/standalone/loft_edge_treatments.py --probe inward_chamfer_network
 ```
 
 The repaired cases have native regressions. Pocket trims retain the source-edge

@@ -24,6 +24,8 @@ public class NativeAssembly
 
     public NativeAssemblyLeaves Leaves() => new(_inner.GetLeaves());
 
+    public void SaveWavefrontObj(string filePath) => ObjWriter.WriteAssembly(filePath, _inner.GetLeaves());
+
     public NativeInterferences Interferences(double minVolume)
     {
         return new NativeInterferences(_inner.Interferences(minVolume));

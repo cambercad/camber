@@ -66,6 +66,7 @@ if [[ "$ROOT" == /mnt/* ]] && [[ "${CAMBER_LINUX_RELAUNCHED:-0}" != "1" ]]; then
   sed -i 's/\r$//' "$BUILD_ROOT/Geo.Python/publish-wheel.sh" || true
   export CAMBER_LINUX_RELAUNCHED=1
   export CAMBER_WIN_DIST="$WIN_REPO/dist"
+  export CAMBER_SOURCE_GIT_ROOT="$WIN_REPO"
   bash "$BUILD_ROOT/Geo.Python/publish-wheel.sh" "$@"
   mkdir -p "$WIN_REPO/dist"
   cp -f "$BUILD_ROOT/dist"/cambercad-*.whl "$WIN_REPO/dist/"
@@ -146,8 +147,7 @@ if [[ ! -d "$PKG" ]]; then
 fi
 
 CAMBER_DST="$PKG/camber"
-rm -rf "$CAMBER_DST"
-cp -a "$ROOT/python/camber" "$CAMBER_DST"
+python3 "$ROOT/stage_python_package.py" "$ROOT/python/camber" "$CAMBER_DST"
 
 README="$REPO_ROOT/README.md"
 python3 "$ROOT/patch_wheel_metadata.py" "$PKG" "$README" "$WHEEL_VERSION"

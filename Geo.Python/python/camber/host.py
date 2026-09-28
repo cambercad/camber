@@ -770,7 +770,7 @@ class Viewer(object):
             pass
 
     def _set_camera(self, view, proj, cam):
-        light = tuple(float(x) for x in _g._LIGHT_DIR)
+        light = _g._light_in_view(cam)
         self._mesh_prog.use()
         names = self._mesh_prog.uniforms
         self._mesh_prog["u_view"] = view

@@ -1,5 +1,7 @@
 ﻿using GeoCore;
 
+using System.Globalization;
+
 namespace Geo
 {
     public struct IndexTuple
@@ -69,7 +71,7 @@ namespace Geo
 
             var dir = Path.GetDirectoryName(path);
 
-            List<float> values = new List<float>();
+            List<double> values = new List<double>();
 
             ObjMaterial currentMaterial = null;
             StreamReader sr = new StreamReader(path);
@@ -151,66 +153,8 @@ namespace Geo
         }
 
 
-        private static int AddIfNotPresent(this Dictionary<IndexTuple, int> map, int pIndex,
-            List<Vec3D> pos, List<Vec3D> posInputBuffer, int smoothingGroup = 0)
+        private static void ReadFloatNumbers(string line, int startCharIndex, List<double> buffer)
         {
-            IndexTuple triple;
-            triple.A = pIndex;
-            triple.B = 0;
-            triple.C = 0;
-            triple.SmoothingGroup = smoothingGroup;
-            int id;
-            if (map.TryGetValue(triple, out id))
-                return id;
-
-            map.Add(triple, pos.Count);
-            pos.Add(posInputBuffer[pIndex]);
-            return pos.Count - 1;
-        }
-        private static int AddIfNotPresent(this Dictionary<IndexTuple, int> map, int pIndex, List<Vec3D> pos, List<Vec3D> posInputBuffer,
-            int nIndex, List<Vec3D> nor, List<Vec3D> norInputBuffer, int smoothingGroup = 0)
-        {
-            IndexTuple triple;
-            triple.A = pIndex;
-            triple.B = nIndex;
-            triple.C = 0;
-            triple.SmoothingGroup = smoothingGroup;
-            int id;
-            if (map.TryGetValue(triple, out id))
-                return id;
-
-            map.Add(triple, pos.Count);
-            pos.Add(posInputBuffer[pIndex]);
-            nor.Add(norInputBuffer[nIndex]);
-            return pos.Count - 1;
-        }
-        private static int AddIfNotPresent(this Dictionary<IndexTuple, int> map, int pIndex, List<Vec3D> pos, List<Vec3D> posInputBuffer,
-            int nIndex, List<Vec3D> nor, List<Vec3D> norInputBuffer, int tIndex, List<Vec2D> tex, List<Vec2D> texInputBuffer, int smoothingGroup = 0)
-        {
-            IndexTuple triple;
-            triple.A = pIndex;
-            triple.B = nIndex;
-            triple.C = tIndex;
-            triple.SmoothingGroup = smoothingGroup;
-            int id;
-            if (map.TryGetValue(triple, out id))
-                return id;
-
-            map.Add(triple, pos.Count);
-            pos.Add(posInputBuffer[pIndex]);
-            nor.Add(norInputBuffer[nIndex]);
-            tex.Add(texInputBuffer[tIndex]);
-            return pos.Count - 1;
-        }
-
-        private static void ReadFloatNumbers(string line, int startCharIndex, List<float> buffer)
-        {
-            //MatchCollection m = Regex.Matches(line, @"([\+\-])?\d+(\.\d*)?([Ee][+-]?\d+)?"/*@"(-)?\d+(\.\d+)?(E([+-])?\d+)?"*/, RegexOptions.IgnoreCase);
-            //float[] values = new float[m.Count];
-            //for (int i = 0; i < values.Length; ++i)
-            //    values[i] = Convert.ToSingle(m[i].Value);
-            //return values;
-
             buffer.Clear();
             line = line.Trim();
             line = line + " ";
@@ -225,10 +169,9 @@ namespace Geo
                     if (count > 0)
                     {
                         string n = line.Substring(start, count);
-                        float f;
-                        if (float.TryParse(n, out f))
-                            buffer.Add(f);
-                        //buffer.Add(NumberParser.ParseFloat(line, start));
+                        if (!double.TryParse(n, NumberStyles.Float, CultureInfo.InvariantCulture, out double f))
+                            throw new FormatException("Invalid OBJ number: " + n);
+                        buffer.Add(f);
                     }
 
                     start = i + 1;
@@ -236,37 +179,14 @@ namespace Geo
             }
         }
 
-        private static void ReadIntNumbers(string line, int startCharIndex, List<int> buffer)
+        private static int FaceIndex(string text, int count)
         {
-            //MatchCollection m = Regex.Matches(line, @"(-)?\d+");
-            //int[] values = new int[m.Count];
-            //for (int i = 0; i < values.Length; ++i)
-            //    values[i] = Convert.ToInt32(m[i].Value);
-            //return values;
-
-            buffer.Clear();
-            line = line.Trim();
-            line = line + " ";
-            int l = line.Length;
-            int start = startCharIndex;
-            for (int i = start; i < l; ++i)
-            {
-                char c = line[i];
-                if (c == ' ' || c == '/' || c == '\t')
-                {
-                    int count = i - start;
-                    if (count > 0)
-                    {
-                        string n = line.Substring(start, count);
-                        int f;
-                        if (int.TryParse(n, out f))
-                            buffer.Add(f);
-                        //buffer.Add(NumberParser.ParseInt(line, start));
-                    }
-
-                    start = i + 1;
-                }
-            }
+            if (!int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) || value == 0)
+                throw new FormatException("Invalid OBJ index: " + text);
+            int index = value > 0 ? value - 1 : count + value;
+            if (index < 0 || index >= count)
+                throw new FormatException("OBJ index out of range: " + text);
+            return index;
         }
 
         public static List<PNTGeometry> Load(string path)
@@ -293,8 +213,8 @@ namespace Geo
             StreamReader sr = new StreamReader(path);
             List<PNTGeometry> geometry = new List<PNTGeometry>();
             PNTGeometry current = null;
-            List<float> values = new List<float>();
-            List<int> indices = new List<int>();
+            List<double> values = new List<double>();
+            string objectName = null;
             while (!sr.EndOfStream)
             {
                 string line = sr.ReadLine().Trim();
@@ -325,19 +245,31 @@ namespace Geo
                     nor = new List<Vec3D>();
                     tex = new List<Vec2D>();
                     triangles = new List<Tri>();
-                    PNTGeometry tg = new PNTGeometry(line.Substring(2).Trim(), triangles, pos, nor, tex);
+                    string groupName = line.Substring(2).Trim();
+                    PNTGeometry tg = new PNTGeometry(objectName == null ? groupName : objectName + "/" + groupName,
+                        triangles, pos, nor, tex);
 
                     current = tg;
 
                     geometry.Add(tg);
+                    map.Clear();
+                }
+                else if (line.StartsWith("o "))
+                {
+                    objectName = line.Substring(2).Trim();
+                    current = null;
+                    triangles = null;
+                    map.Clear();
                 }
                 else if (line.StartsWith("s "))
                 {
                     string s = line.Substring(2);
-                    if (s == "off")
+                    if (s == "off" || s == "0")
                         smoothingGroup = -1;
+                    else if (s == "on")
+                        smoothingGroup = 1;
                     else
-                        smoothingGroup = Convert.ToInt32(s);
+                        smoothingGroup = int.Parse(s, NumberStyles.Integer, CultureInfo.InvariantCulture);
                 }
                 else if (line.StartsWith("f "))
                 {
@@ -353,50 +285,37 @@ namespace Geo
 
                     if(current == null)
                     {
-                        PNTGeometry tg = new PNTGeometry(triangles, pos, nor, tex);
+                        PNTGeometry tg = new PNTGeometry(objectName, triangles, pos, nor, tex);
 
                         current = tg;
 
                         geometry.Add(tg);
                     }
 
-                    ReadIntNumbers(line, 2, indices);
-                    if (indices.Count == 3)
+                    string[] corners = line.Substring(2).Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (corners.Length < 3) throw new FormatException("OBJ face needs at least three vertices.");
+                    int[] face = new int[corners.Length];
+                    for (int i = 0; i < corners.Length; i++)
                     {
-                        triangles.Add(new Tri(
-                            map.AddIfNotPresent(indices[0] - 1, pos, vBuffer, smoothingGroup),
-                            map.AddIfNotPresent(indices[2] - 1, pos, vBuffer, smoothingGroup),
-                            map.AddIfNotPresent(indices[1] - 1, pos, vBuffer, smoothingGroup)));
+                        string[] fields = corners[i].Split('/');
+                        if (fields.Length < 1 || fields.Length > 3)
+                            throw new FormatException("Invalid OBJ face corner: " + corners[i]);
+                        int p = FaceIndex(fields[0], vBuffer.Count);
+                        int t = fields.Length > 1 && fields[1].Length > 0 ? FaceIndex(fields[1], vtBuffer.Count) : -1;
+                        int n = fields.Length > 2 && fields[2].Length > 0 ? FaceIndex(fields[2], vnBuffer.Count) : -1;
+                        var key = new IndexTuple { A = p, B = n, C = t, SmoothingGroup = smoothingGroup };
+                        if (!map.TryGetValue(key, out int vertex))
+                        {
+                            vertex = pos.Count;
+                            map.Add(key, vertex);
+                            pos.Add(vBuffer[p]);
+                            if (n >= 0) nor.Add(vnBuffer[n]);
+                            if (t >= 0) tex.Add(vtBuffer[t]);
+                        }
+                        face[i] = vertex;
                     }
-                    else if (indices.Count == 9)
-                    {
-                        triangles.Add(new Tri(
-                            map.AddIfNotPresent(indices[0] - 1, pos, vBuffer, indices[2] - 1, nor, vnBuffer, indices[1] - 1, tex, vtBuffer, smoothingGroup),
-                            map.AddIfNotPresent(indices[6] - 1, pos, vBuffer, indices[8] - 1, nor, vnBuffer, indices[7] - 1, tex, vtBuffer, smoothingGroup),
-                            map.AddIfNotPresent(indices[3] - 1, pos, vBuffer, indices[5] - 1, nor, vnBuffer, indices[4] - 1, tex, vtBuffer, smoothingGroup)));
-                    }
-                    else if (indices.Count == 6)
-                    {
-                        triangles.Add(new Tri(
-                            map.AddIfNotPresent(indices[0] - 1, pos, vBuffer, indices[1] - 1, nor, vnBuffer, smoothingGroup),
-                            map.AddIfNotPresent(indices[4] - 1, pos, vBuffer, indices[5] - 1, nor, vnBuffer, smoothingGroup),
-                            map.AddIfNotPresent(indices[2] - 1, pos, vBuffer, indices[3] - 1, nor, vnBuffer, smoothingGroup)));
-                    }
-                    else if (indices.Count == 12)
-                    {
-                        //Quads
-                        int a = map.AddIfNotPresent(indices[0] - 1, pos, vBuffer, indices[2] - 1, nor, vnBuffer, indices[1] - 1, tex, vtBuffer, smoothingGroup);
-                        int b = map.AddIfNotPresent(indices[3] - 1, pos, vBuffer, indices[5] - 1, nor, vnBuffer, indices[4] - 1, tex, vtBuffer, smoothingGroup);
-                        int c = map.AddIfNotPresent(indices[6] - 1, pos, vBuffer, indices[8] - 1, nor, vnBuffer, indices[7] - 1, tex, vtBuffer, smoothingGroup);
-                        int d = map.AddIfNotPresent(indices[9] - 1, pos, vBuffer, indices[11] - 1, nor, vnBuffer, indices[10] - 1, tex, vtBuffer, smoothingGroup);
-
-                        triangles.Add(new Tri(a, c, b));
-                        triangles.Add(new Tri(a, d, c));
-                    }
-                    else
-                    {
-                        //throw new Exception();
-                    }
+                    for (int i = 1; i + 1 < face.Length; i++)
+                        triangles.Add(new Tri(face[0], face[i], face[i + 1]));
                 }
                 else if (line.StartsWith("usemtl "))
                 {
@@ -429,6 +348,7 @@ namespace Geo
                         current = tg;
 
                         geometry.Add(tg);
+                        map.Clear();
                     }
 
                     current.MaterialName = line.Substring(7).Trim();

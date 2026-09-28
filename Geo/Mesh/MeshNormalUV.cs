@@ -68,12 +68,15 @@ namespace Geo
         }
 
         internal MeshNormalUV SnapshotRigidPose(IEnumerable<Rat3Hybrid> restPoints,
-            CoordinateConverter converter, Transform transform, int? groupId = null)
+            CoordinateConverter converter, Transform transform, int? groupId = null,
+            IReadOnlyList<MeshTriangle<TriangleVertexNormalUV>> restCorners = null)
         {
             var exact = new PreciseRigidTransform(converter, in transform);
             var matrix = TransformMath.ToMat4D(in transform);
             var points = restPoints.Select(exact.Apply).ToList();
-            var corners = new List<MeshTriangle<TriangleVertexNormalUV>>(TrianglesEx);
+            var corners = restCorners == null
+                ? new List<MeshTriangle<TriangleVertexNormalUV>>(TrianglesEx)
+                : new List<MeshTriangle<TriangleVertexNormalUV>>(restCorners);
             for (int i = 0; i < corners.Count; i++)
             {
                 var triangle = corners[i];

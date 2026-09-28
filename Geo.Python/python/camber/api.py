@@ -886,7 +886,8 @@ class PartOperation(namedtuple("PartOperation", "index kind result inputs entiti
 class AssemblyLeaf(namedtuple("AssemblyLeaf", "path part solid frame bounds")):
     """A recursive assembly leaf in its current world pose.
 
-    ``solid`` may also be an open Surface. ``path`` identifies this occurrence.
+    ``solid`` is a placed geometry snapshot and may also be an open Surface.
+    ``frame`` is its world pose. ``path`` identifies this occurrence.
     Prefix a local patch, curve, or point name
     with ``path + ':'`` when referring to the occurrence in an assembly.
     """
@@ -1002,9 +1003,8 @@ class Assembly(object):
     def leaves(self) -> tuple[AssemblyLeaf, ...]:
         """Return recursive part occurrences with world frames and exact surface bounds.
 
-        The leaf's ``solid`` remains in its own local coordinates; ``frame`` maps
-        that solid into this assembly. ``bounds`` is ``(minimum, maximum)`` in
-        assembly coordinates.
+        The leaf's ``solid`` is already in assembly coordinates; ``frame``
+        reports its pose. ``bounds`` is ``(minimum, maximum)`` in the same space.
         """
         native = _require(self._n, "leaves")()
         result = []
@@ -1033,6 +1033,11 @@ class Assembly(object):
                        max(leaf.bounds[1].y for leaf in leaves),
                        max(leaf.bounds[1].z for leaf in leaves))
         return minimum, maximum
+
+    def save_obj(self, path: str) -> None:
+        """Write placed leaves as named OBJ objects with hard-edge normals and UVs."""
+        _invoke(self._n, "save_wavefront_obj", path)
+
     def interferences(self, *, min_volume: float = 0) -> list[Interference]:
         """Return positive overlaps, largest first, including nested parts.
 

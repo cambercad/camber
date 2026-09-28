@@ -2,7 +2,7 @@ r"""Shell feature showcase: cup, bowl, twisted loft, and concave L-shaped prism.
 
 Run from ``Geo.Python`` after rebuilding/installing the wheel::
 
-    python python\shell_showcase.py
+    python python\examples\standalone\shell_showcase.py
 
 Use ``--no-show`` for a headless construction check.  In the viewer, click the
 ``ShellInner_*`` and ``ShellRim_*`` patches to inspect shell topology and names.

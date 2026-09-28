@@ -482,37 +482,27 @@ Loads an OBJ file as an AnchorMesh and registers it.
                 }
             }
 
-            bool hasVertexAttributes = allNormals.Count == allPoints.Count && allUv.Count == allPoints.Count;
+            bool hasNormals = allNormals.Count == allPoints.Count;
+            bool hasUv = allUv.Count == allPoints.Count;
             bool isWatertight = MeshAnalysis.IsWatertightMesh(allPoints, allTriangles);
             bool isVolume = isWatertight;
 
-            MeshNormalUV mesh;
-            if (hasVertexAttributes)
+            double angleThreshold = groupBorderAngleThresholdDegree > 0
+                ? groupBorderAngleThresholdDegree.ToRadians()
+                : 60.0.ToRadians();
+            var generatedNormals = hasNormals ? null : AutoNormals.ComputeNormals(allPoints, allTriangles, angleThreshold);
+            var generatedUv = hasUv ? null : AutoUV.AutoUvPerPatch(allPoints, allTriangles, groupPerTriangle);
+            List<MeshTriangle<TriangleVertexNormalUV>> triangleCornerData = new List<MeshTriangle<TriangleVertexNormalUV>>(allTriangles.Count);
+            for (int i = 0; i < allTriangles.Count; ++i)
             {
-                mesh = new MeshNormalUV(converter, allPoints, allNormals, allUv, allTriangles, groupPerTriangle, skipWatertightCheck: !isVolume);
+                var tri = allTriangles[i];
+                var data = new MeshTriangle<TriangleVertexNormalUV>();
+                data.V0 = new TriangleVertexNormalUV { Normal = hasNormals ? allNormals[tri.A] : generatedNormals[3 * i], UV = hasUv ? allUv[tri.A] : generatedUv[i].UvA };
+                data.V1 = new TriangleVertexNormalUV { Normal = hasNormals ? allNormals[tri.B] : generatedNormals[3 * i + 1], UV = hasUv ? allUv[tri.B] : generatedUv[i].UvB };
+                data.V2 = new TriangleVertexNormalUV { Normal = hasNormals ? allNormals[tri.C] : generatedNormals[3 * i + 2], UV = hasUv ? allUv[tri.C] : generatedUv[i].UvC };
+                triangleCornerData.Add(data);
             }
-            else
-            {
-                double angleThreshold = groupBorderAngleThresholdDegree > 0
-                    ? groupBorderAngleThresholdDegree.ToRadians()
-                    : 60.0.ToRadians();
-
-                var normals = AutoNormals.ComputeNormals(allPoints, allTriangles, angleThreshold);
-                var autoUV = AutoUV.AutoUvPerPatch(allPoints, allTriangles, groupPerTriangle);
-
-                List<MeshTriangle<TriangleVertexNormalUV>> triangleCornerData = new List<MeshTriangle<TriangleVertexNormalUV>>(allTriangles.Count);
-                for (int i = 0; i < allTriangles.Count; ++i)
-                {
-                    var t = new MeshTriangle<TriangleVertexNormalUV>();
-                    var uv = autoUV[i];
-                    t.V0 = new TriangleVertexNormalUV { Normal = normals[3 * i + 0], UV = uv.UvA };
-                    t.V1 = new TriangleVertexNormalUV { Normal = normals[3 * i + 1], UV = uv.UvB };
-                    t.V2 = new TriangleVertexNormalUV { Normal = normals[3 * i + 2], UV = uv.UvC };
-                    triangleCornerData.Add(t);
-                }
-
-                mesh = new MeshNormalUV(converter, allPoints, allTriangles, triangleCornerData, groupPerTriangle, skipWatertightCheck: !isVolume);
-            }
+            MeshNormalUV mesh = new MeshNormalUV(converter, allPoints, allTriangles, triangleCornerData, groupPerTriangle, skipWatertightCheck: !isVolume);
 
             var result = new AnchorMesh(name, mesh, triangleGroupToName, new Dictionary<string, SurfaceMetaData>(), isVolume);
             ImportPatchMetadataBuilder.Attach(result);

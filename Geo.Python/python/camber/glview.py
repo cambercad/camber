@@ -63,10 +63,13 @@ def _norm3(v):
     return (v[0] / length, v[1] / length, v[2] / length)
 
 
-# Same vector as C# PhongPreviewLighting.LightDirection. That app spins the
-# mesh and keeps this direction in world space; this viewer orbits the camera,
-# so the shader treats it as a view-space ray (X right, Y up, −Z into scene).
+# Same world-space direction as C# PhongPreviewLighting.LightDirection.
 _LIGHT_DIR = _norm3((0.5, -1.0, -1.0))
+
+
+def _light_in_view(camera):
+    """Keep the light stationary in world space while the camera orbits."""
+    return tuple(_dot(row[:3], _LIGHT_DIR) for row in camera.view_matrix()[:3])
 
 
 def _add(a, b):
