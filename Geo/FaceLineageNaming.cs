@@ -1,4 +1,5 @@
 using GeoCore;
+using GeoMeta;
 
 namespace Geo;
 
@@ -28,11 +29,15 @@ internal static class FaceLineageNaming
                 used.Add(key, id);
                 lineages[id] = lineage;
                 string label = lineage.Split && lineage.Supported ? lineage.Reference : oldNames[source];
-                if (names.TryGetValue(label, out int previous) && previous != id)
+                bool assignedCollision = names.TryGetValue(label, out int previous) && previous != id;
+                if (assignedCollision || (label != oldNames[source] && oldNames.Values.Contains(label)))
                 {
-                    obsolete.Add(label);
-                    label += "{unresolved:" + id + "}"; // Diagnostic only; never an addressable persistent ID.
-                    obsolete.Add(label);
+                    if (assignedCollision) obsolete.Add(label);
+                    int suffix = 1;
+                    string baseLabel = label;
+                    do
+                        label = EntityNaming.FormatPatchComponentName(baseLabel, suffix++);
+                    while (names.ContainsKey(label) || oldNames.Values.Contains(label));
                 }
                 names[label] = id;
                 if (oldNames[source] != label)

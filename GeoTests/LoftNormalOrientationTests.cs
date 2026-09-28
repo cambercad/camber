@@ -100,4 +100,23 @@ public class LoftNormalOrientationTests : IDisposable
         Assert.True(treated.groupIdToExtendedName.Values.Count(name => name.Contains(feature)) >= 4);
     }
 
+    [Fact]
+    public void MetadataFreeTwistedLoftSupportsAllCurvedEdgeFillets()
+    {
+        const double tolerance = .15;
+        var part = new GeoAPI(new Box3D(new Vec3D(-50, -50, -15), new Vec3D(350, 300, 130)), tolerance);
+        var original = BuildTwistedLoft(part, false, tolerance);
+        foreach (string name in original.surfaceMetaData.Keys.ToArray())
+            original.surfaceMetaData[name] = new SurfaceMetaData(SurfaceType.Unknown);
+        var edges = new List<string>();
+        for (int i = 0; i < labels.Length; ++i)
+            edges.Add($"[vane-Side-{labels[i]},vane-Side-{labels[(i + 1) % labels.Length]}]");
+
+        var rounded = part.Fillet(original, edges, .4, tolerance, "metadata_free_rounds");
+
+        Assert.True(MeshAnalysis.IsWatertightMesh(rounded.Mesh.PrecisionPositions, rounded.Mesh.Triangles));
+        Assert.True(MeshAnalysis.AreTrianglesConsistentlyOriented(
+            rounded.Mesh.PrecisionPositions, rounded.Mesh.Triangles));
+    }
+
 }

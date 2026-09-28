@@ -8,7 +8,7 @@ public sealed class EntityNamingTests
 {
     [Theory]
     [InlineData("[A,B]", "[B,A]", true)]
-    [InlineData("[A,B]_2", "[B,A]", true)]
+    [InlineData("[A,B]_2", "[B,A]", false)]
     [InlineData("[A,B]_2", "[B,A]_2", true)]
     [InlineData("[A,B]_2", "[B,A]_1", false)]
     [InlineData("[A,B]", "[B,C]", false)]
@@ -234,7 +234,7 @@ public sealed class EntityNamingTests
     [Fact]
     public void MatchesGroupEdgeName_SupportsIndexedSuffix()
     {
-        Assert.True(EntityNaming.MatchesGroupEdgeName("[A,B]_0", "[A,B]"));
+        Assert.False(EntityNaming.MatchesGroupEdgeName("[A,B]_0", "[A,B]"));
         Assert.True(EntityNaming.MatchesGroupEdgeName("[A,B]", "[A,B]"));
         Assert.False(EntityNaming.MatchesGroupEdgeName("[A,B]_1", "[A,C]"));
     }

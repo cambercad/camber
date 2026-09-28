@@ -13,13 +13,7 @@ internal static class MeshSelectableNames
         var edge = mesh.GroupEdges[edgeIndex];
         string reference = mesh.GetEdgeReference(edgeIndex);
         if (edge.LineStrips3D.Count > 1)
-        {
-            const string currentMarker = "#current=";
-            int marker = reference.LastIndexOf(currentMarker, StringComparison.Ordinal);
-            reference = marker >= 0
-                ? reference.Insert(marker, "_" + stripIndex)
-                : reference + "_" + stripIndex;
-        }
+            reference += "_" + stripIndex;
         return Prefix(mesh) + ":" + reference;
     }
 

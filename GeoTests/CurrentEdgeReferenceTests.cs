@@ -23,33 +23,39 @@ public class CurrentEdgeReferenceTests : IDisposable
     }
 
     [Fact]
-    public void EnumeratedCurvedEdgesRoundTripWithCurrentReferences()
+    public void EnumeratedCurvedEdgesHaveUniqueReadableNames()
     {
         var (_, mesh) = CrossingCylinders();
         var junctions = mesh.GroupEdges.Select((edge, index) => (edge, index))
             .Where(item => item.edge.Name.Contains("hub-Circle1") && item.edge.Name.Contains("crossing-Circle1"))
             .ToArray();
         Assert.Equal(2, junctions.Length);
+        Assert.Equal(mesh.GroupEdges.Count, mesh.GroupEdges.Select(edge => edge.Name).Distinct().Count());
+        Assert.Equal(mesh.groupIdToExtendedName.Count, mesh.groupIdToExtendedName.Values.Distinct().Count());
         foreach (var (edge, index) in junctions)
         {
             string reference = mesh.GetEdgeReference(index);
-            Assert.Contains("#current=", reference);
+            Assert.DoesNotContain("#current=", reference);
+            Assert.DoesNotContain("unresolved:", reference);
             Assert.Equal(reference, mesh.GetEdgeReference(index));
             Assert.Equal(edge.Name, Assert.Single(FaceLineageEdges.Resolve(mesh, new[] { reference })));
         }
     }
 
     [Fact]
-    public void CurrentReferencesDoNotTransferToCopiesOrRebuiltSolids()
+    public void CurrentNamesTransferWhenTopologyIsCopiedOrRebuilt()
     {
         var (api, mesh) = CrossingCylinders();
         int index = mesh.GroupEdges.FindIndex(edge => edge.Name.Contains("hub-Circle1") && edge.Name.Contains("crossing-Circle1"));
         string reference = mesh.GetEdgeReference(index);
         var copy = api.CopyMeshAsInstance(mesh, "copy");
         copy.EnsureCoplanarPostProcessed();
-        Assert.Throws<NameCollisionException>(() => FaceLineageEdges.Resolve(copy, new[] { reference }));
+        Assert.Equal(reference, Assert.Single(FaceLineageEdges.Resolve(copy, new[] { reference })));
+        int copiedIndex = copy.GroupEdges.FindIndex(edge => edge.Name == reference);
+        Assert.True(copiedIndex >= 0);
+        Assert.Equal(mesh.GroupEdges[index].EdgeSegments, copy.GroupEdges[copiedIndex].EdgeSegments);
         var (_, rebuilt) = CrossingCylinders();
-        Assert.Throws<NameCollisionException>(() => FaceLineageEdges.Resolve(rebuilt, new[] { reference }));
+        Assert.Equal(reference, Assert.Single(FaceLineageEdges.Resolve(rebuilt, new[] { reference })));
         mesh.Rename("renamed");
         // The root labels belong to the construction operands, so renaming the
         // Boolean result need not change them. Its topology remains the same.
@@ -59,13 +65,13 @@ public class CurrentEdgeReferenceTests : IDisposable
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void ScopedCurrentEdgeIsAcceptedByTheActualFeature(bool chamfer)
+    public void CurrentEdgeNameIsAcceptedByTheActualFeature(bool chamfer)
     {
         var (api, mesh) = CrossingCylinders();
         int index = mesh.GroupEdges.FindIndex(edge => edge.Name.Contains("crossing-Circle1") &&
             edge.Name.Contains("crossing-ExtrudeBottom"));
         string reference = mesh.GetEdgeReference(index);
-        Assert.Contains("#current=", reference);
+        Assert.DoesNotContain("#current=", reference);
         var result = chamfer
             ? api.Chamfer(mesh, new() { reference }, .1, .02, "bevelled")
             : api.Fillet(mesh, new() { reference }, .1, .02, "rounded");

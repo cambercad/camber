@@ -366,7 +366,7 @@ public sealed class MeshShellSurfaceAdapter : IShellSurfaceAdapter
         IReadOnlyList<IShellSurfaceSupport> supports, out Vec3D point)
     {
         point = default;
-        if (supports.Count == 0 || supports.Count > 3) return false;
+        if (supports.Count == 0) return false;
         var planes = new List<(Vec3D Point, Vec3D Normal)>();
         foreach (var support in supports)
             if (!TryTangent(support, sourceVertex, sourcePoint, out var tangent)) return false;
@@ -393,15 +393,53 @@ public sealed class MeshShellSurfaceAdapter : IShellSurfaceAdapter
             return PlanarShellSurfaceAdapter.IsFinite(point);
         }
 
-        var p0 = planes[0]; var p1 = planes[1]; var p2 = planes[2];
-        var n1n2 = Vec3DOps.Cross(p1.Normal, p2.Normal);
-        double det = Vec3DOps.Dot(p0.Normal, n1n2);
-        if (Math.Abs(det) < 1e-10) return false;
-        double d0 = Vec3DOps.Dot(p0.Normal, p0.Point);
-        double d1 = Vec3DOps.Dot(p1.Normal, p1.Point);
-        double d2 = Vec3DOps.Dot(p2.Normal, p2.Point);
-        point = (n1n2 * d0 + Vec3DOps.Cross(p2.Normal, p0.Normal) * d1 +
-            Vec3DOps.Cross(p0.Normal, p1.Normal) * d2) / det;
+        if (planes.Count == 3)
+            return TryIntersect(planes[0], planes[1], planes[2], out point);
+
+        // A vertex can have more than three incident patches (for example, an
+        // icosahedron vertex). Solve the best-conditioned triple, then require
+        // every remaining tangent support to contain that same point. Do not
+        // pick an arbitrary triple and silently create a corner gap.
+        double bestDeterminant = 0;
+        Vec3D candidate = default;
+        for (int i = 0; i < planes.Count - 2; i++)
+            for (int j = i + 1; j < planes.Count - 1; j++)
+                for (int k = j + 1; k < planes.Count; k++)
+                {
+                    var cross = Vec3DOps.Cross(planes[j].Normal, planes[k].Normal);
+                    double determinant = Vec3DOps.Dot(planes[i].Normal, cross);
+                    if (Math.Abs(determinant) <= Math.Abs(bestDeterminant) ||
+                        !TryIntersect(planes[i], planes[j], planes[k], out var intersection)) continue;
+                    bestDeterminant = determinant;
+                    candidate = intersection;
+                }
+        if (bestDeterminant == 0) return false;
+
+        double scale = Math.Max(1, sourcePoint.Length());
+        double tolerance = 1e-8 * scale;
+        foreach (var plane in planes)
+            if (Math.Abs(Vec3DOps.Dot(plane.Normal, candidate - plane.Point)) > tolerance)
+                return false;
+        point = candidate;
+        return true;
+    }
+
+    private static bool TryIntersect((Vec3D Point, Vec3D Normal) a,
+        (Vec3D Point, Vec3D Normal) b, (Vec3D Point, Vec3D Normal) c,
+        out Vec3D point)
+    {
+        var bCrossC = Vec3DOps.Cross(b.Normal, c.Normal);
+        double determinant = Vec3DOps.Dot(a.Normal, bCrossC);
+        if (Math.Abs(determinant) < 1e-10)
+        {
+            point = default;
+            return false;
+        }
+        double da = Vec3DOps.Dot(a.Normal, a.Point);
+        double db = Vec3DOps.Dot(b.Normal, b.Point);
+        double dc = Vec3DOps.Dot(c.Normal, c.Point);
+        point = (bCrossC * da + Vec3DOps.Cross(c.Normal, a.Normal) * db +
+            Vec3DOps.Cross(a.Normal, b.Normal) * dc) / determinant;
         return PlanarShellSurfaceAdapter.IsFinite(point);
     }
 

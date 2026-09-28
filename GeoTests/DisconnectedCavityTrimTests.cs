@@ -3,6 +3,32 @@ using GeoCore;
 namespace GeoTests;
 public class DisconnectedCavityTrimTests
 {
+    [Fact]
+    public void VolumeTrimRejectsCutterThatEndsInsideSolid()
+    {
+        List<Rat3Hybrid> points =
+        [
+            new(0, 0, 0), new(10, 0, 0), new(10, 10, 0), new(0, 10, 0),
+            new(0, 0, 10), new(10, 0, 10), new(10, 10, 10), new(0, 10, 10)
+        ];
+        List<Tri> triangles =
+        [
+            new(0, 2, 1), new(0, 3, 2), new(4, 5, 6), new(4, 6, 7),
+            new(0, 1, 5), new(0, 5, 4), new(1, 2, 6), new(1, 6, 5),
+            new(2, 3, 7), new(2, 7, 6), new(3, 0, 4), new(3, 4, 7)
+        ];
+        List<Rat3Hybrid> cutter =
+        [
+            new(5, -1, -1), new(5, 5, -1), new(5, 5, 11), new(5, -1, 11)
+        ];
+
+        var error = Assert.Throws<InvalidOperationException>(() => Resolver.Resolve(
+            BooleanOp.AAsVolumeBAsTrimSurfaceRemoveInTriNormalDirection,
+            points, triangles, cutter, [new Tri(0, 1, 2), new Tri(0, 2, 3)],
+            out _, out _, out _));
+        Assert.Contains("Partial cut detected", error.Message);
+    }
+
     [Theory]
     [InlineData(false,3,false,true)]
     [InlineData(true,3,false,true)]

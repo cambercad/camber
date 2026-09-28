@@ -12,33 +12,13 @@ namespace Geo
         public MeshNormalUV Mesh;
         public List<GroupEdge> GroupEdges; //These are the anchors (plus their end points and mid points)
 
-        private List<GroupEdge> edgeReferenceSnapshot;
-        private Guid edgeReferenceScope;
-
-        internal Guid CurrentEdgeReferenceScope
-        {
-            get
-            {
-                if (!ReferenceEquals(edgeReferenceSnapshot, GroupEdges))
-                {
-                    edgeReferenceSnapshot = GroupEdges;
-                    edgeReferenceScope = Guid.NewGuid();
-                }
-                return edgeReferenceScope;
-            }
-        }
-
-        /// <summary>
-        /// Return a selectable feature edge. Ambiguous diagnostic names are
-        /// qualified for this exact mesh snapshot; reacquire them after rebuilding.
-        /// Authored unambiguous provenance names remain ordinary strings.
-        /// </summary>
+        /// <summary>Return the unique current name of a selectable edge.</summary>
         public string GetEdgeReference(int index)
         {
             EnsureCoplanarPostProcessed();
             if (index < 0 || index >= GroupEdges.Count)
                 throw new ArgumentOutOfRangeException(nameof(index));
-            return FaceLineageEdges.Reference(this, GroupEdges[index]);
+            return GroupEdges[index].Name;
         }
 
         public Dictionary<string, int> extendedNameToGroupId;
@@ -167,6 +147,7 @@ namespace Geo
             if (preserveTriangulation)
             {
                 ValidateLineageReferences(Mesh.GetTriangleGroups());
+                EnsureUniqueCurrentPatchNames(Mesh.GetTriangleGroups());
                 GroupEdges = GroupEdgeExtractor.ExtractGroupEdges(
                     Mesh.Triangles, Mesh.GetTriangleGroups(), Mesh.Positions, null,
                     groupIdToExtendedName, surfaceMetaData, PreferLexClosedLoopStarts);
@@ -393,10 +374,9 @@ namespace Geo
                 Mesh.SetTriangleGroups(groupIdPerTriangle);
             }
             ValidateLineageReferences(groupIdPerTriangle);
+            EnsureUniqueCurrentPatchNames(groupIdPerTriangle);
 
 
-            // Fusion and splits may leave the reverse map stale — rebuild from survivors.
-            extendedNameToGroupId = EntityNaming.BuildNameToGroupId(groupIdToExtendedName);
         }
 
         /// <summary>
@@ -990,17 +970,6 @@ namespace Geo
             ValidateEntityReference(name);
             name = name.Trim();
             result = default;
-            if (EntityNaming.TryParseGroupEdgeAddress(name, out var address, requireFullMatch: true))
-            {
-                if (extendedNameToGroupId.TryGetValue(address.PatchA, out int groupIdA) &&
-                    extendedNameToGroupId.TryGetValue(address.PatchB, out int groupIdB))
-                {
-                    result = GetEdge(groupIdA, groupIdB, address.EdgeIndex);
-                    if (result != null)
-                        return true;
-                }
-            }
-
             if (GroupEdges == null)
                 return false;
 
@@ -1379,10 +1348,41 @@ namespace Geo
                     if (ambiguous)
                     {
                         AmbiguousFaceReferences.Add(lineage.Reference);
-                        AmbiguousFaceReferences.Add(groupIdToExtendedName[id]);
                     }
                 }
             }
+        }
+
+        private void EnsureUniqueCurrentPatchNames(List<int> groups)
+        {
+            // An obsolete ancestor may still be the stored label of one split
+            // component. Give that component its own address before publishing
+            // patches/edges; provenance aliases remain available only when unique.
+            var reserved = new HashSet<string>(groupIdToExtendedName.Values, StringComparer.Ordinal);
+            reserved.UnionWith(AmbiguousFaceReferences);
+            var orderedIds = new List<int>(new HashSet<int>(groups));
+            orderedIds.Sort();
+            foreach (int id in orderedIds)
+            {
+                if (!FaceLineages.TryGetValue(id, out var lineage) || !lineage.Split ||
+                    !groupIdToExtendedName.TryGetValue(id, out string previous) ||
+                    !AmbiguousFaceReferences.Contains(previous))
+                    continue;
+                string basis = lineage.Roots.Count == 1 && lineage.Separators.Count == 0
+                    ? lineage.Roots[0] : lineage.Reference;
+                string current = basis;
+                int suffix = 1;
+                while (reserved.Contains(current))
+                    current = EntityNaming.FormatPatchComponentName(basis, suffix++);
+                reserved.Add(current);
+                groupIdToExtendedName[id] = current;
+                if (surfaceMetaData.TryGetValue(previous, out var metadata))
+                {
+                    surfaceMetaData[current] = metadata?.Clone();
+                    surfaceMetaData.Remove(previous);
+                }
+            }
+            extendedNameToGroupId = EntityNaming.BuildNameToGroupId(groupIdToExtendedName);
         }
 
         internal string ResolveLocalPatchNamePublic(string reference) => ResolveLocalPatchName(reference);
@@ -1390,10 +1390,10 @@ namespace Geo
         /// <summary>Current, selectable name for a surface patch group.</summary>
         public string GetCurrentPatchName(int groupId)
         {
-            string name = groupIdToExtendedName != null && groupIdToExtendedName.TryGetValue(groupId, out var local) && !string.IsNullOrEmpty(local)
-                ? local : "group_" + groupId;
-            return AmbiguousFaceReferences.Contains(name) && FaceLineages.TryGetValue(groupId, out var lineage)
-                ? lineage.Reference + "#current=" + groupId : name;
+            EnsureCoplanarPostProcessed();
+            if (groupIdToExtendedName == null || !groupIdToExtendedName.TryGetValue(groupId, out var name))
+                throw new ArgumentOutOfRangeException(nameof(groupId));
+            return name;
         }
 
         private string ResolveLocalPatchName(string reference)
@@ -1445,12 +1445,6 @@ namespace Geo
             patchName = null;
             if (FaceLineages == null || string.IsNullOrWhiteSpace(reference))
                 return false;
-            const string marker = "#current=";
-            int markerIndex = reference.LastIndexOf(marker, StringComparison.Ordinal);
-            if (markerIndex >= 0 && int.TryParse(reference.Substring(markerIndex + marker.Length), out int id)
-                && FaceLineages.TryGetValue(id, out var marked)
-                && string.Equals(marked.Reference, reference.Substring(0, markerIndex), StringComparison.Ordinal))
-                return groupIdToExtendedName.TryGetValue(id, out patchName);
             int match = -1;
             foreach (var pair in FaceLineages)
             {

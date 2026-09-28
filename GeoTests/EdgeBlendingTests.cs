@@ -200,5 +200,99 @@ public class EdgeBlendingTests
 
         TestVisualization.Visualize(api, nameof(BlendEdges_UnionOfCuboids_VolumeIsStable));
     }
+
+    [Fact]
+    public void AllThirtyEdgesOfSewnIcosahedronCanBeRoundedAtFiveWayCorners()
+    {
+        var api = new GeoAPI(new Box3D(new Vec3D(-10), new Vec3D(20)), .001);
+        double phi = (1 + Math.Sqrt(5)) / 2;
+        var vertices = new List<Vec3D>();
+        foreach (double a in new[] { -1.0, 1.0 })
+            foreach (double b in new[] { -1.0, 1.0 }) vertices.Add(new Vec3D(0, a, b * phi));
+        foreach (double a in new[] { -1.0, 1.0 })
+            foreach (double b in new[] { -1.0, 1.0 }) vertices.Add(new Vec3D(a, b * phi, 0));
+        foreach (double a in new[] { -1.0, 1.0 })
+            foreach (double b in new[] { -1.0, 1.0 }) vertices.Add(new Vec3D(a * phi, 0, b));
+        double scale = 8 / vertices.Max(point => point.Length());
+        vertices = vertices.Select(point => point * scale).ToList();
+
+        double shortest = double.PositiveInfinity;
+        for (int i = 0; i < vertices.Count; i++)
+            for (int j = i + 1; j < vertices.Count; j++)
+                shortest = Math.Min(shortest, (vertices[i] - vertices[j]).LengthSquared());
+        var faces = new List<AnchorMesh>();
+        int faceIndex = 0;
+        for (int a = 0; a < vertices.Count; a++)
+            for (int b = a + 1; b < vertices.Count; b++)
+                for (int c = b + 1; c < vertices.Count; c++)
+                {
+                    if (Math.Abs((vertices[a] - vertices[b]).LengthSquared() - shortest) > 1e-8 ||
+                        Math.Abs((vertices[b] - vertices[c]).LengthSquared() - shortest) > 1e-8 ||
+                        Math.Abs((vertices[c] - vertices[a]).LengthSquared() - shortest) > 1e-8) continue;
+                    faces.Add(api.CreateFromTriangles(new() { vertices[a], vertices[b], vertices[c] },
+                        new() { new Tri(0, 1, 2) }, $"icosa_face_{faceIndex++}"));
+                }
+
+        Assert.Equal(20, faces.Count);
+        var body = api.Sew(faces, makeSolid: true, name: "icosahedron");
+        var graph = new EdgeGraph(body.Mesh.Triangles, body.Mesh.GetTriangleGroups(),
+            body.Mesh.Positions, body.Mesh.PrecisionPositions, body.groupIdToExtendedName);
+        Assert.Equal(30, graph.Edges.Count);
+
+        var rounded = api.Fillet(body, graph.Edges.Select(edge => edge.Name).ToList(), .1, .001,
+            "rounded_icosahedron");
+
+        MeshTestHelpers.AssertValidMesh(rounded.Mesh.Positions, rounded.Mesh.Triangles);
+        Assert.True(MeshAnalysis.IsWatertightMesh(rounded.Mesh.PrecisionPositions, rounded.Mesh.Triangles));
+        double originalVolume = ComputeMeshVolume(body.Mesh);
+        double roundedVolume = ComputeMeshVolume(rounded.Mesh);
+        Assert.InRange(roundedVolume, originalVolume * .99, originalVolume);
+        Assert.Equal(30, rounded.groupIdToExtendedName.Values.Count(name => name.StartsWith(
+            "BlendEdge_", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void AllTwelveEdgesOfSewnOctahedronCanBeRoundedAtFourWayCorners()
+    {
+        var api = new GeoAPI(new Box3D(new Vec3D(-10), new Vec3D(20)), .001);
+        var vertices = new List<Vec3D>
+        {
+            new(8, 0, 0), new(-8, 0, 0), new(0, 8, 0),
+            new(0, -8, 0), new(0, 0, 8), new(0, 0, -8)
+        };
+        double shortest = double.PositiveInfinity;
+        for (int i = 0; i < vertices.Count; i++)
+            for (int j = i + 1; j < vertices.Count; j++)
+                shortest = Math.Min(shortest, (vertices[i] - vertices[j]).LengthSquared());
+
+        var faces = new List<AnchorMesh>();
+        int faceIndex = 0;
+        for (int a = 0; a < vertices.Count; a++)
+            for (int b = a + 1; b < vertices.Count; b++)
+                for (int c = b + 1; c < vertices.Count; c++)
+                {
+                    if (Math.Abs((vertices[a] - vertices[b]).LengthSquared() - shortest) > 1e-8 ||
+                        Math.Abs((vertices[b] - vertices[c]).LengthSquared() - shortest) > 1e-8 ||
+                        Math.Abs((vertices[c] - vertices[a]).LengthSquared() - shortest) > 1e-8) continue;
+                    faces.Add(api.CreateFromTriangles(new() { vertices[a], vertices[b], vertices[c] },
+                        new() { new Tri(0, 1, 2) }, $"octa_face_{faceIndex++}"));
+                }
+
+        Assert.Equal(8, faces.Count);
+        var body = api.Sew(faces, makeSolid: true, name: "octahedron");
+        var graph = new EdgeGraph(body.Mesh.Triangles, body.Mesh.GetTriangleGroups(),
+            body.Mesh.Positions, body.Mesh.PrecisionPositions, body.groupIdToExtendedName);
+        Assert.Equal(12, graph.Edges.Count);
+
+        var rounded = api.Fillet(body, graph.Edges.Select(edge => edge.Name).ToList(), .1, .001,
+            "rounded_octahedron");
+
+        MeshTestHelpers.AssertValidMesh(rounded.Mesh.Positions, rounded.Mesh.Triangles);
+        Assert.True(MeshAnalysis.IsWatertightMesh(rounded.Mesh.PrecisionPositions, rounded.Mesh.Triangles));
+        double originalVolume = ComputeMeshVolume(body.Mesh);
+        double roundedVolume = ComputeMeshVolume(rounded.Mesh);
+        Assert.InRange(roundedVolume, originalVolume * .99, originalVolume);
+    }
+
 }
 

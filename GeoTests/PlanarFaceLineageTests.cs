@@ -101,8 +101,8 @@ public class PlanarFaceLineageTests : IDisposable
         foreach (int x in new[] { 2, 5, 8 })
         {
             var slot = Slot(api, "instance" + x, x);
-            // Repeated occurrences of one authored tool share its face creation
-            // roots. No spatial or instance ordinal is invented to distinguish them.
+            // Repeated occurrences of one authored tool share face creation
+            // roots, so current components must receive distinct names.
             foreach (var pair in slot.groupIdToExtendedName)
                 slot.FaceLineages[pair.Key] = new FaceLineage(new[] { pair.Value.Replace("instance" + x, "repeated_slot") });
             tool = tool == null ? slot : api.Boolean(tool, slot, BooleanOp.Union);
@@ -112,12 +112,12 @@ public class PlanarFaceLineageTests : IDisposable
         MeshPipelineTestHelpers.AssertWatertightAllowTouch(result.Mesh);
         var ambiguous = "base-ExtrudeTop{repeated_slot-Line2&repeated_slot-Line4}";
         var body = api.GetAssembly("ambiguous").AddPart(result, new Vec3D(0));
-        // A lineage label can be unambiguous in this particular result.  The
-        // current patch name is always the stable selection token presented to
-        // users, so exercise that path rather than requiring a failure solely
-        // because its ancestors were repeated.
+        // Select the current component, not its potentially ambiguous ancestor.
         int patch = result.FaceLineages.First(pair => pair.Value.Reference == ambiguous).Key;
-        Assert.NotNull(body.AddPlaneDatum(result.GetCurrentPatchName(patch)));
+        string currentPatch = result.GetCurrentPatchName(patch);
+        Assert.DoesNotContain("#current=", currentPatch);
+        Assert.DoesNotContain("unresolved:", currentPatch);
+        Assert.NotNull(body.AddPlaneDatum(currentPatch));
         foreach (var copy in new[] {
             api.CopyMeshAsInstance(result, "ambiguous_instance"),
             api.PatternLinear(result, 2, new Vec3D(0, 0, 4), "ambiguous_pattern")[1],
@@ -132,7 +132,10 @@ public class PlanarFaceLineageTests : IDisposable
             {
                 // Every visible current patch name remains valid and selectable.
                 foreach (var item in group)
+                {
+                    Assert.DoesNotContain("#current=", copy.GetCurrentPatchName(item.Key));
                     copy.ValidateEntityReference(copy.groupIdToExtendedName[item.Key]);
+                }
             }
             MeshPipelineTestHelpers.AssertWatertightAllowTouch(copy.Mesh);
         }

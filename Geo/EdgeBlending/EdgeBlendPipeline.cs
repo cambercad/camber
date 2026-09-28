@@ -459,7 +459,7 @@ namespace Geo
 
             blendEdges = CreateBlendEdges(graphEdgesToBlend, profile.OffsetDistance);
             originalSurfaces = GetOriginalSurfaces(blendTopology, blendEdges);
-            var analyticCorners = FindAnalyticCorners(mesh, graphEdgesToBlend, profile.OffsetDistance, cc);
+            var resolvedCorners = FindResolvableCorners(mesh, graphEdgesToBlend, profile.OffsetDistance, cc);
 
             Dictionary<int, UVSurface> openCornerTrimSurfaces = new Dictionary<int, UVSurface>();
             Dictionary<int, SurfaceMetaData> openCornerTrimSurfacesMetaData = new Dictionary<int, SurfaceMetaData>();
@@ -513,7 +513,7 @@ namespace Geo
                 ref groupIdOffset,
                 openCornerTrimSurfaces,
                 openCornerTrimSurfacesMetaData, collapsedContacts, collapsedSurfaces,
-                FindClosedSupportCaps(blendEdges), analyticCorners, out var patches, allocateGroupIds);
+                FindClosedSupportCaps(blendEdges), resolvedCorners, out var patches, allocateGroupIds);
             int startingGroupId = groupIdOffset - patches.Count;
 
             Dictionary<int, string> completeGroupMapping = new Dictionary<int, string>(mesh.groupIdToExtendedName);
@@ -699,10 +699,9 @@ namespace Geo
         }
 
         // Three supports define one corner. Pairwise fillet construction does not
-        // imply a common endpoint: compute one triple-support junction and reuse
-        // it on every incident strip. The current analytic resolver is limited to
-        // one cylinder meeting two planes; other junction kinds use the normal path.
-        private static Dictionary<int, (Vec3D Center, HashSet<int> Groups)> FindAnalyticCorners(
+        // imply a common endpoint: resolve one shared junction through the same
+        // support adapters used by offset construction, then reuse it on each strip.
+        private static Dictionary<int, (Vec3D Center, HashSet<int> Groups)> FindResolvableCorners(
             AnchorMesh mesh, List<GraphEdge> edges, double radius, CoordinateConverter cc)
         {
             var answer = new Dictionary<int, (Vec3D, HashSet<int>)>();
@@ -710,21 +709,14 @@ namespace Geo
             var registry = ShellSurfaceRegistry.AnalyticV1;
             foreach (var node in edges.SelectMany(edge => new[] { edge.StartNode, edge.EndNode }).Distinct())
             {
-                if (node.ConnectedEdges.Count(edge => selected.Contains(edge.Name)) != 3) continue;
+                int selectedDegree = node.ConnectedEdges.Count(edge => selected.Contains(edge.Name));
+                if (selectedDegree < 3) continue;
                 // This adapter's positive distance means inward, matching the
                 // profile offset used when the blend spine is constructed.
                 double offset = node.ConnectedEdges.First(edge => selected.Contains(edge.Name)).BlendType == EdgeBlendType.Convex
                     ? radius : -radius;
                 var groups = node.ConnectedEdges.SelectMany(edge => new[] { edge.GroupIdA, edge.GroupIdB }).ToHashSet();
-                if (groups.Count != 3) continue;
-                int cylinderCount = 0, planeCount = 0;
-                foreach (int group in groups)
-                {
-                    var meta = mesh.surfaceMetaData[mesh.groupIdToExtendedName[group]];
-                    if (meta.CylinderParams != null) cylinderCount++;
-                    else if (meta.PlaneParams != null) planeCount++;
-                }
-                if (cylinderCount != 1 || planeCount != 2) continue;
+                if (groups.Count < 3) continue;
                 var supports = new List<IShellSurfaceSupport>();
                 foreach (int id in groups)
                 {
@@ -740,8 +732,14 @@ namespace Geo
                     if (adapter == null) { supports.Clear(); break; }
                     supports.Add(adapter.CreateOffsetSupport(meta, surface, normal, offset, cc));
                 }
-                if (supports.Count == 3 && registry.TryResolveVertex(-1, node.Position, supports, 1e-8, out var center))
+                if (supports.Count >= 3 && registry.TryResolveVertex(-1, node.Position, supports, 1e-8, out var center))
                     answer[node.Id] = (center, groups);
+                else if (selectedDegree > 3)
+                    // Even when a high-valence offset has no exact common miter,
+                    // retain its incident-support set. The strips must be closed
+                    // by their shared corner boundary, not trimmed against one
+                    // another's nearly parallel infinite extensions.
+                    answer[node.Id] = (node.Position, groups);
             }
             return answer;
         }
@@ -886,7 +884,7 @@ namespace Geo
             Dictionary<BlendEdge, List<Rat3Hybrid>> collapsedContacts,
             HashSet<int> collapsedSurfaces,
             Dictionary<BlendEdge,List<(UVSurface Surface,SurfaceMetaData Metadata)>> closedSupportCaps,
-            Dictionary<int, (Vec3D Center, HashSet<int> Groups)> analyticCorners,
+            Dictionary<int, (Vec3D Center, HashSet<int> Groups)> resolvedCorners,
             out List<(string Name, SurfaceMetaData Metadata)> patches,
             Func<int, int> allocateGroupIds)
         {
@@ -911,25 +909,62 @@ namespace Geo
             // representation, not on the underlying continuous curved surface.
             // Project the common offset point back to each source support once;
             // independently recomputing pairwise contacts is what creates seams.
-            var exactCorners = new Dictionary<int, (Rat3Hybrid Center, Dictionary<int, Rat3Hybrid> Contacts)>();
-            foreach (var (cornerId, corner) in analyticCorners)
+            var exactCorners = new Dictionary<int,
+                (Rat3Hybrid Center, Dictionary<int, Rat3Hybrid> Contacts, bool IsExact)>();
+            foreach (var (cornerId, corner) in resolvedCorners)
             {
                 int[] groups = corner.Groups.OrderBy(id => id).ToArray();
-                if (groups.Length == 3 && TryTripleSupportIntersection(
-                    allElargedOffsetSurfaces[groups[0]], allElargedOffsetSurfaces[groups[1]],
-                    allElargedOffsetSurfaces[groups[2]], corner.Center, cc, out var point))
+                Rat3Hybrid point = default;
+                bool tripleFound = groups.Length >= 3 && TryMultiSupportIntersection(groups,
+                    allElargedOffsetSurfaces, corner.Center, cc, out point);
+                var contacts = new Dictionary<int, Rat3Hybrid>(groups.Length);
+                bool sharedContact = tripleFound;
+                if (sharedContact)
                 {
-                    var contacts = new Dictionary<int, Rat3Hybrid>(3);
                     foreach (int group in groups)
                     {
                         if (!TryProjectOffsetContact(allElargedOffsetSurfaces[group],
                             allElargedSurfaces[group], point, out var contact))
-                            throw new InvalidOperationException(
-                                $"Fillet corner {cornerId} has no exact contact on support {group}.");
+                        {
+                            sharedContact = false;
+                            break;
+                        }
                         contacts.Add(group, contact);
                     }
-                    exactCorners.Add(cornerId, (point, contacts));
                 }
+
+                if (sharedContact)
+                {
+                    exactCorners.Add(cornerId, (point, contacts, true));
+                    continue;
+                }
+
+                // Mesh offsets quantize each vertex independently, so five
+                // nominally concurrent planar supports may miss one another by
+                // a few lattice units. Give every incident strip one canonical
+                // exact contact per support instead of cutting each strip with
+                // its own approximate corner plane. Projection stays rational;
+                // the explicit deviation check bounds the geometric correction.
+                if (profile is not FilletProfile) continue;
+                var roundedCenter = cc.Convert(corner.Center);
+                point = new Rat3Hybrid(roundedCenter.X, roundedCenter.Y, roundedCenter.Z);
+                contacts.Clear();
+                sharedContact = true;
+                foreach (int group in groups)
+                {
+                    Rat3Hybrid contact = default;
+                    if (!allElargedOffsetSurfaces.TryGetValue(group, out var offsetSurface) ||
+                        !allElargedSurfaces.TryGetValue(group, out var sourceSurface) ||
+                        !TryProjectPlanarOffsetContact(offsetSurface, sourceSurface, point, cc,
+                            maxDiscretizationDeviation, out contact))
+                    {
+                        sharedContact = false;
+                        break;
+                    }
+                    contacts.Add(group, contact);
+                }
+                if (sharedContact)
+                    exactCorners.Add(cornerId, (point, contacts, false));
             }
 
             Dictionary<int, UVSurface> extendedOpenCornerTrimSurfaces = new Dictionary<int, UVSurface>();
@@ -973,8 +1008,26 @@ namespace Geo
                 var anchoredEnds = new List<bool>(2);
                 foreach (int cornerId in new[] { blendEdge.StartCornerId, blendEdge.EndCornerId }.Distinct())
                     if (exactCorners.TryGetValue(cornerId, out var corner))
-                        anchoredEnds.Add(blendEdge.AnchorCorner(cornerId, corner.Center,
+                    {
+                        Rat3Hybrid anchorCenter = corner.Center;
+                        if (!corner.IsExact)
+                        {
+                            if (!blendEdge.TryProjectCornerCenter(corner.Center,
+                                maxDiscretizationDeviation, out anchorCenter, out double centerError))
+                                throw new InvalidOperationException(
+                                    $"Fillet corner {cornerId} misses edge '{blendEdge.SourceEdge.Name}' spine by " +
+                                    $"{centerError:G6}, beyond the requested deviation {maxDiscretizationDeviation:G6}.");
+                            double radiusError = Math.Max(
+                                Math.Abs((cc.Convert(corner.Contacts[blendEdge.SurfaceIndexA]) - cc.Convert(anchorCenter)).Length() - blendEdge.BlendRadius),
+                                Math.Abs((cc.Convert(corner.Contacts[blendEdge.SurfaceIndexB]) - cc.Convert(anchorCenter)).Length() - blendEdge.BlendRadius));
+                            if (radiusError > maxDiscretizationDeviation)
+                                throw new InvalidOperationException(
+                                    $"Fillet corner {cornerId} cannot share exact strip endpoints within the requested deviation " +
+                                    $"(radius {radiusError:G6}, limit {maxDiscretizationDeviation:G6}).");
+                        }
+                        anchoredEnds.Add(blendEdge.AnchorCorner(cornerId, anchorCenter,
                             corner.Contacts[blendEdge.SurfaceIndexA], corner.Contacts[blendEdge.SurfaceIndexB]));
+                    }
 
                 profile.BuildStripSurface(blendEdge, cc, maxDiscretizationDeviation);
                 foreach (bool first in anchoredEnds) blendEdge.RegisterCornerArc(first);
@@ -985,18 +1038,18 @@ namespace Geo
                     var surfId = v.Key;
                     if (collapsedSurfaces.Contains(surfId) || surfId == blendEdge.SurfaceIndexA || surfId == blendEdge.SurfaceIndexB)
                         continue;
-                    if ((analyticCorners.TryGetValue(blendEdge.StartCornerId, out var startCorner) && startCorner.Groups.Contains(surfId)) ||
-                        (analyticCorners.TryGetValue(blendEdge.EndCornerId, out var endCorner) && endCorner.Groups.Contains(surfId)))
+                    if ((resolvedCorners.TryGetValue(blendEdge.StartCornerId, out var startCorner) && startCorner.Groups.Contains(surfId)) ||
+                        (resolvedCorners.TryGetValue(blendEdge.EndCornerId, out var endCorner) && endCorner.Groups.Contains(surfId)))
                         continue;
                     try { blendEdge.TrimByOffsetSurface(blendEdge.PerpendicularCornerTrimSurface(v.Value)); }
                     catch (Exception ex)
                     {
-                        throw new InvalidOperationException($"Fillet edge '{blendEdge.SourceEdge.Name}' failed trimming by support {surfId}; analytic corners {analyticCorners.Count}.", ex);
+                        throw new InvalidOperationException($"Fillet edge '{blendEdge.SourceEdge.Name}' failed trimming by support {surfId}; resolved corners {resolvedCorners.Count}.", ex);
                     }
                 }
 
                 foreach (int cornerId in new[] { blendEdge.StartCornerId, blendEdge.EndCornerId }.Distinct())
-                    if (analyticCorners.TryGetValue(cornerId, out var corner) && !exactCorners.ContainsKey(cornerId))
+                    if (resolvedCorners.TryGetValue(cornerId, out var corner) && !exactCorners.ContainsKey(cornerId))
                     {
                         try
                         {
@@ -1012,10 +1065,7 @@ namespace Geo
                 if (blendEdge.BlendType == EdgeBlendType.Convex)
                 {
                     blendEdge.TrimBySurface(extendedOpenCornerTrimSurfaces, extensionOnlyOpenCornerTrimSurfaces);
-                    // Keep analytic-junction strips complete so their shared
-                    // corner boundary is assembled before the final volume cut.
-                    if (analyticCorners.Count == 0)
-                        blendEdge.TrimByVolume(fullMesh, cc);
+                    blendEdge.TrimByVolume(fullMesh, cc);
                 }
                 else
                     blendEdge.TrimBySurface(extendedOpenCornerTrimSurfaces, extensionOnlyOpenCornerTrimSurfaces);
@@ -1053,11 +1103,14 @@ namespace Geo
 
             List<List<Rat3Hybrid>> edgeTerminationArcs = new List<List<Rat3Hybrid>>();
             var arcOwners = new List<string>();
+            var arcOwnerEdges = new List<BlendEdge>();
             foreach (var e in blendEdges)
             {
                 e.RefreshTrimArcs();
                 edgeTerminationArcs.AddRange(e.TrimArcs);
                 arcOwners.AddRange(Enumerable.Repeat(e.SourceEdge.Name, e.TrimArcs.Count));
+                for (int i = 0; i < e.TrimArcs.Count; ++i)
+                    arcOwnerEdges.Add(e);
             }
 
             var res = SegmentConnector.Connect(
@@ -1074,7 +1127,7 @@ namespace Geo
                 {
                     if (!closed[i])
                     {
-                        string owners = string.Join(", ", res[i].Select(index => arcOwners[index]).Distinct());
+                        string owners = string.Join(", ", res[i].Select(index => arcOwners[Math.Abs(index)]).Distinct());
                         throw new InvalidOperationException(
                             $"Spherical corner boundary arcs did not form a closed loop (source edges: {owners}).");
                     }
@@ -1083,25 +1136,33 @@ namespace Geo
                     List<Vec3D> cornerOutlineV3 = cc.Convert(cornerOutline);
 
                     Vec3D? exactSphereCenter = null;
-                    if (analyticCorners.Count > 0)
+                    int firstCandidate = -1, secondCandidate = -1;
+                    bool firstArc = true;
+                    foreach (int arcIndex in res[i])
                     {
-                        Vec3D centroid = new(0);
-                        foreach (var point in cornerOutlineV3) centroid += point;
-                        centroid /= cornerOutlineV3.Count;
-                        double closestDistance = double.PositiveInfinity;
-                        foreach (var (cornerId, analyticCorner) in analyticCorners)
+                        var owner = arcOwnerEdges[Math.Abs(arcIndex)];
+                        if (firstArc)
                         {
-                            Vec3D center = exactCorners.TryGetValue(cornerId, out var exact)
-                                ? cc.Convert(exact.Center) : analyticCorner.Center;
-                            double distance = (center - centroid).LengthSquared();
-                            if (distance < closestDistance)
-                            {
-                                closestDistance = distance;
-                                exactSphereCenter = center;
-                            }
+                            firstCandidate = owner.StartCornerId;
+                            secondCandidate = owner.EndCornerId;
+                            firstArc = false;
+                            continue;
                         }
-                        if (closestDistance > 9 * profile.OffsetDistance * profile.OffsetDistance)
-                            exactSphereCenter = null;
+                        if (firstCandidate != owner.StartCornerId && firstCandidate != owner.EndCornerId)
+                            firstCandidate = -1;
+                        if (secondCandidate != owner.StartCornerId && secondCandidate != owner.EndCornerId)
+                            secondCandidate = -1;
+                    }
+                    int? ownerCornerId = firstCandidate >= 0 && secondCandidate < 0 ? firstCandidate :
+                        secondCandidate >= 0 && firstCandidate < 0 ? secondCandidate :
+                        firstCandidate == secondCandidate && firstCandidate >= 0 ? firstCandidate : null;
+                    bool resolvedCorner = false;
+                    if (ownerCornerId.HasValue &&
+                        resolvedCorners.TryGetValue(ownerCornerId.Value, out var resolved))
+                    {
+                        resolvedCorner = true;
+                        exactSphereCenter = exactCorners.TryGetValue(ownerCornerId.Value, out var exact)
+                            ? cc.Convert(exact.Center) : resolved.Center;
                     }
 
                     var corner = profile.BuildCornerPatch(
@@ -1109,12 +1170,12 @@ namespace Geo
                         exactSphereCenter);
                     // Tessellation near a chordal support can extend outside
                     // the source shell. Clip corners just as the strips are clipped.
-                    // Exact analytic rolling-ball corners are already bounded
+                    // Exact common-support rolling-ball corners are already bounded
                     // by their common support intersection. Clipping their
                     // open tessellated caps through the volume can be partial
                     // by construction; the caller still checks the final
                     // rounded solid against the sharp offset envelope.
-                    if (blendType == EdgeBlendType.Convex && analyticCorners.Count == 0)
+                    if (blendType == EdgeBlendType.Convex && !resolvedCorner)
                     {
                         var cornerMesh = BlendEdge.ToMesh(corner, cc);
                         var clippedCorner = MeshNormalUV.BooleanOperation(cornerMesh, fullMesh,
@@ -1164,6 +1225,31 @@ namespace Geo
             return found;
         }
 
+        private static bool TryMultiSupportIntersection(IReadOnlyList<int> groups,
+            IReadOnlyDictionary<int, UVSurface> supports, Vec3D expected,
+            CoordinateConverter converter, out Rat3Hybrid point)
+        {
+            point = default;
+            double best = double.PositiveInfinity;
+            bool found = false;
+            for (int i = 0; i < groups.Count - 2; i++)
+                for (int j = i + 1; j < groups.Count - 1; j++)
+                    for (int k = j + 1; k < groups.Count; k++)
+                    {
+                        if (!supports.TryGetValue(groups[i], out var first) ||
+                            !supports.TryGetValue(groups[j], out var second) ||
+                            !supports.TryGetValue(groups[k], out var third) ||
+                            !TryTripleSupportIntersection(first, second, third, expected,
+                                converter, out var candidate)) continue;
+                        double distance = (converter.Convert(candidate) - expected).LengthSquared();
+                        if (distance >= best) continue;
+                        best = distance;
+                        point = candidate;
+                        found = true;
+                    }
+            return found;
+        }
+
         private static bool TryProjectOffsetContact(UVSurface offset, UVSurface source,
             Rat3Hybrid center, out Rat3Hybrid contact)
         {
@@ -1182,6 +1268,66 @@ namespace Geo
                 contact = source.PointsPrecise[triangle.A] * barycentric.X +
                     source.PointsPrecise[triangle.B] * barycentric.Y +
                     source.PointsPrecise[triangle.C] * barycentric.Z;
+                contact.Simplify();
+                return true;
+            }
+            return false;
+        }
+
+        private static bool TryProjectPlanarOffsetContact(UVSurface offset, UVSurface source,
+            Rat3Hybrid center, CoordinateConverter converter, double maxDeviation,
+            out Rat3Hybrid contact)
+        {
+            contact = default;
+            if (offset.PointsPrecise.Count != source.PointsPrecise.Count ||
+                source.Triangles.Count == 0 || !source.IsSurfacePlanar()) return false;
+
+            var vertices = new HashSet<int>();
+            foreach (var triangle in source.Triangles)
+            {
+                vertices.Add(triangle.A);
+                vertices.Add(triangle.B);
+                vertices.Add(triangle.C);
+            }
+            if (vertices.Count == 0) return false;
+
+            var translation = new Rat3Hybrid(0, 0, 0);
+            foreach (int vertex in vertices)
+                translation += offset.PointsPrecise[vertex] - source.PointsPrecise[vertex];
+            translation /= new BigRationalHybrid(vertices.Count);
+
+            // A mesh offset can differ from this canonical translation only by
+            // its coordinate discretization. Reject larger/nonuniform offsets;
+            // they need their own surface-specific corner construction.
+            foreach (int vertex in vertices)
+            {
+                var residual = offset.PointsPrecise[vertex] - source.PointsPrecise[vertex] - translation;
+                double error = (converter.Convert(residual) - converter.Convert(new Rat3Hybrid(0, 0, 0))).Length();
+                if (error > maxDeviation) return false;
+            }
+
+            var first = source.Triangles[0];
+            var a = source.PointsPrecise[first.A];
+            var normal = Rat3Hybrid.Cross(source.PointsPrecise[first.B] - a,
+                source.PointsPrecise[first.C] - a);
+            var normalLengthSquared = Rat3Hybrid.Dot(normal, normal);
+            if (normalLengthSquared.Sign() == 0) return false;
+            var offsetOrigin = a + translation;
+            var projected = center - normal *
+                (Rat3Hybrid.Dot(center - offsetOrigin, normal) / normalLengthSquared);
+            double planeError = (converter.Convert(center) - converter.Convert(projected)).Length();
+            if (planeError > maxDeviation) return false;
+
+            var candidate = projected - translation;
+            foreach (var triangle in source.Triangles)
+            {
+                var p0 = source.PointsPrecise[triangle.A];
+                var p1 = source.PointsPrecise[triangle.B];
+                var p2 = source.PointsPrecise[triangle.C];
+                var barycentric = CSG.Intersector.ComputeBarycentricCoordinates(candidate, p0, p1, p2);
+                if (barycentric.X.Sign() < 0 || barycentric.Y.Sign() < 0 || barycentric.Z.Sign() < 0)
+                    continue;
+                contact = p0 * barycentric.X + p1 * barycentric.Y + p2 * barycentric.Z;
                 contact.Simplify();
                 return true;
             }

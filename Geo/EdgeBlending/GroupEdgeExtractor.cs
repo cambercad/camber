@@ -157,16 +157,23 @@ namespace Geo
                     SortGroupEdgesSpatially(groupEdgesForPair, points);
                 }
                 
-                // Add suffix to names for edges after the first one
+                // A bare pair denotes a relation, not component zero. When the
+                // pair has several components, number *all* of them so an
+                // unindexed query cannot silently pick the first one.
                 for (int i = 0; i < groupEdgesForPair.Count; i++)
                 {
-                    if (i > 0)
+                    if (groupEdgesForPair.Count > 1)
                     {
-                        groupEdgesForPair[i].Name = EntityNaming.FormatGroupEdgeName(groupName1, groupName2, i);
+                        groupEdgesForPair[i].Name = EntityNaming.FormatGroupEdgeName(groupName1, groupName2, i + 1);
                     }
                     result.Add(groupEdgesForPair[i]);
                 }
             }
+
+            var usedNames = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var edge in result)
+                if (!usedNames.Add(edge.Name))
+                    throw new NameCollisionException($"Duplicate current edge name '{edge.Name}'.");
 
             return result;
         }

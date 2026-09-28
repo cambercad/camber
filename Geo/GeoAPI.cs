@@ -2453,7 +2453,7 @@ Group/patch names from both inputs are merged (throws on group-id conflict for t
 
         [APIDescription(@"Fillet(mesh: AnchorMesh, edgeNamesToFillet: List[str], filletRadius: float, maxDeviation: float = -1, name: str = None) -> AnchorMesh
 Adds rolling-ball fillets along the named edges of `mesh`.
-  edgeNamesToFillet: edge identifiers between two surface patches; format ""[{patchA},{patchB}]"" (optional ""_index"" suffix when multiple components share the same pair).
+  edgeNamesToFillet: edge identifiers between two surface patches; format ""[{patchA},{patchB}]"" (all components use ""_1"", ""_2"", ... when a pair has multiple edges).
   filletRadius: fillet radius (world units).
   maxDeviation: chordal tolerance for the swept fillet surface; -1 uses the GeoAPI instance default.
 Returned mesh has new patches for each fillet surface (names prefixed ""BlendEdge_"" / ""BlendCorner_""). When `name` is omitted, the result keeps the input mesh name (replacing it in the registry) so `pipe = part.Fillet(pipe, ...)` remains addressable as `pipe-ExtrudeTop`. Throws if any edge name does not exist on `mesh`.")]
@@ -2483,7 +2483,7 @@ Returned mesh has new patches for each fillet surface (names prefixed ""BlendEdg
 
         [APIDescription(@"Chamfer(mesh: AnchorMesh, edgeNamesToChamfer: List[str], chamferDistance: float, maxDeviation: float = -1, name: str = None) -> AnchorMesh
 Adds symmetric edge chamfers along the named edges of `mesh`.
-  edgeNamesToChamfer: edge identifiers between two surface patches; format ""[{patchA},{patchB}]"" (optional ""_index"" suffix when multiple components share the same pair).
+  edgeNamesToChamfer: edge identifiers between two surface patches; format ""[{patchA},{patchB}]"" (all components use ""_1"", ""_2"", ... when a pair has multiple edges).
   chamferDistance: chamfer distance along each adjacent face (world units).
   maxDeviation: tessellation tolerance; -1 uses the GeoAPI instance default.
 Returned mesh has new patches for each chamfer surface (names prefixed ""ChamferEdge_"" / ""ChamferCorner_""). When `name` is omitted, the result keeps the input mesh name (replacing it in the registry) so `block = part.Chamfer(block, ...)` remains addressable as `block-ExtrudeTop`. Throws if any edge name does not exist on `mesh`.")]

@@ -20,12 +20,20 @@ namespace Geo
             Dictionary<int, int> oldToNewGroup, Dictionary<int, FaceLineage> copiedLineages,
             Dictionary<int, string> copiedNames)
         {
+            var referenceCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (var lineage in copiedLineages.Values)
+            {
+                referenceCounts.TryGetValue(lineage.Reference, out int count);
+                referenceCounts[lineage.Reference] = count + 1;
+            }
             foreach (var (oldId, newId) in oldToNewGroup)
             {
                 var lineage = copiedLineages[newId];
-                // Distinct diagnostic labels must stay distinct. Only an
-                // addressable structural name is regenerated from renamed atoms.
+                // Only a unique structural name can replace a copied current
+                // component label. Identical lineage is not identical topology.
                 if (lineage.Split && lineage.Supported &&
+                    referenceCounts[lineage.Reference] == 1 &&
+                    source.groupIdToExtendedName[oldId] == source.FaceLineages[oldId].Reference &&
                     !source.AmbiguousFaceReferences.Contains(source.groupIdToExtendedName[oldId]))
                     copiedNames[newId] = lineage.Reference;
             }

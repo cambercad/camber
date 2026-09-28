@@ -307,7 +307,22 @@ namespace Geo
             for (int root = 0; root < surfaces.Count; root++)
             {
                 if (orientation[root] >= 0 || links[root].Count == 0) continue;
-                orientation[root] = 0;
+                // The boundary graph fixes relative winding, not which side of
+                // each connected sheet is material. Seed that remaining sign
+                // from a nondegenerate patch triangle and its outward normal.
+                double strongest = 0;
+                var surface = surfaces[root];
+                foreach (var tri in surface.Triangles)
+                {
+                    var winding = Vec3DOps.Cross(surface.Points[tri.B] - surface.Points[tri.A],
+                        surface.Points[tri.C] - surface.Points[tri.A]);
+                    var normal = surface.Normals[tri.A] + surface.Normals[tri.B] + surface.Normals[tri.C];
+                    double alignment = Vec3DOps.Dot(winding, normal);
+                    if (Math.Abs(alignment) > Math.Abs(strongest)) strongest = alignment;
+                }
+                if (strongest == 0)
+                    throw new InvalidOperationException("Blend patch component has no oriented, nondegenerate root triangle.");
+                orientation[root] = strongest < 0 ? 1 : 0;
                 var queue = new Queue<int>();
                 queue.Enqueue(root);
                 while (queue.Count > 0)

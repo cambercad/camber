@@ -739,6 +739,9 @@ namespace CSG
                                           op == BooleanOp.AAsSurfaceBAsTrimSurfaceKeepInTriNormalDirection ||
                                           op == BooleanOp.AAsVolumeBAsTrimSurfaceRemoveInTriNormalDirection ||
                                           op == BooleanOp.AAsVolumeBAsTrimSurfaceKeepInTriNormalDirection;
+            bool isVolumeTrimSurfaceOperation =
+                op == BooleanOp.AAsVolumeBAsTrimSurfaceKeepInTriNormalDirection ||
+                op == BooleanOp.AAsVolumeBAsTrimSurfaceRemoveInTriNormalDirection;
 
             List<List<int>> clustersA = null;
             List<List<int>> clustersB = null;
@@ -759,13 +762,21 @@ namespace CSG
                     clustersA = Clusterize(newPoints.GetPoints(), insertedSegments, resultTrianglesJoined, 0, changeTriId);
                 });
                 a.Start();
-                Task b = new Task(delegate ()
+                Task b = null;
+                // Surface/surface trimming only classifies A. B is an oriented
+                // cutter, so clustering its subdivided fragments is unused and
+                // can reject legitimate mutually touching cutter contours.
+                if (!isTrimSurfaceOperation || isVolumeTrimSurfaceOperation)
                 {
-                    clustersB = Clusterize(newPoints.GetPoints(), insertedSegments, resultTrianglesJoined, changeTriId, resultTrianglesJoined.Count);
-                });
-                b.Start();
+                    b = new Task(delegate ()
+                    {
+                        clustersB = Clusterize(newPoints.GetPoints(), insertedSegments,
+                            resultTrianglesJoined, changeTriId, resultTrianglesJoined.Count);
+                    });
+                    b.Start();
+                }
                 a.Wait();
-                b.Wait();
+                b?.Wait();
             }
 
             bool isTrimVolumeOperation = op == BooleanOp.AAsSurfaceBAsTrimVolumeKeepInside ||
@@ -826,9 +837,7 @@ namespace CSG
                 // Determine operation parameters from enum
                 bool keepInNormalDirection = op == BooleanOp.AAsSurfaceBAsTrimSurfaceKeepInTriNormalDirection ||
                                              op == BooleanOp.AAsVolumeBAsTrimSurfaceKeepInTriNormalDirection;
-                bool meshAIsVolume = op == BooleanOp.AAsVolumeBAsTrimSurfaceKeepInTriNormalDirection ||
-                                     op == BooleanOp.AAsVolumeBAsTrimSurfaceRemoveInTriNormalDirection;
-                bool detectPartialCuts = true;// meshAIsVolume; // Enable partial cut detection for volumes
+                bool meshAIsVolume = isVolumeTrimSurfaceOperation;
                 
                 if (clustersA == null || clustersA.Count == 0)
                 {
@@ -839,6 +848,56 @@ namespace CSG
                 else
                 {
                     var insertedSegments = insertedSegmentsA.Keys.ToHashSet();
+
+                    // For a solid, the retained part of B is the cap. Its exact
+                    // boundary winding determines which side of A closes with it,
+                    // including at tangent contacts where a facet-plane test
+                    // does not give a consistent side across a curved cutter.
+                    var capEdges = new Dictionary<long, (int Start, int End, int Uses)>();
+                    if (meshAIsVolume && clustersB != null)
+                    {
+                        var volumeIntersector = new Int3Intersector(newPoints, trianglesA);
+                        foreach (var clusterB in clustersB)
+                        {
+                            var probe = resultTrianglesJoined[clusterB[0]];
+                            var location = PointInMesh.PointInsideMesh(newPoints.GetPoint(probe.A),
+                                newPoints.GetPoint(probe.B), newPoints.GetPoint(probe.C),
+                                volumeIntersector, treeA, boundingBoxA);
+                            bool keepCap = location == InsideResult.Inside ||
+                                (retainExteriorTrimCaps && location == InsideResult.Outside &&
+                                 IsIntersectionBoundedCluster(clusterB, resultTrianglesJoined, insertedSegmentsB));
+                            foreach (int triangleIndex in clusterB)
+                            {
+                                if (!keepCap)
+                                {
+                                    var source = sourceTriangleIndex[triangleIndex];
+                                    source.SourceTriangleIndex = -1;
+                                    sourceTriangleIndex[triangleIndex] = source;
+                                }
+                                else if (keepInNormalDirection && location == InsideResult.Inside)
+                                    resultTrianglesJoined[triangleIndex] = FlipOrientation(resultTrianglesJoined[triangleIndex]);
+                            }
+                        }
+
+                        for (int triangleIndex = changeTriId; triangleIndex < resultTrianglesJoined.Count; triangleIndex++)
+                        {
+                            if (sourceTriangleIndex[triangleIndex].SourceTriangleIndex < 0) continue;
+                            var triangle = resultTrianglesJoined[triangleIndex];
+                            AddCapEdge(triangle.A, triangle.B);
+                            AddCapEdge(triangle.B, triangle.C);
+                            AddCapEdge(triangle.C, triangle.A);
+                        }
+
+                        void AddCapEdge(int start, int end)
+                        {
+                            long key = Algorithms.Key(start, end);
+                            if (!insertedSegments.Contains(key)) return;
+                            if (capEdges.TryGetValue(key, out var use))
+                                capEdges[key] = (use.Start, use.End, use.Uses + 1);
+                            else
+                                capEdges.Add(key, (start, end, 1));
+                        }
+                    }
                     
                     // Classify each cluster in meshA
                     bool[] clusterInNormalDirection = new bool[clustersA.Count];
@@ -865,10 +924,16 @@ namespace CSG
                             continue;
                         }
 
-                        // Detect partial cuts if enabled
-                        if (detectPartialCuts)
+                        if (meshAIsVolume)
                         {
-                            bool? isPartialCut = DetectPartialCut(
+                            bool keepCluster = KeepVolumeTrimClusterByCapWinding(
+                                cluster, resultTrianglesJoined, insertedSegments, capEdges);
+                            clusterInNormalDirection[i] = keepInNormalDirection ? keepCluster : !keepCluster;
+                            continue;
+                        }
+
+                        // Surface trims have no cap winding to classify against.
+                        bool? isPartialCut = DetectPartialCut(
                                 cluster,
                                 resultTrianglesJoined,
                                 insertedSegments,
@@ -878,18 +943,17 @@ namespace CSG
                                 resolverTris.GetRange(numValidTrisA, numValidTrisB),
                                 out var partialCutDetails);
                             
-                            if (isPartialCut == true)
-                            {
-                                throw new Exception("Partial cut detected in cluster " + i +
-                                    ". Surface B does not completely cut through surface A. " + partialCutDetails);
-                            }
-                            if (isPartialCut == null)
-                            {
-                                clusterInNormalDirection[i] = ClassifyCoincidentCluster(cluster,
-                                    resultTrianglesJoined,insertedSegments,insertedSegmentsB,newPoints,
-                                    resolverTris.GetRange(numValidTrisA,numValidTrisB));
-                                continue;
-                            }
+                        if (isPartialCut == true)
+                        {
+                            throw new Exception("Partial cut detected in cluster " + i +
+                                ". Surface B does not completely cut through surface A. " + partialCutDetails);
+                        }
+                        if (isPartialCut == null)
+                        {
+                            clusterInNormalDirection[i] = ClassifyCoincidentCluster(cluster,
+                                resultTrianglesJoined,insertedSegments,insertedSegmentsB,newPoints,
+                                resolverTris.GetRange(numValidTrisA,numValidTrisB));
+                            continue;
                         }
                         
                         // Classify the cluster
@@ -931,51 +995,6 @@ namespace CSG
                             var tmp = sourceTriangleIndex[i];
                             tmp.SourceTriangleIndex = -1;
                             sourceTriangleIndex[i] = tmp;
-                        }
-                    }
-                    else
-                    {
-                        // meshA is a volume - keep triangles from meshB to fill the cut
-                        // Rule: Keep only triangles from B that face against the normal direction of adjacent triangles from A
-                        // Additionally, flip B triangle winding if we're keeping the part in B-normal direction
-                        if (clustersB != null && clustersB.Count > 0)
-                        {
-                            for (int i = 0; i < clustersB.Count; i++)
-                            {
-                                var clusterB = clustersB[i];
-                                
-                                // Ordinary section caps lie inside A. Edge-blend replacement
-                                // patches can lie outside A, but are valid only when their
-                                // complete boundary is the intersection loop.
-                                var probe=resultTrianglesJoined[clusterB[0]];
-                                var location=PointInMesh.PointInsideMesh(newPoints.GetPoint(probe.A),
-                                    newPoints.GetPoint(probe.B),newPoints.GetPoint(probe.C),
-                                    new Int3Intersector(newPoints,trianglesA),treeA,boundingBoxA);
-                                bool shouldKeepCluster = location == InsideResult.Inside ||
-                                    (retainExteriorTrimCaps && location == InsideResult.Outside &&
-                                     IsIntersectionBoundedCluster(clusterB, resultTrianglesJoined, insertedSegmentsB));
-
-                                if (!shouldKeepCluster)
-                                {
-                                    // Mark all triangles in this cluster for removal
-                                    foreach (int triIndex in clusterB)
-                                    {
-                                        var tmp = sourceTriangleIndex[triIndex];
-                                        tmp.SourceTriangleIndex = -1;
-                                        sourceTriangleIndex[triIndex] = tmp;
-                                    }
-                                }
-                                else
-                                {
-                                    // The cap points out of the retained volume. Keeping
-                                    // the B-normal side reverses the source sheet winding.
-                                    if (keepInNormalDirection && location == InsideResult.Inside)
-                                    {
-                                        foreach (int triIndex in clusterB)
-                                            resultTrianglesJoined[triIndex] = FlipOrientation(resultTrianglesJoined[triIndex]);
-                                    }
-                                }
-                            }
                         }
                     }
                     
@@ -1133,6 +1152,38 @@ namespace CSG
             return Rat3Hybrid.DotSign(in toPoint, in normal);
 
             //return dotProduct.Sign() > 0;
+        }
+
+        private static bool KeepVolumeTrimClusterByCapWinding(List<int> cluster, List<Tri> triangles,
+            HashSet<long> cutEdges, Dictionary<long, (int Start, int End, int Uses)> capEdges)
+        {
+            bool? keep = null;
+            foreach (int triangleIndex in cluster)
+            {
+                var triangle = triangles[triangleIndex];
+                CheckCutEdge(triangle.A, triangle.B);
+                CheckCutEdge(triangle.B, triangle.C);
+                CheckCutEdge(triangle.C, triangle.A);
+            }
+            return keep ?? throw new InvalidOperationException(
+                "A solid trim cluster touches the cut but has no matching cap boundary.");
+
+            void CheckCutEdge(int start, int end)
+            {
+                long key = Algorithms.Key(start, end);
+                if (!cutEdges.Contains(key)) return;
+                if (!capEdges.TryGetValue(key, out var cap) || cap.Uses != 1)
+                    throw new InvalidOperationException(
+                        $"Trim cap does not have exactly one retained triangle at cut edge {start}-{end}.");
+                bool opposite = cap.Start == end && cap.End == start;
+                bool same = cap.Start == start && cap.End == end;
+                if (!opposite && !same)
+                    throw new InvalidOperationException("Trim cap edge does not match the solid's exact cut edge.");
+                if (keep.HasValue && keep.Value != opposite)
+                    throw new InvalidOperationException(
+                        "Partial cut detected: a connected solid patch has conflicting exact cap-edge windings.");
+                keep = opposite;
+            }
         }
 
         private static bool ClassifyClusterInNormalDirection(

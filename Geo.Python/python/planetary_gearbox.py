@@ -352,12 +352,10 @@ def build_gearbox():
         x, y = BCD_R * math.cos(a), BCD_R * math.sin(a)
         screw_i.append(asm.add_part(screws[i], (x, y, Z_COVER1), quat_z(a)))
 
-    # Current patch names carry a stable provenance qualifier after the hub
-    # face has been split by the bore. Use that exact selectable name for its
-    # assembly datum instead of the obsolete construction alias.
+    # Use a current split-face name rather than the obsolete construction alias.
     carrier_hub_face = next(
         face for face in carrier.patch_names
-        if "carrier_hub-Circle1" in face and "#current=" in face)
+        if "carrier_hub-Circle1" in face and not face.endswith("carrier_hub-Circle1"))
     mate_gearbox(
         asm, hsg, rng, sun_i, planet_i, pin_i, car, car.axis(carrier_hub_face),
         cvr, bin_i, bout_i, screw_i)

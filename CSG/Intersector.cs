@@ -201,6 +201,20 @@ namespace CSG
         public static (List<LineSegmentOnTriangleEx> intersectionA, List<LineSegmentOnTriangleEx> intersectionB) 
             IntersectSurfaces(UVSurface a, UVSurface b, CoordinateConverter converter)
         {
+            var strips = IntersectSurfaceStrips(a, b, converter);
+            List<LineSegmentOnTriangleEx> intersectionSegmentsA = new List<LineSegmentOnTriangleEx>();
+            List<LineSegmentOnTriangleEx> intersectionSegmentsB = new List<LineSegmentOnTriangleEx>();
+            foreach (var strip in strips)
+            {
+                intersectionSegmentsA.AddRange(strip.intersectionA);
+                intersectionSegmentsB.AddRange(strip.intersectionB);
+            }
+            return (intersectionSegmentsA, intersectionSegmentsB);
+        }
+
+        public static List<(List<LineSegmentOnTriangleEx> intersectionA, List<LineSegmentOnTriangleEx> intersectionB)>
+            IntersectSurfaceStrips(UVSurface a, UVSurface b, CoordinateConverter converter)
+        {
 
             List<Rat3Hybrid> pointsA = a.PointsPrecise; 
             List<Rat3Hybrid> pointsB = b.PointsPrecise; 
@@ -211,12 +225,13 @@ namespace CSG
             Resolver.Resolve(BooleanOp.NoOpIntersectionContourOnly, pointsA, a.Triangles, pointsB, b.Triangles,
                 out var resultPoints, out var resultTriangles, out var sourceTriangleIndex, intersectionStrips: intersectionStrips);
 
-            // Convert intersection strips to LineSegmentOnTriangle for both meshes
-            List<LineSegmentOnTriangleEx> intersectionSegmentsA = new List<LineSegmentOnTriangleEx>();
-            List<LineSegmentOnTriangleEx> intersectionSegmentsB = new List<LineSegmentOnTriangleEx>();
-
+            // Keep each connected contour separate so callers can associate it
+            // with the source edge instead of treating unrelated branches as one.
+            var result = new List<(List<LineSegmentOnTriangleEx>, List<LineSegmentOnTriangleEx>)>(intersectionStrips.Count);
             foreach (var strip in intersectionStrips)
             {
+                List<LineSegmentOnTriangleEx> intersectionSegmentsA = new List<LineSegmentOnTriangleEx>(strip.Count);
+                List<LineSegmentOnTriangleEx> intersectionSegmentsB = new List<LineSegmentOnTriangleEx>(strip.Count);
                 foreach (var seg in strip)
                 {
                     // For mesh A
@@ -243,9 +258,10 @@ namespace CSG
                     intersectionSegmentsB.Add(new LineSegmentOnTriangleEx(
                         baryStartB, baryEndB, seg.StartPoint, seg.EndPoint, seg.TriIdB));
                 }
+                result.Add((intersectionSegmentsA, intersectionSegmentsB));
             }
 
-            return (intersectionSegmentsA, intersectionSegmentsB);
+            return result;
         }
     }
 }

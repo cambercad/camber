@@ -50,7 +50,7 @@ public class FigureShellRobustnessTests : IDisposable
     public void ExtrudedCurvedLegProfileAcceptsBothCapRimFillets(double radius, bool transformed)
         => AssertCurvedLegFillet(radius, transformed);
 
-    [Fact(Skip = "Known fillet limitation: the rotated curved-leg rim is rejected by exact partial-cut validation. See GeoTests/KnownFilletLimitations.md.")]
+    [Fact]
     public void RotatedCurvedLegProfileAcceptsBothCapRimFillets()
         => AssertCurvedLegFillet(.1, true);
 

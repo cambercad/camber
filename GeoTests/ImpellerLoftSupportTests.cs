@@ -117,9 +117,7 @@ public class ImpellerLoftSupportTests : IDisposable
         }
     }
 
-    // Keep the intended success assertion intact until offset-branch selection
-    // is implemented. See KnownFilletLimitations.md for the exact failure.
-    [Fact(Skip = "Known fillet limitation: the impeller offset surfaces produce disconnected branches; safe branch selection is not implemented. See GeoTests/KnownFilletLimitations.md.")]
+    [Fact(Skip = "The selected root edge has no endpoint contour spanning both fillet contact rails; a rolling-ball partial-edge termination is not implemented. See GeoTests/KnownFilletLimitations.md.")]
     public void OriginalRootFilletHasAConnectedSpine()
     {
         var (api, _, _, joined) = Fixture();
@@ -127,6 +125,19 @@ public class ImpellerLoftSupportTests : IDisposable
         Assert.IsType<NURBS.BSplineSurface>(joined.surfaceMetaData["blade_loft-Side"].NurbsSurface);
         var rounded = api.Fillet(joined, [joined.GetEdgeReference(edge)], 1.2, .12, "root_round");
         MeshPipelineTestHelpers.AssertWatertightAllowTouch(rounded.Mesh);
+    }
+
+    [Fact]
+    public void OriginalRootFilletRejectsMissingTerminationContour()
+    {
+        var (api, _, _, joined) = Fixture();
+        int edge = joined.GroupEdges.FindIndex(item =>
+            item.Name.Contains("revolved_hub-neck") && item.Name.Contains("blade_loft-Side"));
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            api.Fillet(joined, [joined.GetEdgeReference(edge)], 1.2, .12, "root_round"));
+
+        Assert.Contains("no intersection contour spans both fillet contact rails", error.Message);
     }
 
     [Theory]

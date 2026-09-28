@@ -1,37 +1,48 @@
 # Known fillet limitations
 
-Two intended-success regression cases are explicitly skipped in the normal
-suite. The user authorized excluding known failing tests or fixing their
-underlying issues. These skips record missing kernel support; they do not mean
-that these geometries are fixed. No production rejection or test assertion was
-removed, and all other cases in both test classes remain enabled.
+One intended-success regression case is explicitly skipped in the normal
+suite. This skip records missing kernel support; it does not mean that the
+geometry is fixed. No production rejection or test assertion was removed.
 
 ## Impeller root
 
 `ImpellerLoftSupportTests.OriginalRootFilletHasAConnectedSpine` requests a
 1.2 mm round at the blade/hub neck intersection. `Intersector.IntersectSurfaces`
-flattens multiple intersection strips into paired segment lists. The open-edge
-path in `BlendEdge.ComputeSpineAndBoundaries` treats those lists as one spine.
-The exact continuity check in `ExtractCurveFromSegments` rejects segment 84 of
-96 because it belongs to a disconnected branch. The closed-edge path already
-has contour separation, but this open-edge case needs safe correspondence to
-the source edge, not arbitrary nearest/longest-branch selection or a bridge
-across the gap. Retained-support and loft-deviation regressions remain active.
+used to flatten multiple intersection strips into paired segment lists. The
+open-edge path in `BlendEdge.ComputeSpineAndBoundaries` then treated those lists
+as one spine. The exact continuity check rejected segment 84 of 96 because it
+belonged to a disconnected branch. Intersections now retain their strips, and
+open edges select the unique contour with the smallest exact bidirectional
+vertex-to-polyline distance from its projected contact curves to that source
+edge. A compact pair of
+connected graph patches verifies this correspondence independently.
 
-## Rotated curved leg
+The later endpoint failure is now classified explicitly. The extended bell
+support intersects the blend strip in unrelated closed loops and partial
+contours, but none spans both fillet contact rails. The old global surface-side
+classification combined those contours and reported contradictory evidence.
+Endpoint trimming now uses only exact rail-to-rail contours, splits the strip
+topologically, and retains the component connected to its opposite longitudinal
+anchor. A compact sphere-trimmed beam regression verifies a single selected edge
+with both endpoints on the same curved face. The impeller request instead needs
+a rolling-ball partial-edge termination surface, which is not implemented.
 
-`FigureShellRobustnessTests.RotatedCurvedLegProfileAcceptsBothCapRimFillets`
-requests 0.1 mm cap-rim rounds in the oblique frame defined in that fixture.
-The generated blend does not provide a complete oriented cut:
-`Resolver.DetectPartialCut` finds contradictory exact side classifications in
-one connected cluster. This is not an open-loop or T-junction failure: the
-blend patches join exactly and intersect the solid in one closed contour. The
-conflicting evidence comes from different triangles of the curved cutter, so
-the remaining question is whether the cutter geometry or the partial-cut
-classification is wrong. The check must not be bypassed or replaced with a
-tolerance. The unrotated 0.1/0.2 mm cases and transformed stepped profile remain
-enabled.
+The rotated curved-leg cap-rim regression is enabled. Its trim cutter was an
+exactly joined oriented disk with a closed intersection contour. Comparing A
+fragments against different curved-cutter facet planes gave contradictory local
+sides; the resolver now identifies the retained cap first and classifies each
+connected A patch by exact winding along the shared cut edges. Incomplete cuts
+still fail, without a tolerance or fallback mesh.
 
-To re-enable either regression, remove its `Skip` argument, retain all existing
-watertightness/support/volume assertions, and run the focused tests followed by
-the complete native suite. No lossy predicate or fallback mesh is introduced.
+The impeller fillet regression remains skipped until rolling-ball partial-edge
+termination is supported. No lossy predicate or fallback mesh is introduced.
+
+`CurvedShoulderFinFilletTests.ReducedFinRootReproducesPartialTerminationLimitation`
+is a smaller active reproducer: one revolved curved shoulder and one five-section
+fin (rather than the full impeller's nine sections), with only the root edge
+rounded. Its exact intersection contour crosses from the artificial support
+extension onto the real terminating face, where current closure construction
+rejects it. This narrows the missing work: the limitation is in endpoint-cap
+construction across the real/extended support seam, not source-edge matching.
+The fix must keep one shared exact boundary through trimming and cap construction;
+merely accepting the original-face segments would create a non-watertight patch.

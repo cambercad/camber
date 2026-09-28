@@ -447,7 +447,8 @@ namespace GeoMeta
 
         /// <summary>
         /// Whether <paramref name="candidateEdgeName"/> satisfies a group-edge query.
-        /// Supports exact match and base-name prefix (<c>[A,B]</c> matches <c>[A,B]_0</c>).
+        /// Supports exact names and reversed face order, but never treats an
+        /// unindexed support pair as component zero of a multi-edge pair.
         /// </summary>
         public static bool MatchesGroupEdgeName(string candidateEdgeName, string queryName)
         {
@@ -462,8 +463,9 @@ namespace GeoMeta
                              (candidate.PatchA == query.PatchB && candidate.PatchB == query.PatchA);
             // The two incident faces define an unordered pair. A suffix still
             // selects a particular connected edge between that pair.
-            return sameFaces && (queryName.TrimEnd().EndsWith("]", StringComparison.Ordinal) ||
-                                 candidate.EdgeIndex == query.EdgeIndex);
+            bool candidateIndexed = !candidateEdgeName.TrimEnd().EndsWith("]", StringComparison.Ordinal);
+            bool queryIndexed = !queryName.TrimEnd().EndsWith("]", StringComparison.Ordinal);
+            return sameFaces && candidateIndexed == queryIndexed && candidate.EdgeIndex == query.EdgeIndex;
         }
 
         #endregion
