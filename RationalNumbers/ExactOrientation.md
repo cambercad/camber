@@ -69,6 +69,6 @@ products and common denominators. It is not universally faster: a synthetic
 small shared-denominator workload and exact coplanar inputs paid extra filter
 overhead, whereas 200-bit rationals showed a large gain. The full-bike timing
 and watertightness/interference checks are recorded in `output/bike_exact_perf`
-and summarized in `Geo.Python/python/racing_bike_audit.md`. No additional
+and summarized in `Geo.Python/python/examples/engineering_models/racing_bike_audit.md`. No additional
 parallelism is introduced by this change; the predicate has only local state
 and remains safe for the existing parallel CSG processing.

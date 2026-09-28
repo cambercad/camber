@@ -237,13 +237,16 @@ python -m pip install --force-reinstall (Get-ChildItem dist\camber*.whl | Select
 
 ## Complete racing bicycle and image feedback
 
-The [racing bicycle example](python/racing_bike.md) builds a full sketch-driven
+The [engineering models gallery](python/examples/engineering_models/README.md)
+also contains the gearbox, impeller, wrench, construction bricks, and connectors.
+
+The [racing bicycle example](python/examples/engineering_models/racing_bike.md) builds a full sketch-driven
 road bike using nested wheel, drivetrain and component assemblies. From the
 repository root with a locally built wheel installed:
 
 ```bash
-.venv/bin/python Geo.Python/python/racing_bike.py
-.venv/bin/python Geo.Python/python/racing_bike.py --render output/racing-bike
+.venv/bin/python Geo.Python/python/examples/engineering_models/racing_bike.py
+.venv/bin/python Geo.Python/python/examples/engineering_models/racing_bike.py --render output/racing-bike
 ```
 
 `camber.render_views(obj, "views.png")` captures six orthographic views and two
@@ -251,8 +254,8 @@ isometrics in one image using the existing viewer. It needs no new rendering
 packages. Both `render_views` and `camber.show` accept an optional `colors` mapping
 from entity-name patterns to RGB triples.
 
-Feature edges can be inspected with `solid.edge_names`. These are the named
-edges accepted by `part.fillet` and `part.chamfer`, excluding mesh diagonals.
+Feature edges can be inspected with `solid.curve_names`. These are the named
+edges accepted by `solid.fillet` and `solid.chamfer`, excluding mesh diagonals.
 An edge's two incident face names can be given in either order.
 
 
@@ -347,7 +350,7 @@ runs from zero to one, with equal intervals between consecutive sections. Omitti
 a tangent uses the automatic end slope; supplying one does not change the sections.
 
 Currently guides control the two side boundaries of open sections. Use a line or
-`Curve.hermite` with one knot at the same endpoint of each section, in section
+`Curve3D.hermite` with one knot at the same endpoint of each section, in section
 order. A line must cross those endpoints at the corresponding equally spaced
 parameters. Guides are preserved between sections, not just at sampled points.
 Duplicate, missed, reversed or conflicting guides raise an error. Interior guides
@@ -446,10 +449,10 @@ remains available when polygonal profiles are intended.
 Solid patterns make copies that can be used as additive bodies or cutting tools:
 
 ```python
-holes = part.pattern_linear(hole_tool, count=4, step=(20, 0, 0))
+holes = hole_tool.pattern_linear(count=4, step=(20, 0, 0))
 plate = part.batch_subtract(plate, holes)
-ring_tools = part.pattern_circular(hole_tool, count=6, axis=camber.Frame())
-other_hand = part.mirror(bracket, plane=camber.Frame(), name="left_bracket")
+ring_tools = hole_tool.pattern_circular(count=6, axis=((0, 0, 0), (0, 0, 1)))
+other_hand = bracket.mirror(plane=camber.Frame(), name="left_bracket")
 ```
 
 Assembly patterns use the same count/step/axis convention:

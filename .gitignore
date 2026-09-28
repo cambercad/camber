@@ -48,3 +48,23 @@ Desktop.ini
 
 # Generated example renders
 /output/
+Geo.Python/python/examples/angle_grinder/
+Geo.Python/python/examples/engineering_models/
+Geo.Python/python/examples/pto_shaft/
+Geo.Python/python/tests/conftest.py
+Geo.Python/python/tests/test_angle_grinder_example.py
+Geo.Python/python/tests/test_pto_shaft_example.py
+Geo.Python/python/tests/test_racing_bike_workers.py
+Geo.Python/python/tests/test_racing_brake.py
+Geo.Python/python/tests/test_racing_chain.py
+Geo.Python/python/tests/test_racing_chain_contact.py
+Geo.Python/python/tests/test_racing_computer.py
+Geo.Python/python/tests/test_racing_control.py
+Geo.Python/python/tests/test_racing_fork.py
+Geo.Python/python/tests/test_racing_frame_wall.py
+Geo.Python/python/tests/test_racing_hydraulic.py
+Geo.Python/python/tests/test_racing_rear_derailleur.py
+Geo.Python/python/tests/test_racing_saddle.py
+Geo.Python/python/tests/test_racing_spoke.py
+Geo.Python/python/tests/test_racing_stem.py
+Geo.Python/python/tests/test_uniform_tooth_heads.py

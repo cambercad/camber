@@ -171,8 +171,8 @@ def build_sculpture(part, case):
         # the convex lip. The new arc edges belong to the full opening rim too.
         rim_edges = opening_rim(body, "shell-ExtrudeTop")
         before_rim = body.volume()
-        operation = part.fillet if case == "hollow_rounds" else part.chamfer
-        body = operation(body, rim_edges, .8, name="opening_rim_treatment")
+        operation = body.fillet if case == "hollow_rounds" else body.chamfer
+        body = operation(rim_edges, .8, name="opening_rim_treatment")
         rim_removed = before_rim - body.volume()
     elif case == "helical_crown":
         stations = (
@@ -191,9 +191,9 @@ def build_sculpture(part, case):
         vane = sculpted_loft(part, "vane", stations, rounded=case == "swept_vane")
         if case in ("curved_rounds", "curved_chamfers"):
             untreated_volume = vane.volume()
-            operation = part.fillet if case == "curved_rounds" else part.chamfer
+            operation = vane.fillet if case == "curved_rounds" else vane.chamfer
             long_edges = longitudinal_edges("vane", loft=True)
-            vane = operation(vane, long_edges, .8, name="long_edge_treatment")
+            vane = operation(long_edges, .8, name="long_edge_treatment")
             curved_removed = untreated_volume - vane.volume()
             if curved_removed <= 0 or not vane.is_watertight():
                 raise ValueError(f"{case}: curved treatment must remove material from a closed vane")
@@ -321,8 +321,8 @@ def probe_corner(case):
     if case in ("duct_rim_rounds", "duct_rim_chamfers"):
         shoe = rectangle(part, "shoe_profile", -9, 76, 68).extrude(10, name="shoe")
         body = hollow_duct(part, shoe)
-        operation = part.fillet if case == "duct_rim_rounds" else part.chamfer
-        return operation(body, opening_rim(body, "duct-EndCap"), .6)
+        operation = body.fillet if case == "duct_rim_rounds" else body.chamfer
+        return operation(opening_rim(body, "duct-EndCap"), .6)
     if case == "enlarged_bounds_corner":
         return build_case(part, "meeting_treatments")[0]
     if case == "curved_four_edges":
@@ -331,8 +331,8 @@ def probe_corner(case):
         return body.fillet(edges, .8)
     if case in ("curved_round", "curved_chamfer"):
         body = sculpted_loft(part, "vane", VANE_STATIONS)
-        operation = part.fillet if case == "curved_round" else part.chamfer
-        return operation(body, edge("vane-Side-bottom", "vane-Side-right"), .6)
+        operation = body.fillet if case == "curved_round" else body.chamfer
+        return operation(edge("vane-Side-bottom", "vane-Side-right"), .6)
     if case == "inward_chamfer_network":
         body = rectangle(part, "block_profile", -10, 60, 44).extrude(14, name="block")
         cutter = rectangle(part, "pocket_profile", -5, 16, 12).extrude(15, name="pocket")

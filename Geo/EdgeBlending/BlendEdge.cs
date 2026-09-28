@@ -173,6 +173,11 @@ namespace Geo
                 List<(List<LineSegmentOnTriangleEx> intersectionA, List<LineSegmentOnTriangleEx> intersectionB)> strips,
                 UVSurface enlargedSurfaceA, UVSurface enlargedSurfaceB)
         {
+            // With one contour there is no correspondence choice to make.
+            // Keep the exact distance comparison for genuinely competing strips.
+            if (strips.Count == 1 && strips[0].intersectionA.Count > 0)
+                return strips[0];
+
             BigRationalHybrid? bestScore = null;
             (List<LineSegmentOnTriangleEx> intersectionA, List<LineSegmentOnTriangleEx> intersectionB) best = default;
             bool ambiguous = false;
@@ -201,7 +206,7 @@ namespace Geo
             return best;
         }
 
-        private static BigRationalHybrid MaxSourceEdgeDeviationSquared(List<Rat3Hybrid> curveA,
+        internal static BigRationalHybrid MaxSourceEdgeDeviationSquared(List<Rat3Hybrid> curveA,
             List<Rat3Hybrid> curveB, List<Rat3Hybrid> sourceEdge)
         {
             var maximum = BigRationalHybrid.Zero;
@@ -219,7 +224,25 @@ namespace Geo
                     for (int i = 1; i < to.Count; i++)
                     {
                         var start = to[i - 1];
-                        var direction = to[i] - start;
+                        var end = to[i];
+                        // The distance to the segment cannot be smaller than
+                        // the distance to its bounding box. Prove this bound
+                        // exactly before doing the rational projection.
+                        if (nearest.HasValue)
+                        {
+                            var lowerBound = BigRationalHybrid.Zero;
+                            for (int axis = 0; axis < 3; axis++)
+                            {
+                                var low = start[axis] < end[axis] ? start[axis] : end[axis];
+                                var high = start[axis] > end[axis] ? start[axis] : end[axis];
+                                var outside = point[axis] < low ? low - point[axis] :
+                                    point[axis] > high ? point[axis] - high : BigRationalHybrid.Zero;
+                                lowerBound += outside * outside;
+                                if (lowerBound >= nearest.Value) break;
+                            }
+                            if (lowerBound >= nearest.Value) continue;
+                        }
+                        var direction = end - start;
                         var lengthSquared = Rat3Hybrid.Dot(direction, direction);
                         if (lengthSquared == BigRationalHybrid.Zero) continue;
                         var t = Rat3Hybrid.Dot(point - start, direction) / lengthSquared;
@@ -1900,4 +1923,3 @@ namespace Geo
         Convex    // Rounds a concave edge (adds material)
     }
 }
-

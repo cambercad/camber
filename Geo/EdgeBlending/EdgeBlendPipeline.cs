@@ -1344,6 +1344,21 @@ namespace Geo
             IReadOnlyList<(string Name, SurfaceMetaData Metadata)> patchNames,
             MeshNormalUV volume, CoordinateConverter converter)
         {
+            static BigRationalHybrid Min2(BigRationalHybrid a, BigRationalHybrid b) => a < b ? a : b;
+            static BigRationalHybrid Max2(BigRationalHybrid a, BigRationalHybrid b) => a > b ? a : b;
+            static BigRationalHybrid Min3(BigRationalHybrid a, BigRationalHybrid b, BigRationalHybrid c) =>
+                Min2(Min2(a, b), c);
+            static BigRationalHybrid Max3(BigRationalHybrid a, BigRationalHybrid b, BigRationalHybrid c) =>
+                Max2(Max2(a, b), c);
+            static (Rat3Hybrid Min, Rat3Hybrid Max) SegmentBounds(Rat3Hybrid a, Rat3Hybrid b) =>
+                (new Rat3Hybrid(Min2(a.X, b.X), Min2(a.Y, b.Y), Min2(a.Z, b.Z)),
+                 new Rat3Hybrid(Max2(a.X, b.X), Max2(a.Y, b.Y), Max2(a.Z, b.Z)));
+            static bool BoundsOverlap((Rat3Hybrid Min, Rat3Hybrid Max) a,
+                (Rat3Hybrid Min, Rat3Hybrid Max) b) =>
+                a.Max.X >= b.Min.X && a.Min.X <= b.Max.X &&
+                a.Max.Y >= b.Min.Y && a.Min.Y <= b.Max.Y &&
+                a.Max.Z >= b.Min.Z && a.Min.Z <= b.Max.Z;
+
             static int Compare(Rat3Hybrid a, Rat3Hybrid b)
             {
                 int result = a.X.CompareTo(b.X);
@@ -1391,10 +1406,12 @@ namespace Geo
                 if (owners.Count == 2) continue;
                 boundaryEdges.Add((edge.A, edge.B, owners[0]));
             }
+            var boundaryBounds = boundaryEdges.Select(edge => SegmentBounds(edge.A, edge.B)).ToArray();
 
             for (int i = 0; i < boundaryEdges.Count; i++)
                 for (int j = i + 1; j < boundaryEdges.Count; j++)
                 {
+                    if (!BoundsOverlap(boundaryBounds[i], boundaryBounds[j])) continue;
                     var a = boundaryEdges[i];
                     var b = boundaryEdges[j];
                     if (LiesStrictlyOnSegment(a.A, b.A, b.B) || LiesStrictlyOnSegment(a.B, b.A, b.B) ||
@@ -1417,28 +1434,28 @@ namespace Geo
                         $"Edge-blend trim boundary is not a closed contour: exact boundary vertex " +
                         $"{converter.Convert(point)} has valence {valence}; boundary loops must join exactly.");
 
-            static bool CoveredByBoundaryTriangles((Rat3Hybrid A, Rat3Hybrid B, int Surface) edge,
-                MeshNormalUV volume, List<Rat3Hybrid> points)
+            var triangleBounds = volume.Triangles.Select(triangle =>
             {
-                static BigRationalHybrid Min2(BigRationalHybrid a, BigRationalHybrid b) => a < b ? a : b;
-                static BigRationalHybrid Max2(BigRationalHybrid a, BigRationalHybrid b) => a > b ? a : b;
-                static BigRationalHybrid Min3(BigRationalHybrid a, BigRationalHybrid b, BigRationalHybrid c) =>
-                    Min2(Min2(a, b), c);
-                static BigRationalHybrid Max3(BigRationalHybrid a, BigRationalHybrid b, BigRationalHybrid c) =>
-                    Max2(Max2(a, b), c);
+                var a = points[triangle.A];
+                var b = points[triangle.B];
+                var c = points[triangle.C];
+                return (Min: new Rat3Hybrid(Min3(a.X, b.X, c.X), Min3(a.Y, b.Y, c.Y),
+                                           Min3(a.Z, b.Z, c.Z)),
+                        Max: new Rat3Hybrid(Max3(a.X, b.X, c.X), Max3(a.Y, b.Y, c.Y),
+                                           Max3(a.Z, b.Z, c.Z)));
+            }).ToArray();
+            static bool CoveredByBoundaryTriangles((Rat3Hybrid A, Rat3Hybrid B, int Surface) edge,
+                (Rat3Hybrid Min, Rat3Hybrid Max) edgeBounds, MeshNormalUV volume,
+                List<Rat3Hybrid> points, (Rat3Hybrid Min, Rat3Hybrid Max)[] triangleBounds)
+            {
                 var intervals = new List<(BigRationalHybrid Start, BigRationalHybrid End)>();
-                foreach (var triangle in volume.Triangles)
+                for (int triangleIndex = 0; triangleIndex < volume.Triangles.Count; triangleIndex++)
                 {
+                    if (!BoundsOverlap(edgeBounds, triangleBounds[triangleIndex])) continue;
+                    var triangle = volume.Triangles[triangleIndex];
                     var a = points[triangle.A];
                     var b = points[triangle.B];
                     var c = points[triangle.C];
-                    if (Max2(edge.A.X, edge.B.X) < Min3(a.X, b.X, c.X) ||
-                        Min2(edge.A.X, edge.B.X) > Max3(a.X, b.X, c.X) ||
-                        Max2(edge.A.Y, edge.B.Y) < Min3(a.Y, b.Y, c.Y) ||
-                        Min2(edge.A.Y, edge.B.Y) > Max3(a.Y, b.Y, c.Y) ||
-                        Max2(edge.A.Z, edge.B.Z) < Min3(a.Z, b.Z, c.Z) ||
-                        Min2(edge.A.Z, edge.B.Z) > Max3(a.Z, b.Z, c.Z))
-                        continue;
                     var normal = Rat3Hybrid.Cross(b - a, c - a);
                     if (normal == new Rat3Hybrid(0, 0, 0) ||
                         Rat3Hybrid.Dot(edge.A - a, normal).Sign() != 0 ||
@@ -1481,9 +1498,10 @@ namespace Geo
                 return false;
             }
 
-            foreach (var edge in boundaryEdges)
+            for (int edgeIndex = 0; edgeIndex < boundaryEdges.Count; edgeIndex++)
             {
-                if (!CoveredByBoundaryTriangles(edge, volume, points))
+                var edge = boundaryEdges[edgeIndex];
+                if (!CoveredByBoundaryTriangles(edge, boundaryBounds[edgeIndex], volume, points, triangleBounds))
                 {
                     string patchName = patchNames[edge.Surface].Name ?? $"closure/corner {edge.Surface}";
                     throw new InvalidOperationException(
