@@ -60,9 +60,10 @@ public class FrameJointFilletTests
         // Materialize before snapshotting; the fillet must preserve this source geometry.
         blank.EnsureCoplanarPostProcessed();
         MeshTestHelpers.AssertValidMesh(blank.Mesh.Positions,blank.Mesh.Triangles);
-        var graph=new EdgeGraph(blank.Mesh.Triangles,blank.Mesh.GetTriangleGroups(),blank.Mesh.Positions,blank.Mesh.PrecisionPositions,blank.groupIdToExtendedName);
-        Assert.True(graph.TryGetEdge("[frame_top_tube-Side,frame_head_tube-Side]",out var joint));
-        Console.WriteLine($"Joint sampling={sampling}: {joint.EdgeSegments.Count} segments; closed={joint.LineStripExact[0]==joint.LineStripExact[^1]}; endpoints {joint.LineStrip.Points[0]} / {joint.LineStrip.Points[^1]}");
+        var jointNames=blank.GroupEdges.Select(edge=>edge.Name).Where(name=>
+            name.Contains("frame_top_tube-Side",StringComparison.Ordinal)&&
+            name.Contains("frame_head_tube-Side",StringComparison.Ordinal)).ToList();
+        Assert.Single(jointNames);
         var originalPositions=blank.Mesh.Positions.ToArray();
         var originalPrecisePositions=blank.Mesh.PrecisionPositions.ToArray();
         var originalTriangles=blank.Mesh.Triangles.ToArray();
@@ -70,7 +71,7 @@ public class FrameJointFilletTests
             Vec3DOps.Dot(solid.Mesh.Positions[t.A],Vec3DOps.Cross(solid.Mesh.Positions[t.B],solid.Mesh.Positions[t.C]))))/6;
         double sourceVolume=Volume(blank);
         var sourceGroups=blank.groupIdToExtendedName.ToArray();
-        var rounded=api.Fillet(blank,["[frame_top_tube-Side,frame_head_tube-Side]"],4,.1,"frame_joint_round");
+        var rounded=api.Fillet(blank,[jointNames[0]],4,.1,"frame_joint_round");
         MeshTestHelpers.AssertValidMesh(rounded.Mesh.Positions,rounded.Mesh.Triangles);
         // A concave tube junction must gain its requested transition material;
         // returning the unchanged valid blank is not a successful fillet.
@@ -88,7 +89,7 @@ public class FrameJointFilletTests
         var names=rounded.GroupEdges.Select(e=>e.Name).Where(n=>n.Contains("frame_head_tube-Side")&&n.Contains("frame_down_tube-Side")).ToList();
         Assert.Single(names);
         double originalRoundedVolume=Volume(rounded);
-        var transition=api.Fillet(rounded,["[frame_down_tube-Side,frame_head_tube-Side]"],4,.1,"down_head_round");
+        var transition=api.Fillet(rounded,[names[0]],4,.1,"down_head_round");
         MeshTestHelpers.AssertValidMesh(transition.Mesh.Positions,transition.Mesh.Triangles);
         Assert.True(Volume(transition)>Volume(rounded));
         Assert.Equal(originalRoundedVolume,Volume(rounded),8);

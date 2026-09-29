@@ -375,7 +375,7 @@ namespace GeoCore
                 int o = Orient2D(index, next, nextnext);
 
                 if (count == 3 && o <= 0)
-                    throw new Exception();
+                    throw new InvalidOperationException("Remaining polygon vertices are not a positive-area ear.");
 
                 if (o > 0 && IsValid(index, next, nextnext))
                 {

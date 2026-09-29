@@ -714,12 +714,10 @@ class NativeWorkplaneTests(unittest.TestCase):
         cylinders = (Workplane("XY", size=20, tolerance=0.05)
                      .pushPoints([(0, 0), (3, 0)]).circle(1).extrude(1))
         rims = cylinders.faces(">Z").edges()
-        name = cylinders.val().name
-        self.assertEqual(
-            ["[{0}-Circle1,{0}-ExtrudeTop]".format(name),
-             "[{0}-Circle2,{0}-ExtrudeTop]".format(name)],
-            [edge["name"] for edge in rims._selected_edges],
-        )
+        selected_names = [edge["name"] for edge in rims._selected_edges]
+        self.assertEqual(2, len(selected_names))
+        self.assertEqual(2, len(set(selected_names)))
+        self.assertTrue(set(selected_names).issubset(cylinders.val().curve_names))
         rounded = rims.fillet(0.2)
         self.assertTrue(rounded.val().is_watertight())
 

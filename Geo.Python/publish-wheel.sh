@@ -12,7 +12,7 @@ set -euo pipefail
 
 RUNTIME="linux-x64"
 CONFIGURATION="Release"
-WHEEL_VERSION="0.1.4"
+WHEEL_VERSION="0.1.5"
 BOOTSTRAP=0
 
 while [[ $# -gt 0 ]]; do
@@ -59,6 +59,8 @@ if [[ "$ROOT" == /mnt/* ]] && [[ "${CAMBER_LINUX_RELAUNCHED:-0}" != "1" ]]; then
     --exclude 'Geo.Python/python_project_root/' \
     --exclude 'Geo.Python/_wheel_stage/' \
     --exclude 'Geo.Python/_wheel_venv/' \
+    --exclude '.pytest_cache/' \
+    --exclude '**/.pytest_cache/' \
     --exclude 'Geo.Python/**/__pycache__/' \
     --exclude '.git/' \
     --exclude '.vs/' \
@@ -207,4 +209,4 @@ echo "  uv venv .venv && uv pip install --python .venv/bin/python \"dist/camberc
 echo "Smoke:"
 echo "  .venv/bin/python Geo.Python/python/smoke.py"
 echo "Later PyPI:"
-echo "  twine upload dist/cambercad-*.whl"
+echo "  twine upload \"$DIST\"/cambercad-\"$WHEEL_VERSION\"-*.whl"

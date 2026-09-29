@@ -93,6 +93,16 @@ internal sealed class ShellOperation
                     ReserveGroups(solid.groupIdToExtendedName.Count), exterior: true);
                 return rounded ? RoundExterior(solid, sharp, openingPatches) : sharp;
             }
+            catch (InvalidOperationException ex) when (solid.UnionOperands != null &&
+                (ex.Message.StartsWith("Shell offset inverted triangle", StringComparison.Ordinal) ||
+                 ex.Message.StartsWith("Shell offset collapsed triangle", StringComparison.Ordinal)))
+            {
+                // A triangulated union seam is not itself a smooth support
+                // surface. Its local vertex normals can invert the raw mesh
+                // offset even when dilating each original operand and taking
+                // their exact CSG union is well-defined.
+                return ExpandUnion(solid);
+            }
             catch (ArgumentException ex) when (solid.UnionOperands != null &&
                 ex.Message.StartsWith("Shell offset changes topology or uses an unsupported surface junction", StringComparison.Ordinal))
             {

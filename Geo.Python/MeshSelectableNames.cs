@@ -14,7 +14,8 @@ internal static class MeshSelectableNames
         string reference = mesh.GetEdgeReference(edgeIndex);
         if (edge.LineStrips3D.Count > 1)
             reference += "_" + stripIndex;
-        return Prefix(mesh) + ":" + reference;
+        return reference.StartsWith(Prefix(mesh) + ":", StringComparison.Ordinal)
+            ? reference : Prefix(mesh) + ":" + reference;
     }
 
     internal static string PatchName(AnchorMesh mesh, int groupId)
@@ -103,7 +104,7 @@ internal static class MeshSelectableNames
                 if (edge.LineStrips3D == null) continue;
                 for (int i = 0; i < edge.LineStrips3D.Count; i++)
                 {
-                    if (CurveName(mesh, edgeIndex, i) == name) { result.Add(mesh.GetEdgeReference(edgeIndex)); found = true; break; }
+                    if (CurveName(mesh, edgeIndex, i) == name) { result.Add(edge.Name); found = true; break; }
                 }
                 if (found) break;
             }

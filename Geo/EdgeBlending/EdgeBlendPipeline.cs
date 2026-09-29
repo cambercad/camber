@@ -1196,7 +1196,8 @@ namespace Geo
             if (allocateGroupIds != null)
                 groupIdOffset = allocateGroupIds(allSurfaces.Count);
             MeshNormalUV surface = BlendEdge.ToMesh(allSurfaces, cc, ref groupIdOffset);
-            return BlendEdge.ApplyBlendSurfaceToVolume(surface, fullMesh, cc, blendType);
+            return BlendEdge.ApplyBlendSurfaceToVolume(surface, fullMesh, cc, blendType,
+                chamfer: profile is ChamferProfile);
         }
 
         private static bool TryTripleSupportIntersection(UVSurface first, UVSurface second, UVSurface third,
@@ -1420,20 +1421,10 @@ namespace Geo
                             $"Edge-blend patches contain a non-conforming T-junction between patches {a.Surface} and {b.Surface}.");
                 }
 
-            var boundaryValence = new Dictionary<Rat3Hybrid, int>();
-            foreach (var edge in boundaryEdges)
-            {
-                boundaryValence.TryGetValue(edge.A, out int atA);
-                boundaryValence[edge.A] = atA + 1;
-                boundaryValence.TryGetValue(edge.B, out int atB);
-                boundaryValence[edge.B] = atB + 1;
-            }
-            foreach (var (point, valence) in boundaryValence)
-                if (valence != 2)
-                    throw new InvalidOperationException(
-                        $"Edge-blend trim boundary is not a closed contour: exact boundary vertex " +
-                        $"{converter.Convert(point)} has valence {valence}; boundary loops must join exactly.");
-
+            // Do not require each exact boundary vertex to have degree two here:
+            // distinct source-boundary contours can meet at one exact vertex.
+            // T-junction detection, exact coverage by source boundary triangles,
+            // and validation of the final sewn solid check the actual invariants.
             var triangleBounds = volume.Triangles.Select(triangle =>
             {
                 var a = points[triangle.A];

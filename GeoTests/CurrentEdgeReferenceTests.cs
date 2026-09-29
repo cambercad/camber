@@ -50,16 +50,26 @@ public class CurrentEdgeReferenceTests : IDisposable
         string reference = mesh.GetEdgeReference(index);
         var copy = api.CopyMeshAsInstance(mesh, "copy");
         copy.EnsureCoplanarPostProcessed();
-        Assert.Equal(reference, Assert.Single(FaceLineageEdges.Resolve(copy, new[] { reference })));
-        int copiedIndex = copy.GroupEdges.FindIndex(edge => edge.Name == reference);
+        string localReference = reference.Substring(reference.IndexOf(':') + 1);
+        Assert.Equal(localReference, Assert.Single(FaceLineageEdges.Resolve(copy, new[] { reference })));
+        int copiedIndex = copy.GroupEdges.FindIndex(edge => edge.Name == localReference);
         Assert.True(copiedIndex >= 0);
         Assert.Equal(mesh.GroupEdges[index].EdgeSegments, copy.GroupEdges[copiedIndex].EdgeSegments);
         var (_, rebuilt) = CrossingCylinders();
-        Assert.Equal(reference, Assert.Single(FaceLineageEdges.Resolve(rebuilt, new[] { reference })));
+        Assert.Equal(localReference, Assert.Single(FaceLineageEdges.Resolve(rebuilt, new[] { reference })));
         mesh.Rename("renamed");
         // The root labels belong to the construction operands, so renaming the
         // Boolean result need not change them. Its topology remains the same.
-        Assert.Single(FaceLineageEdges.Resolve(mesh, new[] { reference }));
+        Assert.Equal(localReference, Assert.Single(FaceLineageEdges.Resolve(mesh, new[] { reference })));
+    }
+
+    [Fact]
+    public void AmbiguousSplitSupportPairNeedsAQualifiedCurrentEdgeName()
+    {
+        var (_, mesh) = CrossingCylinders();
+        var error = Assert.Throws<NameCollisionException>(() =>
+            FaceLineageEdges.Resolve(mesh, new[] { "[hub-Circle1,crossing-Circle1]" }));
+        Assert.Contains("selects 2 connected edges", error.Message, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -87,7 +97,8 @@ public class CurrentEdgeReferenceTests : IDisposable
         var api = new GeoAPI(new Box3D(new Vec3D(-10), new Vec3D(20)), .02);
         var block = api.CreateCuboid(new Vec3D(0), new Vec3D(3), "block#current=literal");
         string reference = block.GetEdgeReference(0);
-        Assert.Equal(reference, Assert.Single(FaceLineageEdges.Resolve(block, new[] { reference })));
+        Assert.Equal(reference.Substring(reference.IndexOf(':') + 1),
+            Assert.Single(FaceLineageEdges.Resolve(block, new[] { reference })));
     }
 
     [Fact]

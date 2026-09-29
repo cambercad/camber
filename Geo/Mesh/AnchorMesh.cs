@@ -18,7 +18,10 @@ namespace Geo
             EnsureCoplanarPostProcessed();
             if (index < 0 || index >= GroupEdges.Count)
                 throw new ArgumentOutOfRangeException(nameof(index));
-            return GroupEdges[index].Name;
+            string reference = GroupEdges[index].Name;
+            string prefix = (string.IsNullOrEmpty(Name) ? "mesh" : Name) + ":";
+            return reference.StartsWith(prefix, StringComparison.Ordinal)
+                ? reference : prefix + reference;
         }
 
         public Dictionary<string, int> extendedNameToGroupId;
@@ -1320,7 +1323,14 @@ namespace Geo
             if (extendedNameToGroupId.ContainsKey(reference)) return;
             if (TryResolveCurrentFaceReference(reference, out _)) return;
             if (reference.StartsWith(Name + ":", StringComparison.Ordinal))
+            {
                 reference = reference.Substring(Name.Length + 1);
+                // The renderer/API form is mesh:current-patch. After removing
+                // the mesh scope, recognize that exact current key before
+                // treating the same text as an ambiguous split ancestor.
+                if (extendedNameToGroupId.ContainsKey(reference) ||
+                    TryResolveCurrentFaceReference(reference, out _)) return;
+            }
             if (TryResolveCurrentFaceReference(reference, out _)) return;
             if (EntityNaming.TryParseSurfacePointAddress(reference, out var surface))
                 Check(surface.PatchName);

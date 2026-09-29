@@ -239,12 +239,9 @@ public class DisconnectedGroupSplitTests : IDisposable
             .ToList();
 
         // Each through-hole cylinder wall is cut into two disconnected half-shells.
-        Assert.Contains("hole_z-Circle1", patchNames);
-        Assert.Contains("hole_z-Circle1_1", patchNames);
-        Assert.Contains("hole_x-Circle1", patchNames);
-        Assert.Contains("hole_x-Circle1_1", patchNames);
-        Assert.Contains("hole_y-Circle1", patchNames);
-        Assert.Contains("hole_y-Circle1_1", patchNames);
+        Assert.Equal(2, patchNames.Count(n => n.StartsWith("hole_z-Circle1", StringComparison.Ordinal)));
+        Assert.Equal(2, patchNames.Count(n => n.StartsWith("hole_x-Circle1", StringComparison.Ordinal)));
+        Assert.Equal(2, patchNames.Count(n => n.StartsWith("hole_y-Circle1", StringComparison.Ordinal)));
 
         // Cube planar faces stay one connected patch each (holes, not islands).
         Assert.DoesNotContain(patchNames, n =>

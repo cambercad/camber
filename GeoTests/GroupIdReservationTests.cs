@@ -48,7 +48,7 @@ public class GroupIdReservationTests : IDisposable
             deferCoplanarPostProcess:false, skipCoplanarFusion:true, isVolume:false);
         Assert.Equal(2,patch.groupIdToExtendedName.Count);
         Assert.Contains(patchId,patch.groupIdToExtendedName.Keys);
-        Assert.Equal(new[] { "patch", "patch_1" }, patch.groupIdToExtendedName.Values.Order().ToArray());
+        Assert.Equal(new[] { "patch_1", "patch_2" }, patch.groupIdToExtendedName.Values.Order().ToArray());
         Assert.Equal(2,patch.Mesh.GetTriangleGroups().Distinct().Count());
         var later = api.CreateCube(CoordinateSystem.Default, 1, "later_cube");
         Assert.Empty(patch.groupIdToExtendedName.Keys.Intersect(later.groupIdToExtendedName.Keys));

@@ -67,7 +67,7 @@ public class BlendCornerPlaneExtentTests
     }
 
     [Fact]
-    public void RoundedBlendBoundaryRejectsLoopsJoinedOnlyAtOneVertex()
+    public void RoundedBlendBoundaryRejectsInteriorOpenEdgesEvenWhenLoopsTouchAtOneVertex()
     {
         var api = new GeoAPI(new Box3D(new Vec3D(-5), new Vec3D(5)), .01);
         var converter = api.Converter;
@@ -91,7 +91,6 @@ public class BlendCornerPlaneExtentTests
                 new[] { first, second }, new[] { ("first", (GeoCore.SurfaceMetaData)null), ("second", (GeoCore.SurfaceMetaData)null) },
                 volume.Mesh, converter));
 
-        Assert.Contains("closed contour", error.Message);
-        Assert.Contains("valence 4", error.Message);
+        Assert.Contains("interior open boundary", error.Message);
     }
 }

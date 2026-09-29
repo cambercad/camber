@@ -461,21 +461,22 @@ def _prism_faces(name, frame, xmin, xmax, ymin, ymax, zmin, zmax):
     return faces, edges
 
 
-def _revolve_caps(name, frame, z0, z1, radius, side_name="side"):
+def _revolve_caps(name, frame, z0, z1, radius, side_name="side", center=(0.0, 0.0)):
+    cx, cy = center
     cz = 0.5 * (z0 + z1)
     faces = [
-        {"name": name + "-ExtrudeTop", "center": _world_from_local(frame, (0.0, 0.0, z1)),
+        {"name": name + "-ExtrudeTop", "center": _world_from_local(frame, (cx, cy, z1)),
          "normal": vec3(frame.z), "kind": "plane"},
-        {"name": name + "-ExtrudeBottom", "center": _world_from_local(frame, (0.0, 0.0, z0)),
+        {"name": name + "-ExtrudeBottom", "center": _world_from_local(frame, (cx, cy, z0)),
          "normal": -vec3(frame.z), "kind": "plane"},
-        {"name": name + "-side", "center": _world_from_local(frame, (radius, 0.0, cz)),
+        {"name": name + "-side", "center": _world_from_local(frame, (cx + radius, cy, cz)),
          "normal": vec3(frame.x), "kind": "cylinder"},
     ]
     edges = [
         {"name": "[{0}-{1},{0}-ExtrudeTop]".format(name, side_name),
-         "direction": vec3(frame.x), "center": _world_from_local(frame, (0.0, 0.0, z1)), "kind": "circle"},
+         "direction": vec3(frame.x), "center": _world_from_local(frame, (cx, cy, z1)), "kind": "circle"},
         {"name": "[{0}-{1},{0}-ExtrudeBottom]".format(name, side_name),
-         "direction": vec3(frame.x), "center": _world_from_local(frame, (0.0, 0.0, z0)), "kind": "circle"},
+         "direction": vec3(frame.x), "center": _world_from_local(frame, (cx, cy, z0)), "kind": "circle"},
     ]
     return faces, edges
 
@@ -2105,10 +2106,10 @@ class Workplane(object):
                 z0, z1 = 0.0, height
             else:
                 z0, z1 = height, 0.0
-        faces, edges = self._pending_topology(name, z0, z1, wires)
+        faces, edges = self._pending_topology(name, z0, z1, wires, solid)
         return self._apply_combine(solid, faces, edges, combine)
 
-    def _pending_topology(self, name, z0, z1, wires):
+    def _pending_topology(self, name, z0, z1, wires, solid=None):
         frame = self._active_frame()
         bounds = _wire_bounds(wires)
         if bounds is not None and _named_rect_sides(wires):
@@ -2136,8 +2137,18 @@ class Workplane(object):
                 })
                 edges.extend(_revolve_caps(
                     name, frame, z0, z1, radius,
-                    side_name="Circle{0}".format(circle_index),
+                    side_name="Circle{0}".format(circle_index), center=center,
                 )[1])
+        if edges and solid is not None:
+            # Sketch-derived edges are selection hints; the native solid owns
+            # authoritative references after split faces have been named.
+            current_names = solid.curve_names
+            for edge in edges:
+                atoms = edge["name"].strip("[]").split(",")
+                matches = [current for current in current_names
+                           if all(atom in current for atom in atoms)]
+                if len(matches) == 1:
+                    edge["name"] = matches[0]
         return faces, edges
 
     def revolve(self, angleDegrees=360, axisStart=None, axisEnd=None, combine=True, clean=True):

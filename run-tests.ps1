@@ -29,10 +29,23 @@ $python = Find-Python
 $pythonDir = Join-Path $root "Geo.Python\python"
 $env:CAMBER_PROGRESS = "0"
 $env:PYTHONPATH = $pythonDir
+$testModules = @(& git -C $root ls-files --cached --others --exclude-standard -- "Geo.Python/python/tests/test_*.py" |
+    ForEach-Object { $_ -replace '^Geo\.Python/python/', '' -replace '/', '.' -replace '\.py$', '' })
+if ($LASTEXITCODE -ne 0) { throw "Could not enumerate Python tests from the Git worktree." }
+if ($testModules.Count -eq 0) { throw "No non-ignored Python tests found." }
+
+# unittest discovery also imports locally ignored example tests (such as the
+# unfinished bike-model tests). Use Git's tracked/unignored file set so those
+# local-only files remain available without breaking the repository test run.
+Push-Location $pythonDir
+try {
 if ($python -is [array]) {
-    & $python[0] $python[1] -m unittest discover -s (Join-Path $pythonDir "tests") -t $pythonDir -v
+    & $python[0] $python[1] -m unittest @testModules -v
 } else {
-    & $python -m unittest discover -s (Join-Path $pythonDir "tests") -t $pythonDir -v
+    & $python -m unittest @testModules -v
+}
+} finally {
+    Pop-Location
 }
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

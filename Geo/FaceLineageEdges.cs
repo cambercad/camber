@@ -11,7 +11,25 @@ internal static class FaceLineageEdges
         var result = new List<string>();
         foreach (string reference in references)
         {
-            if (!EntityNaming.TryParseGroupEdgeAddress(reference, out var pair, requireFullMatch: true))
+            int openingBracket = reference.IndexOf('[');
+            bool fullyScoped = openingBracket > 0 && reference.Substring(0, openingBracket).Contains(':');
+            string localReference = reference;
+            if (fullyScoped)
+                localReference = reference.Substring(reference.LastIndexOf(':', openingBracket - 1) + 1);
+
+            // Scope-qualified complete names take precedence over their source
+            // face pair, which may itself be ambiguous after a split.
+            if (fullyScoped)
+                foreach (var edge in mesh.GroupEdges)
+                    if (StringComparer.Ordinal.Equals(edge.Name, localReference))
+                    {
+                        result.Add(edge.Name);
+                        localReference = null;
+                        break;
+                    }
+            if (localReference == null) continue;
+
+            if (!EntityNaming.TryParseGroupEdgeAddress(localReference, out var pair, requireFullMatch: true))
             {
                 mesh.ValidateEntityReference(reference);
                 result.Add(reference);
@@ -22,11 +40,24 @@ internal static class FaceLineageEdges
             // before considering ancestor support-pair aliases.
             bool currentFaces = mesh.extendedNameToGroupId.ContainsKey(pair.PatchA) &&
                 mesh.extendedNameToGroupId.ContainsKey(pair.PatchB);
+            bool HasMultipleCurrentDescendants(string patch)
+            {
+                int count = 0;
+                foreach (int id in mesh.extendedNameToGroupId.Values.Distinct())
+                    if (mesh.FaceLineages.TryGetValue(id, out var lineage) &&
+                        lineage.Roots.Contains(patch) && ++count > 1)
+                        return true;
+                return false;
+            }
+            bool ambiguousSupport = mesh.AmbiguousFaceReferences.Contains(pair.PatchA) ||
+                mesh.AmbiguousFaceReferences.Contains(pair.PatchB) ||
+                HasMultipleCurrentDescendants(pair.PatchA) || HasMultipleCurrentDescendants(pair.PatchB);
             if (currentFaces)
             {
                 string currentName = null;
                 foreach (var edge in mesh.GroupEdges)
-                    if (EntityNaming.MatchesGroupEdgeName(edge.Name, reference))
+                    if ((!ambiguousSupport || fullyScoped) &&
+                        EntityNaming.MatchesGroupEdgeName(edge.Name, localReference))
                     {
                         currentName = edge.Name;
                         break;
@@ -37,7 +68,7 @@ internal static class FaceLineageEdges
                     continue;
                 }
 
-                if (reference.TrimEnd().EndsWith("]", StringComparison.Ordinal))
+                if (!ambiguousSupport && reference.TrimEnd().EndsWith("]", StringComparison.Ordinal))
                 {
                     int count = 0;
                     foreach (var edge in mesh.GroupEdges)
@@ -49,11 +80,11 @@ internal static class FaceLineageEdges
                     if (count > 1)
                         throw new NameCollisionException($"Support-pair reference '{reference}' selects {count} connected edges; use a numbered current edge name.");
                 }
-                throw new NameCollisionException($"Current edge '{reference}' is not present on this solid.");
+                if (!ambiguousSupport)
+                    throw new NameCollisionException($"Current edge '{reference}' is not present on this solid.");
             }
 
-            if (!mesh.AmbiguousFaceReferences.Contains(pair.PatchA) &&
-                !mesh.AmbiguousFaceReferences.Contains(pair.PatchB))
+            if (!ambiguousSupport)
             {
                 mesh.ValidateEntityReference(reference);
                 result.Add(reference);

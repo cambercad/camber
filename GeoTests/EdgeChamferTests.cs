@@ -28,9 +28,8 @@ public class EdgeChamferTests : IDisposable
         Assert.True(
             MeshAnalysis.IsWatertightMesh(mesh.Positions, mesh.Triangles),
             $"{context}: mesh is not watertight");
-        Assert.True(
-            MeshAnalysis.ComputeSignedMeshVolume(mesh.Positions, mesh.Triangles) > 0,
-            $"{context}: signed volume should be positive");
+        double signedVolume = MeshAnalysis.ComputeSignedMeshVolume(mesh.Positions, mesh.Triangles);
+        Assert.True(signedVolume > 0, $"{context}: signed volume should be positive (actual {signedVolume}).");
     }
 
     private static string FindFirstGroupName(AnchorMesh mesh, Func<string, bool> predicate)
@@ -242,8 +241,10 @@ public class EdgeChamferTests : IDisposable
         string aTop = FindFirstGroupName(union, n => n.Contains("a-ExtrudeTop"));
         string bCircle1 = FindFirstGroupName(union, n => n.Contains("b-Circle1"));
 
-        var chamfered = ChamferFirstMatchingEdgeName(api, union, aTop, bCircle1,
-            chamferDistance: 0.1, maxDiscretizationDeviation: 1e-4, name: "c_chamfered");
+        string edge = union.GroupEdges.Select(groupEdge => groupEdge.Name).Single(name =>
+            name.Contains(aTop, StringComparison.Ordinal) && name.Contains(bCircle1, StringComparison.Ordinal));
+        var chamfered = api.Chamfer(union, [edge],
+            chamferDistance: 0.1, maxDeviation: 1e-4, name: "c_chamfered");
 
         double volAfter = ComputeMeshVolume(chamfered.Mesh);
 
@@ -251,5 +252,24 @@ public class EdgeChamferTests : IDisposable
         Assert.True(Math.Abs(volAfter - volBefore) > 1e-6, "chamfer should change the solid volume");
         Assert.True(volAfter > 0.9 * volBefore && volAfter < 1.1 * volBefore,
             $"small chamfer on a curved union seam should only slightly change volume (before={volBefore}, after={volAfter})");
+    }
+
+    [Fact]
+    public void ChamferOnCylinderUnionRimKeepsTheJoinedBody()
+    {
+        var api = new GeoAPI(new Box3D(new Vec3D(-10), new Vec3D(20)), 0.02);
+        var hub = api.CreateCylinder(new CoordinateSystem(new Vec3D(0, 0, 0)), 5, 5, 0.02, "hub");
+        var crossing = api.CreateCylinder(
+            new CoordinateSystem(new Vec3D(-7, 0, 2.5), new Vec3D(0, 1, 0),
+                new Vec3D(0, 0, 1), new Vec3D(1, 0, 0)), 1, 14, 0.02, "crossing");
+        var body = api.Boolean(hub, crossing, BooleanOp.Union, "joined");
+        string edge = body.GroupEdges.Select(groupEdge => groupEdge.Name).Single(name =>
+            name.Contains("crossing-Circle1", StringComparison.Ordinal) &&
+            name.Contains("crossing-ExtrudeBottom", StringComparison.Ordinal));
+
+        var chamfered = api.Chamfer(body, [edge], 0.1, 0.02, "joined_chamfered");
+        AssertMeshSolid(chamfered.Mesh, nameof(ChamferOnCylinderUnionRimKeepsTheJoinedBody));
+        double removed = ComputeMeshVolume(body.Mesh) - ComputeMeshVolume(chamfered.Mesh);
+        Assert.InRange(removed, 0.001, 0.1);
     }
 }

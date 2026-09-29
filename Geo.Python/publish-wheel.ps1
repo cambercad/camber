@@ -1,7 +1,7 @@
 param(
     [string]$Runtime = "win-x64",
     [string]$Configuration = "Release",
-    [string]$WheelVersion = "0.1.4"
+    [string]$WheelVersion = "0.1.5"
 )
 
 $ErrorActionPreference = "Stop"
@@ -77,4 +77,4 @@ Write-Host "Wheels in $dist"
 Get-ChildItem $dist -Filter "cambercad-*.whl"
 Write-Host "Install: uv pip install `"$dist\cambercad-*.whl[view]`""
 Write-Host "Smoke:   python python\smoke.py"
-Write-Host "Later PyPI: twine upload dist\cambercad-*.whl"
+Write-Host "Later PyPI: twine upload `"$dist\cambercad-$WheelVersion-*.whl`""

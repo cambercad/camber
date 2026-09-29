@@ -522,19 +522,8 @@ namespace Geo
             if (!MeshAnalysis.AreTrianglesConsistentlyOriented(triangles))
                 throw new Exception();
 
-            EnsureExactStripWinding(triangles, precise, CenterCurve, numPointsPerStrip, BlendType);
-            double strongestNormalAlignment = 0;
-            foreach (var tri in triangles)
-            {
-                var winding = Vec3DOps.Cross(points[tri.B] - points[tri.A],
-                    points[tri.C] - points[tri.A]);
-                double alignment = Vec3DOps.Dot(winding,
-                    normals[tri.A] + normals[tri.B] + normals[tri.C]);
-                if (Math.Abs(alignment) > Math.Abs(strongestNormalAlignment))
-                    strongestNormalAlignment = alignment;
-            }
-            if (strongestNormalAlignment < 0)
-                for (int i = 0; i < normals.Count; i++) normals[i] = -normals[i];
+            if (!TryEnsureExactStripWinding(triangles, precise, CenterCurve, numPointsPerStrip, BlendType))
+                EnsureChamferStripWinding(triangles, points, precise, normals);
             RawSurface = new UVSurface(points, normals, uv, triangles, precise);
             return true;
         }
@@ -1225,7 +1214,8 @@ namespace Geo
             return result;
         }
 
-        public static MeshNormalUV ApplyBlendSurfaceToVolume(MeshNormalUV blendSurface, MeshNormalUV volume, CoordinateConverter cc, EdgeBlendType blendType)
+        public static MeshNormalUV ApplyBlendSurfaceToVolume(MeshNormalUV blendSurface, MeshNormalUV volume,
+            CoordinateConverter cc, EdgeBlendType blendType, bool chamfer = false)
         {
             // TODO: Need a correct triangle group index
             // Convert blend surface to mesh
@@ -1245,11 +1235,47 @@ namespace Geo
                     BooleanOp.AAsSurfaceBAsTrimVolumeKeepOutside, cc);
 
             // Apply blend surface to volume
-            MeshNormalUV trimmed = blendType == EdgeBlendType.Concave
-                ? MeshNormalUV.BooleanOperationRetainingExteriorTrimCaps(volume, blendSurface, operation, cc)
-                : MeshNormalUV.BooleanOperation(volume, blendSurface, operation, cc);
+            MeshNormalUV Trim(MeshNormalUV trimSurface) => blendType == EdgeBlendType.Concave
+                ? MeshNormalUV.BooleanOperationRetainingExteriorTrimCaps(volume, trimSurface, operation, cc)
+                : MeshNormalUV.BooleanOperation(volume, trimSurface, operation, cc);
+
+            MeshNormalUV trimmed = Trim(blendSurface);
+            double inputOrientation = MeshAnalysis.ComputeSignedMeshVolume(volume.Positions, volume.Triangles);
+            double resultOrientation = MeshAnalysis.ComputeSignedMeshVolume(trimmed.Positions, trimmed.Triangles);
+            if (chamfer && blendType == EdgeBlendType.Concave &&
+                Math.Sign(inputOrientation) != Math.Sign(resultOrientation))
+            {
+                // CSG cap selection depends on the exposed patch boundary winding.
+                // Retry with the opposite orientation only when the first trim
+                // reverses the source solid's global orientation.
+                var corrected = Trim(ReverseWinding(blendSurface));
+                if (Math.Sign(inputOrientation) == Math.Sign(
+                    MeshAnalysis.ComputeSignedMeshVolume(corrected.Positions, corrected.Triangles)))
+                    trimmed = corrected;
+            }
             trimmed.RunSanityChecks();
             return trimmed;
+        }
+
+        private static MeshNormalUV ReverseWinding(MeshNormalUV mesh)
+        {
+            var triangles = new List<Tri>(mesh.Triangles.Count);
+            var data = new List<MeshTriangle<TriangleVertexNormalUV>>(mesh.TrianglesEx.Count);
+            for (int i = 0; i < mesh.Triangles.Count; i++)
+            {
+                var triangle = mesh.Triangles[i];
+                triangles.Add(new Tri(triangle.A, triangle.C, triangle.B));
+                var corners = mesh.TrianglesEx[i];
+                (corners.V1, corners.V2) = (corners.V2, corners.V1);
+                data.Add(corners);
+            }
+            return new MeshNormalUV
+            {
+                Positions = mesh.Positions,
+                PrecisionPositions = mesh.PrecisionPositions,
+                Triangles = triangles,
+                TrianglesEx = data,
+            };
         }
 
 
@@ -1652,6 +1678,13 @@ namespace Geo
         private static void EnsureExactStripWinding(List<Tri> triangles, List<Rat3Hybrid> points,
             List<Rat3Hybrid> centers, int rowLength, EdgeBlendType blendType)
         {
+            if (!TryEnsureExactStripWinding(triangles, points, centers, rowLength, blendType))
+                throw new InvalidOperationException("Blend strip has no nondegenerate oriented triangle.");
+        }
+
+        private static bool TryEnsureExactStripWinding(List<Tri> triangles, List<Rat3Hybrid> points,
+            List<Rat3Hybrid> centers, int rowLength, EdgeBlendType blendType)
+        {
             var largestArea = BigRationalHybrid.Zero;
             int orientation = 0;
             foreach (var tri in triangles)
@@ -1668,9 +1701,43 @@ namespace Geo
                 largestArea = area;
                 orientation = sign;
             }
-            if (orientation == 0)
-                throw new InvalidOperationException("Blend strip has no nondegenerate oriented triangle.");
+            if (orientation == 0) return false;
             if ((blendType == EdgeBlendType.Convex ? orientation : -orientation) < 0)
+                for (int i = 0; i < triangles.Count; i++)
+                {
+                    var tri = triangles[i];
+                    triangles[i] = new Tri(tri.A, tri.C, tri.B);
+                }
+            return true;
+        }
+
+        // On a planar chamfer, radial winding has no sign: its triangles are
+        // perpendicular to the across direction, while points minus spine lie
+        // entirely across the strip. Use rail normals only in that degenerate case.
+        private static void EnsureChamferStripWinding(List<Tri> triangles,
+            IReadOnlyList<Vec3D> points, IReadOnlyList<Rat3Hybrid> precise,
+            IReadOnlyList<Vec3D> normals)
+        {
+            BigRationalHybrid largestArea = BigRationalHybrid.Zero;
+            double strongestAlignment = 0;
+            foreach (var tri in triangles)
+            {
+                var exactCross = Rat3Hybrid.Cross(precise[tri.B] - precise[tri.A],
+                    precise[tri.C] - precise[tri.A]);
+                var area = Rat3Hybrid.Dot(exactCross, exactCross);
+                if (area <= largestArea) continue;
+
+                var geometricNormal = new Vec3D(exactCross.X.ToDouble(), exactCross.Y.ToDouble(), exactCross.Z.ToDouble());
+                double alignment = Vec3DOps.Dot(geometricNormal,
+                    normals[tri.A] + normals[tri.B] + normals[tri.C]);
+                if (alignment == 0 || !double.IsFinite(alignment)) continue;
+                largestArea = area;
+                strongestAlignment = alignment;
+            }
+
+            if (largestArea == BigRationalHybrid.Zero || strongestAlignment == 0)
+                throw new InvalidOperationException("Chamfer strip has no nondegenerate oriented triangle.");
+            if (strongestAlignment < 0)
                 for (int i = 0; i < triangles.Count; i++)
                 {
                     var tri = triangles[i];
