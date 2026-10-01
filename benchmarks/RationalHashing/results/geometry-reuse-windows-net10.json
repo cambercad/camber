@@ -1,0 +1,137 @@
+{
+  "date": "2026-09-30",
+  "platform": "Windows",
+  "sdk": "10.0.401",
+  "configuration": "Release",
+  "tieredCompilation": false,
+  "workload": "hex_bolt",
+  "warmupsPerProcess": 2,
+  "timedBuildsPerProcess": 5,
+  "allocationMetric": "Cumulative managed bytes allocated during one build, not peak memory.",
+  "before": "Preserved compiled working tree before the three geometry caller optimizations.",
+  "changes": [
+    "Share exact rational orientation cache entries across point permutations.",
+    "Skip the second pair of orientation tests when the first pair proves segments do not intersect.",
+    "Reuse trim segment directions and coordinate comparisons; use the existing exact cross-product sign predicate for collinearity."
+  ],
+  "beforeSamples": {
+    "ms": [
+      12119.7615,
+      12060.2814,
+      11919.4585,
+      12203.7212,
+      12560.9874
+    ],
+    "bytes": [
+      9312357432,
+      9310994928,
+      9310475504,
+      9310551776,
+      9311252384
+    ],
+    "checksums": [
+      80410,
+      80410,
+      80410,
+      80410,
+      80410
+    ]
+  },
+  "orientationReuseAndEarlyRejectionSamples": {
+    "ms": [
+      11300.4422,
+      11358.8249,
+      11414.2522,
+      11220.0176,
+      11358.5874
+    ],
+    "bytes": [
+      8855456448,
+      8854910032,
+      8854339984,
+      8854866520,
+      8854930288
+    ],
+    "checksums": [
+      80410,
+      80410,
+      80410,
+      80410,
+      80410
+    ]
+  },
+  "finalSamples": [
+    {
+      "ms": [
+        11305.6314,
+        11092.3568,
+        11239.2851,
+        11630.5065,
+        11636.5104
+      ],
+      "bytes": [
+        8783707736,
+        8782960704,
+        8781719168,
+        8782913984,
+        8782439200
+      ],
+      "checksums": [
+        80410,
+        80410,
+        80410,
+        80410,
+        80410
+      ]
+    },
+    {
+      "ms": [
+        11089.8969,
+        10982.6729,
+        11126.3782,
+        11066.1565,
+        11069.0834
+      ],
+      "bytes": [
+        8782967312,
+        8781757048,
+        8782415056,
+        8781778600,
+        8782426088
+      ],
+      "checksums": [
+        80410,
+        80410,
+        80410,
+        80410,
+        80410
+      ]
+    }
+  ],
+  "summary": {
+    "beforeMedianMs": 12119.7615,
+    "afterMedianMs": 11109.3675,
+    "beforeMedianAllocatedBytes": 9310994928,
+    "afterMedianAllocatedBytes": 8782432644,
+    "runtimeReductionPercent": 8.336748210763057,
+    "allocationReductionPercent": 5.676754075018442
+  },
+  "validation": {
+    "passed": 1233,
+    "skipped": 3,
+    "failed": 0,
+    "verificationBuilds": 3,
+    "triangles": 80410,
+    "watertight": true,
+    "volume": 0.000003649095588218151,
+    "triangleHashXor": "12147636531750668832",
+    "triangleHashSum": "17001551459956157350"
+  },
+  "profiling": {
+    "tool": "dotnet-trace",
+    "profile": "dotnet-sampled-thread-time",
+    "note": "Sampled thread time includes waiting; application stack samples are approximate rather than kernel CPU measurements.",
+    "beforeOrient2DCacheStackSampleMs": 3552.3,
+    "afterOrient2DCacheStackSampleMs": 2699.6
+  }
+}

@@ -50,13 +50,24 @@ namespace GeoCore
 
         public int Orient2D(int a, int b, int c)
         {
+            int sign = 1;
+            // Exact rational orientation changes sign on each swap. Share one
+            // cache entry across all six permutations of the same three points.
+            // Floating-point predicates retain their original evaluation order.
+            if (typeof(Arithmetic) == typeof(Rat2HybridArithmetic))
+            {
+                if (a == b || b == c || a == c) return 0;
+                if (a > b) { (a, b) = (b, a); sign = -sign; }
+                if (b > c) { (b, c) = (c, b); sign = -sign; }
+                if (a > b) { (a, b) = (b, a); sign = -sign; }
+            }
             var key = (a, b, c);
             if (!orient2DCache.TryGetValue(key, out int result))
             {
                 result = arithmetic.Orient2D(points[a], points[b], points[c]);
                 orient2DCache.Add(key, result);
             }
-            return result;
+            return sign * result;
         }
 
         public void SetTriangle(int i, Tri t) => triangles[i] = t;

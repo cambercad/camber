@@ -568,7 +568,7 @@ namespace CSG
             BoolSettings boolSettings = new BoolSettings(op);
 
             tim = timing.Start("PrepareTriangulate");
-            ResolverTriangle.ArrangeTrimSegments(resolverTris, newPoints);
+            ResolverTriangle.ArrangeTrimSegments(resolverTris, newPoints, numValidTrisA);
             Dictionary<long, int> insertedSegmentsA = new Dictionary<long, int>();
             for (int i = 0; i < numValidTrisA; ++i)
                 resolverTris[i].PrepareTriangulate(newPoints, insertedSegmentsA);

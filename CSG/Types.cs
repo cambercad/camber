@@ -417,11 +417,16 @@ namespace CSG
                     in a, in b, in c, out _, out _, out _, out _, out int x, out int y))
                 return;
 
-            var bounds = segments.Select(segment => (
-                minX:segment.A[x]<segment.B[x]?segment.A[x]:segment.B[x],
-                maxX:segment.A[x]>segment.B[x]?segment.A[x]:segment.B[x],
-                minY:segment.A[y]<segment.B[y]?segment.A[y]:segment.B[y],
-                maxY:segment.A[y]>segment.B[y]?segment.A[y]:segment.B[y])).ToArray();
+            var bounds = segments.Select(segment =>
+            {
+                int orderX = segment.A[x].CompareTo(segment.B[x]);
+                int orderY = segment.A[y].CompareTo(segment.B[y]);
+                return (minX: orderX <= 0 ? segment.A[x] : segment.B[x],
+                    maxX: orderX <= 0 ? segment.B[x] : segment.A[x],
+                    minY: orderY <= 0 ? segment.A[y] : segment.B[y],
+                    maxY: orderY <= 0 ? segment.B[y] : segment.A[y],
+                    direction: segment.B - segment.A);
+            }).ToArray();
             var cuts = new List<BigRationalHybrid>[segments.Count];
             for (int i = 0; i < segments.Count; i++)
                 cuts[i] = new List<BigRationalHybrid> { new(0), new(1) };
@@ -430,8 +435,10 @@ namespace CSG
             void AddEndpoint(int index, Rat3Hybrid point)
             {
                 var segment = segments[index];
-                var direction = segment.B - segment.A;
-                if (direction == new Rat3Hybrid(0, 0, 0) || Cross(point - segment.A, direction).Sign() != 0) return;
+                var direction = bounds[index].direction;
+                if (direction == Rat3Hybrid.Zero) return;
+                var delta = point - segment.A;
+                if (BigRationalHybrid.SignOfCrossProduct(delta[x], direction[y], delta[y], direction[x]) != 0) return;
                 int axis = direction[x].Sign() != 0 ? x : y;
                 var parameter = (point[axis] - segment.A[axis]) / direction[axis];
                 if (parameter >= new BigRationalHybrid(0) && parameter <= new BigRationalHybrid(1))
@@ -441,13 +448,13 @@ namespace CSG
             for (int i = 0; i < segments.Count; i++)
             {
                 var first = segments[i];
-                var direction = first.B - first.A;
+                var direction = bounds[i].direction;
                 for (int j = i + 1; j < segments.Count; j++)
                 {
                     if (bounds[i].maxX<bounds[j].minX || bounds[j].maxX<bounds[i].minX ||
                         bounds[i].maxY<bounds[j].minY || bounds[j].maxY<bounds[i].minY) continue;
                     var second = segments[j];
-                    var otherDirection = second.B - second.A;
+                    var otherDirection = bounds[j].direction;
                     var denominator = Cross(direction, otherDirection);
                     if (denominator.Sign() == 0)
                     {
@@ -476,15 +483,24 @@ namespace CSG
                 if (!sharedCuts.TryGetValue(key,out var list))
                     sharedCuts.Add(key,list=new List<Rat3Hybrid>());
                 foreach (var parameter in cuts[i])
-                    list.Add(segment.A+(segment.B-segment.A)*parameter);
+                    list.Add(segment.A+bounds[i].direction*parameter);
             }
         }
 
-        internal static void ArrangeTrimSegments(IEnumerable<ResolverTriangle> triangles, NewPointCreator points)
+        internal static void ArrangeTrimSegments(IEnumerable<ResolverTriangle> triangles, NewPointCreator points,
+            int firstParallelTriangle = int.MaxValue)
         {
             var sharedCuts = new Dictionary<long,List<Rat3Hybrid>>();
+            int triangleIndex = 0;
             foreach (var triangle in triangles)
+            {
+                // Parallel overlap workers can append to the same triangle in
+                // different orders. The cut graph and its triangulation use
+                // this list order, so make it independent of scheduling.
+                if (triangleIndex++ >= firstParallelTriangle && triangle.insertedSegments?.Count > 1)
+                    triangle.insertedSegments.Sort(CompareSegments);
                 triangle.CollectTrimSegmentCuts(points,sharedCuts);
+            }
             // Both intersecting meshes must use identical subedges. A cut found
             // on either triangle is propagated to every copy of that segment.
             foreach (var triangle in triangles)
@@ -511,6 +527,20 @@ namespace CSG
                     }
                 }
             }
+        }
+
+        private static int ComparePoints(in Rat3Hybrid left, in Rat3Hybrid right)
+        {
+            int result = left.X.CompareTo(right.X);
+            if (result != 0) return result;
+            result = left.Y.CompareTo(right.Y);
+            return result != 0 ? result : left.Z.CompareTo(right.Z);
+        }
+
+        private static int CompareSegments(PointPair left, PointPair right)
+        {
+            int result = ComparePoints(in left.A, in right.A);
+            return result != 0 ? result : ComparePoints(in left.B, in right.B);
         }
 
         public void PrepareTriangulate(NewPointCreator newPointCreator, Dictionary<long, int> splitSegments = null)
@@ -646,14 +676,17 @@ namespace CSG
 
         public bool AddSegment(PointPair segment)
         {
+            // Simplification only mutates this local copy of the segment. Do it
+            // before acquiring the B-triangle lock so concurrent pair workers
+            // can perform the expensive rational work in parallel.
+            segment.A.Simplify();
+            segment.B.Simplify();
+
             // Dual-write Resolve can add to the same B triangle from many A workers.
             lock (this)
             {
             if (insertedSegments == null)
                 insertedSegments = new List<PointPair>();
-
-            segment.A.Simplify();
-            segment.B.Simplify();
 
             //Check if the segment already exists
             for (int i = 0; i < insertedSegments.Count; ++i)

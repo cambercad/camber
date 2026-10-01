@@ -69,10 +69,13 @@
             if (constraint.Contains(idA) || constraint.Contains(idB))
                 return false; //Segment and constraint are connected at an end point. Since they are not collinear, they don't intersect, just touch
 
+            // Both endpoints on the same side already prove no intersection.
+            if (Math.Sign(x) == Math.Sign(y)) return false;
+
             var a = arithmetic.Orient2D(pa, px, py);
             var b = arithmetic.Orient2D(pb, px, py);
 
-            return Math.Sign(x) != Math.Sign(y) && Math.Sign(a) != Math.Sign(b);
+            return Math.Sign(a) != Math.Sign(b);
         }
 
         public static bool CollinearSegmentsOverlap(Arithmetic arithmetic, List<Vec> points, int idA, int idB, Int2 constraint)

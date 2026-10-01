@@ -3,10 +3,9 @@
 Pipe 1 is the only ground. Each next pipe is added at the origin, mated, and
 solved; previous flange mates keep the seated chain in place.
 
-Each joint uses named geometry only:
-  * coincidence of the pipe terminal ExtrudeTop / ExtrudeBottom faces
-  * same-normal coincidence of one pair of outer flange sides (clocks the square)
-  * concentric inner-pipe cylinders (horizontal end vs vertical end) so the joint cannot slide
+Each joint uses end frames retained from the sweep's terminal sketch planes. The
+boolean-fused flanges do not preserve the original terminal face names, so the
+assembly uses explicit plane/axis datums at those same design references.
 """
 from camber import Part, vec3
 from pipe import create_pipe
@@ -27,24 +26,24 @@ assembly.fix(bodies[0])
 
 
 def mate_flanged_ends(top_index, bottom_index):
-    top_name = "pipe{0}".format(top_index + 1)
-    bottom_name = "pipe{0}".format(bottom_index + 1)
     top = bodies[top_index]
     bottom = bodies[bottom_index]
+    top_frame = pipes[top_index]._pipe_end_frames[1]
+    bottom_frame = pipes[bottom_index]._pipe_end_frames[0]
 
     assembly.coincident(
-        top.plane(top_name + "-ExtrudeTop"),
-        bottom.plane(bottom_name + "-ExtrudeBottom"),
+        top.plane_at(top_frame.origin, top_frame.z),
+        bottom.plane_at(bottom_frame.origin, bottom_frame.z),
         opposite_normals=True,
     )
     assembly.coincident(
-        top.plane(top_name + "-top_flange-north"),
-        bottom.plane(bottom_name + "-bottom_flange-north"),
+        top.plane_at(top_frame.origin + top_frame.y * 180.0, top_frame.y),
+        bottom.plane_at(bottom_frame.origin + bottom_frame.y * 180.0, bottom_frame.y),
         opposite_normals=False,
     )
     assembly.concentric(
-        top.axis(top_name + "-inner-v_line"),
-        bottom.axis(bottom_name + "-inner-h_line"),
+        top.axis_at(top_frame.origin, top_frame.z),
+        bottom.axis_at(bottom_frame.origin, bottom_frame.z),
     )
 
 

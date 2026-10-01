@@ -721,6 +721,16 @@ class NativeWorkplaneTests(unittest.TestCase):
         rounded = rims.fillet(0.2)
         self.assertTrue(rounded.val().is_watertight())
 
+    def test_circle_extrusion_rims_remain_selectable_after_union(self):
+        base = Workplane("XY", size=20, tolerance=0.05).box(8, 6, 1)
+        bosses = (base.faces(">Z").workplane().pushPoints([(-2, 0), (2, 0)])
+                  .circle(0.75).extrude(1.0))
+        rims = bosses.faces(">Z").edges()
+        names = [edge["name"] for edge in rims._selected_edges]
+        self.assertEqual(2, len(names))
+        self.assertTrue(set(names).issubset(bosses.val().curve_names))
+        self.assertTrue(rims.fillet(0.2).val().is_watertight())
+
     def test_revolve_disk_is_volume(self):
         # Profile in XY; default revolve is around workplane Y.
         result = (

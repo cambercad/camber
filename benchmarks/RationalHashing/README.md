@@ -29,6 +29,47 @@ The optional argument `micro` runs hashing and deduplication only;
 with five measured samples after two warmups, total managed allocated bytes,
 and a checksum. Hash checksums vary between processes because .NET salts hashes.
 
+`hex_bolt` builds the M10 x 35 mm scene from
+`Geo.Python/python/examples/standalone/hex_bolt.py` using the same geometry
+recipe through the C# API. It uses two warmups and five timed builds.
+`hex_bolt_once` reports one build's triangle count, peak and current process
+working set, and live managed bytes. `hex_bolt_verify` builds three times and
+reports triangle count, exact-position watertightness, and double-precision
+signed volume plus order-independent triangle-coordinate signatures for each
+result. The `bytes` field in timed output is cumulative
+allocation during one build, not peak memory.
+
+### FastBigInteger and deterministic Boolean follow-up
+
+Windows, .NET SDK 10.0.401, Release, tiered compilation disabled; detached
+baseline at `3c5c6c8` and the same C# hex-bolt harness in both builds. Five
+timed builds followed two warmups. Median hex-bolt time fell from 15.24 s to
+11.86 s; median cumulative allocation fell from 18.00 GB to 9.31 GB.
+The baseline's triangle count varied across builds (80,402 to 80,406).
+The candidate sorted intersection segments only for triangles written by
+multiple overlap workers. Its five timed builds and six verification builds
+all produced 80,410 triangles; verification builds also matched in both
+order-independent mesh signatures and were watertight. The signed volume was
+3.649095588218151e-6 in those verification runs.
+
+A subsequent small geometry change shares exact rational orientation cache
+entries across point permutations, rejects nonintersecting segments before
+running two more orientation tests, and reuses trim segment directions and
+coordinate comparisons. Endpoint collinearity uses the existing exact
+cross-product sign predicate. Floating-point orientation keeps its original
+evaluation order.
+
+The preserved pre-change build measured 12.12 s median over five timed builds;
+the final build measured 11.11 s across ten timed builds in two processes
+(8.3% less time). Median cumulative allocation fell from 9.31 GB to 8.78 GB
+(5.7% less). All timed builds produced 80,410 triangles, and three verification
+builds matched the previous volume and both mesh signatures and were watertight.
+The Release suite passed with 1,233 passed, 3 skipped, and no failures. Raw
+samples and profiler notes are in `results/geometry-reuse-windows-net10.json`.
+
+The older comparison below concerns a different rational-hashing change and
+is retained as historical benchmark data.
+
 Use independent source/output directories for baseline and candidate. The
 recorded baseline is `bda1ede`; the candidate differs **only in
 `RationalNumbers/BigRational.cs` and `BigRationalHybrid.cs`**. The other sweep/cap

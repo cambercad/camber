@@ -247,63 +247,89 @@ def build_pin(part, name="pin"):
     return (shank + head) - (tube - core)
 
 
-def _axis(inst, op):
-    """Cylindrical wall of an extruded circle (the pickable side patch)."""
-    return inst.axis(op + "-Circle1")
+def _current_face(body, marker):
+    """Resolve a source feature marker to its current, provenance-qualified face."""
+    matches = [face for face in body.patch_names if marker in face]
+    if not matches:
+        raise ValueError("no current face on {0!r} contains {1!r}".format(body.name, marker))
+    return matches[0]
 
 
-def _bottom(inst, op):
-    return inst.plane(op + "-ExtrudeBottom")
+def _axis(inst, body, op):
+    """Concentric mate on the current cylindrical face from a source feature."""
+    return inst.axis(_current_face(body, op + "-Circle1"))
 
 
-def _top(inst, op):
-    return inst.plane(op + "-ExtrudeTop")
+def _bottom(inst, body, op):
+    return inst.plane(_current_face(body, op + "-ExtrudeBottom"))
+
+
+def _top(inst, body, op):
+    return inst.plane(_current_face(body, op + "-ExtrudeTop"))
 
 
 def mate_gearbox(asm, housing, ring, sun, planets, pins, carrier, carrier_hub_axis,
-                 cover, brg_in, brg_out, screws):
+                 cover, brg_in, brg_out, screws, geometry):
     """Ground the housing, then mate cylinder walls (Zylindermantel) and their end caps."""
     asm.fix(housing)
 
-    asm.concentric(_axis(ring, "ring_blank"), _axis(housing, "housing_ring_pocket"))
-    asm.coincident(_bottom(ring, "ring_flange"), _bottom(housing, "housing_flange_pocket"))
-    asm.concentric(_axis(ring, "ring_flange_h0"), _axis(housing, "housing_tap0"))
+    asm.concentric(_axis(ring, geometry["ring"], "ring_blank"),
+                   _axis(housing, geometry["housing"], "housing_ring_pocket"))
+    asm.coincident(_bottom(ring, geometry["ring"], "ring_flange"),
+                   _bottom(housing, geometry["housing"], "housing_flange_pocket"))
+    asm.concentric(_axis(ring, geometry["ring"], "ring_flange_h0"),
+                   _axis(housing, geometry["housing"], "housing_tap0"))
 
-    asm.concentric(_axis(cover, "cover"), _axis(housing, "housing_od"))
-    asm.coincident(_bottom(cover, "cover"), _top(housing, "housing_od"))
-    asm.concentric(_axis(cover, "cover_h0"), _axis(housing, "housing_tap0"))
+    asm.concentric(_axis(cover, geometry["cover"], "cover"),
+                   _axis(housing, geometry["housing"], "housing_od"))
+    asm.coincident(_bottom(cover, geometry["cover"], "cover"),
+                   _top(housing, geometry["housing"], "housing_od"))
+    asm.concentric(_axis(cover, geometry["cover"], "cover_h0"),
+                   _axis(housing, geometry["housing"], "housing_tap0"))
 
-    asm.concentric(_axis(brg_out, "brg_out_or"), _axis(housing, "housing_brg"))
-    asm.coincident(_bottom(brg_out, "brg_out_or"), _bottom(housing, "housing_brg"))
+    asm.concentric(_axis(brg_out, geometry["brg_out"], "brg_out_or"),
+                   _axis(housing, geometry["housing"], "housing_brg"))
+    asm.coincident(_bottom(brg_out, geometry["brg_out"], "brg_out_or"),
+                   _bottom(housing, geometry["housing"], "housing_brg"))
 
-    asm.concentric(_axis(brg_in, "brg_in_or"), _axis(cover, "cover_brg"))
-    asm.coincident(_bottom(brg_in, "brg_in_or"), _bottom(cover, "cover"))
+    asm.concentric(_axis(brg_in, geometry["brg_in"], "brg_in_or"),
+                   _axis(cover, geometry["cover"], "cover_brg"))
+    asm.coincident(_bottom(brg_in, geometry["brg_in"], "brg_in_or"),
+                   _bottom(cover, geometry["cover"], "cover"))
 
-    asm.concentric(carrier_hub_axis, _axis(brg_out, "brg_out_irb"))
+    asm.concentric(carrier_hub_axis, _axis(brg_out, geometry["brg_out"], "brg_out_irb"))
     asm.distance(
-        _bottom(carrier, "carrier_rear"), _bottom(housing, "housing_od"),
+        _bottom(carrier, geometry["carrier"], "carrier_rear"),
+        _bottom(housing, geometry["housing"], "housing_od"),
         Z_PLATE_R0 - Z_HOUSING0)
 
-    asm.concentric(_axis(sun, "sun_shaft"), _axis(brg_in, "brg_in_irb"))
+    asm.concentric(_axis(sun, geometry["sun"], "sun_shaft"),
+                   _axis(brg_in, geometry["brg_in"], "brg_in_irb"))
     asm.distance(
-        _bottom(sun, "sun"), _bottom(housing, "housing_od"),
+        _bottom(sun, geometry["sun"], "sun"),
+        _bottom(housing, geometry["housing"], "housing_od"),
         Z_GEAR0 - Z_HOUSING0)
 
     for k, pin in enumerate(pins):
         asm.concentric(
-            _axis(pin, pin.name),
-            _axis(carrier, "carrier_rear_h{0}".format(k + 1)))
+            _axis(pin, geometry["pins"][k], pin.name),
+            _axis(carrier, geometry["carrier"], "carrier_rear_h{0}".format(k + 1)))
         asm.distance(
-            _bottom(pin, pin.name + "-head"), _bottom(carrier, "carrier_rear"),
+            _bottom(pin, geometry["pins"][k], pin.name + "-head"),
+            _bottom(carrier, geometry["carrier"], "carrier_rear"),
             PIN_Z0 - Z_PLATE_R0)
 
     for k, planet in enumerate(planets):
-        asm.concentric(_axis(planet, "planet_bore"), _axis(pins[k], pins[k].name))
-        asm.coincident(_bottom(planet, planet.name), _bottom(sun, "sun"))
+        asm.concentric(_axis(planet, geometry["planets"][k], "planet_bore"),
+                       _axis(pins[k], geometry["pins"][k], pins[k].name))
+        asm.coincident(_bottom(planet, geometry["planets"][k], planet.name),
+                       _bottom(sun, geometry["sun"], "sun"))
 
     for i, screw in enumerate(screws):
-        asm.concentric(_axis(screw, "m4_shank"), _axis(cover, "cover_h{0}".format(i)))
-        asm.coincident(_bottom(screw, screw.name), _top(cover, "cover"))
+        asm.concentric(_axis(screw, geometry["screws"][i], "m4_shank"),
+                       _axis(cover, geometry["cover"], "cover_h{0}".format(i)))
+        asm.coincident(_bottom(screw, geometry["screws"][i], screw.name),
+                       _top(cover, geometry["cover"], "cover"))
 
 
 def build_gearbox():
@@ -358,7 +384,10 @@ def build_gearbox():
         if "carrier_hub-Circle1" in face and not face.endswith("carrier_hub-Circle1"))
     mate_gearbox(
         asm, hsg, rng, sun_i, planet_i, pin_i, car, car.axis(carrier_hub_face),
-        cvr, bin_i, bout_i, screw_i)
+        cvr, bin_i, bout_i, screw_i,
+        {"housing": housing, "ring": ring, "sun": sun, "planets": planets,
+         "pins": pins, "carrier": carrier, "cover": cover, "brg_in": brg_in,
+         "brg_out": brg_out, "screws": screws})
     asm.solve()
 
     print(

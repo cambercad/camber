@@ -301,6 +301,16 @@ def _select_edges(edges, selector):
     return _select_items(edges, selector, kind="edge")
 
 
+def _edge_name_atoms(name):
+    """Return the two source entities encoded by a canonical edge name."""
+    return tuple(atom.strip() for atom in name.rsplit(":", 1)[-1].strip("[]").split(","))
+
+
+def _name_without_split_index(name):
+    """Ignore only the numeric suffix used when CSG splits one named patch."""
+    return re.sub(r"_\d+$", "", name)
+
+
 def _select_items(items, selector, kind):
     items = list(items or [])
     text = str(selector).strip() if selector is not None else ""
@@ -1516,10 +1526,11 @@ class Workplane(object):
         name = self._solid.name
         if combine is True or combine in ("a", "union"):
             merged = self.part.union(self._solid, solid, name=name)
+            edges = self._current_edge_hints(merged, self._edges + list(edges))
             return self._cleared(
                 _solid=merged,
                 _faces=self._faces + list(faces),
-                _edges=self._edges + list(edges),
+                _edges=edges,
             )
         if combine in ("cut", "s", "difference"):
             merged = self.part.subtract(self._solid, solid, name=name)
@@ -1528,6 +1539,21 @@ class Workplane(object):
             merged = self.part.intersect(self._solid, solid, name=name)
             return self._cleared(_solid=merged, _faces=list(self._faces), _edges=list(self._edges))
         raise ValueError("unknown combine mode {0!r}".format(combine))
+
+    @staticmethod
+    def _current_edge_hints(solid, edges):
+        """Keep selection hints only when they resolve uniquely after a boolean."""
+        current_names = solid.curve_names
+        resolved = []
+        for edge in edges:
+            atoms = {_name_without_split_index(atom)
+                     for atom in _edge_name_atoms(edge["name"])}
+            matches = [current for current in current_names
+                       if atoms == {_name_without_split_index(atom)
+                                    for atom in _edge_name_atoms(current)}]
+            if len(matches) == 1:
+                resolved.append(dict(edge, name=matches[0]))
+        return resolved
 
     def _cleared(self, **updates):
         defaults = dict(
@@ -2517,9 +2543,11 @@ class Workplane(object):
         frame = self._active_frame()
         edges = list(self._edges)
         if self._selected_faces:
-            face_names = {face["name"] for face in self._selected_faces}
-            edges = [edge for edge in edges if any(
-                face_name in edge["name"] for face_name in face_names)]
+            face_names = {_name_without_split_index(face["name"].rsplit(":", 1)[-1])
+                          for face in self._selected_faces}
+            edges = [edge for edge in edges if face_names.intersection(
+                _name_without_split_index(atom)
+                for atom in _edge_name_atoms(edge["name"]))]
         chosen = _select_edges(edges, selector)
         return self._spawn(_frame=frame, _selected_edges=chosen, _selected_faces=[])
 

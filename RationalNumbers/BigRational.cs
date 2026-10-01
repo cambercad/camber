@@ -1,5 +1,6 @@
 ﻿using System.Globalization;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
 using System.Text;
@@ -255,8 +256,36 @@ namespace GeoCore
     {
 
         // ---- SECTION:  members supporting exposed properties -------------*
-        public BigInteger Numerator;
-        public BigInteger Denominator;
+        private FastBigInteger numerator;
+        private FastBigInteger denominator;
+
+        internal FastBigInteger FastNumerator => numerator;
+        internal FastBigInteger FastDenominator => denominator;
+
+        // Keep the existing BigInteger API for callers. The arithmetic core
+        // stays in FastBigInteger, so intermediate rational operations do not
+        // convert to and from System.Numerics.BigInteger.
+        public BigInteger Numerator
+        {
+            get => numerator.ToBigInteger();
+            set => numerator = new FastBigInteger(value);
+        }
+
+        public BigInteger Denominator
+        {
+            get => denominator.ToBigInteger();
+            set => denominator = new FastBigInteger(value);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private BigRational(FastBigInteger numerator, FastBigInteger denominator)
+        {
+            if (denominator.IsZero) throw new DivideByZeroException();
+            if (denominator.Sign < 0) { numerator = -numerator; denominator = -denominator; }
+            this.numerator = numerator.IsZero ? default : numerator;
+            this.denominator = numerator.IsZero ? new FastBigInteger(1) : denominator;
+        }
+
 
         private static readonly BigRational s_brZero = new BigRational(BigInteger.Zero);
         private static readonly BigRational s_brOne = new BigRational(BigInteger.One);
@@ -325,7 +354,7 @@ namespace GeoCore
         {
             get
             {
-                return Numerator.Sign;
+                return numerator.Sign;
             }
         }       
 
@@ -370,7 +399,14 @@ namespace GeoCore
             // value without mutating the caller's representation.
             var canonical = this;
             canonical.Simplify();
-            return HashCode.Combine(canonical.Numerator.GetHashCode(), canonical.Denominator.GetHashCode());
+            return canonical.GetNormalizedHashCode();
+        }
+
+        internal int GetNormalizedHashCode()
+        {
+            if (denominator == new FastBigInteger(1) && numerator.TryGetInt64(out long integer))
+                return integer.GetHashCode();
+            return HashCode.Combine(numerator.GetHashCode(), denominator.GetHashCode());
         }
 
         // IComparable
@@ -403,13 +439,13 @@ namespace GeoCore
         // a/b = c/d, iff ad = bc
         public Boolean Equals(BigRational other)
         {
-            if (this.Denominator == other.Denominator)
+            if (denominator == other.denominator)
             {
-                return Numerator == other.Numerator;
+                return numerator == other.numerator;
             }
             else
             {
-                return (Numerator * other.Denominator) == (Denominator * other.Numerator);
+                return numerator * other.denominator == denominator * other.numerator;
             }
         }
 
@@ -560,17 +596,17 @@ namespace GeoCore
 
         public static BigRational Abs(BigRational r)
         {
-            return (r.Numerator.Sign < 0 ? new BigRational(BigInteger.Abs(r.Numerator), r.Denominator) : r);
+            return r.numerator.Sign < 0 ? new BigRational(-r.numerator, r.denominator) : r;
         }
 
         public static BigRational Negate(BigRational r)
         {
-            return new BigRational(BigInteger.Negate(r.Numerator), r.Denominator);
+            return new BigRational(-r.numerator, r.denominator);
         }
 
         public static BigRational Invert(BigRational r)
         {
-            return new BigRational(r.Denominator, r.Numerator);
+            return new BigRational(r.denominator, r.numerator);
         }
 
         public static BigRational Add(BigRational x, BigRational y)
@@ -657,13 +693,13 @@ namespace GeoCore
         public static BigInteger LeastCommonDenominator(BigRational x, BigRational y)
         {
             // LCD( a/b, c/d ) == (bd) / gcd(b,d)
-            return (x.Denominator * y.Denominator) / BigInteger.GreatestCommonDivisor(x.Denominator, y.Denominator);
+            return (x.denominator * (y.denominator / FastBigInteger.GreatestCommonDivisor(x.denominator, y.denominator))).ToBigInteger();
         }
 
         public static int Compare(BigRational r1, BigRational r2)
         {
             //     a/b = c/d, iff ad = bc
-            return BigInteger.Compare(r1.Numerator * r2.Denominator, r2.Numerator * r1.Denominator);
+            return (r1.numerator * r2.denominator).CompareTo(r2.numerator * r1.denominator);
         }
         #endregion Public Static Methods
 
@@ -705,7 +741,7 @@ namespace GeoCore
 
         public static BigRational operator -(BigRational r)
         {
-            return new BigRational(-r.Numerator, r.Denominator);
+            return new BigRational(-r.numerator, r.denominator);
         }
 
         public static BigRational operator ++(BigRational r)
@@ -718,41 +754,65 @@ namespace GeoCore
             return r - BigRational.One;
         }
 
-        public static BigRational operator +(BigRational r1, BigRational r2)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool TryAddSmall(in BigRational a, in BigRational b, bool subtract, out BigRational result)
         {
-            if (r1.Denominator == r2.Denominator)
-                return new BigRational(r1.Numerator + r2.Numerator, r1.Denominator);
+            result = default;
+            if (!a.numerator.TryGetInt64(out long an) || !a.denominator.TryGetInt64(out long ad) ||
+                !b.numerator.TryGetInt64(out long bn) || !b.denominator.TryGetInt64(out long bd) ||
+                ad <= 0 || bd <= 0)
+                return false;
+
+            long x = ad, y = bd;
+            while (y != 0) { long remainder = x % y; x = y; y = remainder; }
+            long leftScale = bd / x, rightScale = ad / x;
+            Int128 left = (Int128)an * leftScale;
+            Int128 right = (Int128)bn * rightScale;
+            Int128 sum = subtract ? unchecked(left - right) : unchecked(left + right);
+            bool overflow = subtract ? ((left ^ right) & (left ^ sum)) < 0 : ((left ^ sum) & (right ^ sum)) < 0;
+            if (overflow) return false;
+            result = new BigRational(FastBigInteger.FromInt128(sum),
+                FastBigInteger.FromInt128((Int128)ad * leftScale));
+            return true;
+        }
+
+        public static BigRational operator +(in BigRational r1, in BigRational r2)
+        {
+            if (r1.denominator == r2.denominator)
+                return new BigRational(r1.numerator + r2.numerator, r1.denominator);
+            if (TryAddSmall(in r1, in r2, false, out var smallResult)) return smallResult;
             // Use the least common denominator. Geometry frequently combines
             // related, unreduced fractions; multiplying their denominators
             // repeatedly creates huge intermediates without adding precision.
-            var common = BigInteger.GreatestCommonDivisor(r1.Denominator, r2.Denominator);
-            var leftScale = r2.Denominator / common;
-            var rightScale = r1.Denominator / common;
-            return new BigRational(r1.Numerator * leftScale + r2.Numerator * rightScale,
-                r1.Denominator * leftScale);
+            var common = FastBigInteger.GreatestCommonDivisor(r1.denominator, r2.denominator);
+            var leftScale = common == new FastBigInteger(1) ? r2.denominator : r2.denominator / common;
+            var rightScale = common == new FastBigInteger(1) ? r1.denominator : r1.denominator / common;
+            return new BigRational(r1.numerator * leftScale + r2.numerator * rightScale,
+                r1.denominator * leftScale);
         }
 
-        public static BigRational operator -(BigRational r1, BigRational r2)
+        public static BigRational operator -(in BigRational r1, in BigRational r2)
         {
-            if (r1.Denominator == r2.Denominator)
-                return new BigRational(r1.Numerator - r2.Numerator, r1.Denominator);
-            var common = BigInteger.GreatestCommonDivisor(r1.Denominator, r2.Denominator);
-            var leftScale = r2.Denominator / common;
-            var rightScale = r1.Denominator / common;
-            return new BigRational(r1.Numerator * leftScale - r2.Numerator * rightScale,
-                r1.Denominator * leftScale);
+            if (r1.denominator == r2.denominator)
+                return new BigRational(r1.numerator - r2.numerator, r1.denominator);
+            if (TryAddSmall(in r1, in r2, true, out var smallResult)) return smallResult;
+            var common = FastBigInteger.GreatestCommonDivisor(r1.denominator, r2.denominator);
+            var leftScale = common == new FastBigInteger(1) ? r2.denominator : r2.denominator / common;
+            var rightScale = common == new FastBigInteger(1) ? r1.denominator : r1.denominator / common;
+            return new BigRational(r1.numerator * leftScale - r2.numerator * rightScale,
+                r1.denominator * leftScale);
         }
 
-        public static BigRational operator *(BigRational r1, BigRational r2)
+        public static BigRational operator *(in BigRational r1, in BigRational r2)
         {
             // a/b * c/d  == (ac)/(bd)
-            return new BigRational((r1.Numerator * r2.Numerator), (r1.Denominator * r2.Denominator));
+            return new BigRational(r1.numerator * r2.numerator, r1.denominator * r2.denominator);
         }
 
-        public static BigRational operator /(BigRational r1, BigRational r2)
+        public static BigRational operator /(in BigRational r1, in BigRational r2)
         {
             // a/b / c/d  == (ad)/(bc)
-            return new BigRational((r1.Numerator * r2.Denominator), (r1.Denominator * r2.Numerator));
+            return new BigRational(r1.numerator * r2.denominator, r1.denominator * r2.numerator);
         }
 
         public static BigRational operator %(BigRational r1, BigRational r2)
@@ -1015,20 +1075,20 @@ namespace GeoCore
         {
             // * if the numerator is {0, +1, -1} then the fraction is already reduced
             // * if the denominator is {+1} then the fraction is already reduced
-            if (Numerator == BigInteger.Zero)
+            if (numerator.IsZero)
             {
-                Denominator = BigInteger.One;
+                denominator = new FastBigInteger(1);
             }
 
-            BigInteger gcd = BigInteger.GreatestCommonDivisor(Numerator, Denominator);
-            if (gcd > BigInteger.One)
+            FastBigInteger gcd = FastBigInteger.GreatestCommonDivisor(numerator, denominator);
+            if (gcd > new FastBigInteger(1))
             {
-                Numerator = Numerator / gcd;
-                Denominator = Denominator / gcd;
+                numerator /= gcd;
+                denominator /= gcd;
             }
 
 #if DEBUG
-            if (Denominator < 0)
+            if (denominator.Sign < 0)
                 throw new Exception("The standard form requires Denominator >= 0");
 #endif
         }
