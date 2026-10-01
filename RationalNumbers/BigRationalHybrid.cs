@@ -1,12 +1,6 @@
-﻿//#define FAST_BIG_RAT
-
 using System.Numerics;
 
-#if FAST_BIG_RAT
-using Rat = GeoCore.BigRat;
-#else
 using Rat = GeoCore.BigRational;
-#endif
 
 namespace GeoCore
 {
@@ -21,49 +15,6 @@ namespace GeoCore
             Value = value;
         }
 
-#if FAST_BIG_RAT
-        public void Simplify()
-        {
-            // * if the numerator is {0, +1, -1} then the fraction is already reduced
-            // * if the denominator is {+1} then the fraction is already reduced
-            var m_numerator = Numerator();
-            var m_denominator = Denominator();
-            if (m_numerator == BigInteger.Zero)
-            {
-                m_denominator = BigInteger.One;
-            }
-
-            BigInteger gcd = BigInteger.GreatestCommonDivisor(m_numerator, m_denominator);
-            if (gcd > BigInteger.One)
-            {
-                m_numerator = m_numerator / gcd;
-                m_denominator = m_denominator / gcd;
-            }
-
-#if DEBUG
-            if (m_denominator < 0)
-                throw new Exception("The standard form requires m_denominator >= 0");
-#endif
-            Value = (Rat)m_numerator / (Rat)m_denominator;
-            //Value.Normalize();
-        }
-        public int Sign()
-        {
-            return Value.CompareTo(0);
-        }
-        public BigInteger Numerator()
-        {
-            return (BigInteger)Value.Numerator();
-        }
-        public BigInteger Denominator()
-        {
-            return (BigInteger)Value.Denominator();
-        }
-        public int NormalizedHashCode()
-        {
-            return HashCode.Combine(Numerator().GetHashCode(), Denominator().GetHashCode());
-        }
-#else
         public void Simplify()
         {
             Value.Simplify();
@@ -85,7 +36,6 @@ namespace GeoCore
         {
             return Value.GetNormalizedHashCode();
         }
-#endif
     }
 
     public struct BigRationalHybrid : IEquatable<BigRationalHybrid>
@@ -112,18 +62,10 @@ namespace GeoCore
             isSimplified = true;
             isLongValue = true;
         }
-#if FAST_BIG_RAT
-        public BigRationalHybrid(BigInteger num, BigInteger denom)
-            : this()
-        {
-            throw new NotImplementedException();
-        }
-#else
         public BigRationalHybrid(BigInteger num, BigInteger denom)
             : this(new Rat(num, denom))
         {            
         }
-#endif
 
         public BigInteger Numerator()
         {
@@ -297,17 +239,6 @@ namespace GeoCore
                 return 0;
             }
 
-#if FAST_BIG_RAT
-            GetNumDenom(in ux, out BigInteger nUx, out BigInteger dUx);
-            GetNumDenom(in vy, out BigInteger nVy, out BigInteger dVy);
-            GetNumDenom(in uy, out BigInteger nUy, out BigInteger dUy);
-            GetNumDenom(in vx, out BigInteger nVx, out BigInteger dVx);
-
-            // ux*vy − uy*vx = (nUx*nVy*dUy*dVx − nUy*nVx*dUx*dVy) / (dUx*dVy*dUy*dVx); denominator > 0.
-            BigInteger t1 = nUx * nVy * dUy * dVx;
-            BigInteger t2 = nUy * nVx * dUx * dVy;
-            return BigInteger.Compare(t1, t2);
-#else
             GetFastNumDenom(in ux, out FastBigInteger nUx, out FastBigInteger dUx);
             GetFastNumDenom(in vy, out FastBigInteger nVy, out FastBigInteger dVy);
             GetFastNumDenom(in uy, out FastBigInteger nUy, out FastBigInteger dUy);
@@ -315,7 +246,6 @@ namespace GeoCore
             FastBigInteger t1 = (nUx * nVy) * (dUy * dVx);
             FastBigInteger t2 = (nUy * nVx) * (dUx * dVy);
             return t1.CompareTo(t2);
-#endif
         }
 
         /// <summary>
@@ -482,7 +412,6 @@ namespace GeoCore
                 scaled=coordinate.value << OrientBoundsFractionBits;
                 return true;
             }
-#if !FAST_BIG_RAT
             if (coordinate.rationalValue != null &&
                 coordinate.rationalValue.Value.FastNumerator.TryGetInt64(out long smallNumerator) &&
                 coordinate.rationalValue.Value.FastDenominator.TryGetInt64(out long smallDenominator) &&
@@ -494,7 +423,6 @@ namespace GeoCore
                 scaled = (long)smallQuotient;
                 return true;
             }
-#endif
             GetNumDenom(coordinate, out var numerator, out var denominator);
             // BigInteger division truncates toward zero, for either sign.
             // This gives an exact error bound even for thousand-bit rationals.
@@ -641,7 +569,6 @@ namespace GeoCore
             }
         }
 
-#if !FAST_BIG_RAT
         private static void GetFastNumDenom(in BigRationalHybrid x, out FastBigInteger n, out FastBigInteger d)
         {
             if (x.isLongValue || x.rationalValue == null)
@@ -655,7 +582,6 @@ namespace GeoCore
                 d = x.rationalValue.Value.FastDenominator;
             }
         }
-#endif
 
         private Rat GetRationalValue()
         {
@@ -869,12 +795,8 @@ namespace GeoCore
             }
             if (denominator.IsOne && numerator >= long.MinValue && numerator <= long.MaxValue)
                 return ((long)numerator).GetHashCode();
-#if FAST_BIG_RAT
-            return HashCode.Combine(numerator.GetHashCode(), denominator.GetHashCode());
-#else
             return HashCode.Combine(new FastBigInteger(numerator).GetHashCode(),
                 new FastBigInteger(denominator).GetHashCode());
-#endif
         }
 
         // Previously Equals/GetHashCode required callers to Simplify first (checked

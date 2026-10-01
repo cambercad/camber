@@ -250,6 +250,22 @@ public readonly struct FastBigInteger : IEquatable<FastBigInteger>, IComparable<
         return new FastBigInteger(a.ToBigInteger() / b.ToBigInteger());
     }
 
+    public static FastBigInteger operator %(FastBigInteger a, FastBigInteger b)
+    {
+        if (b.IsZero) throw new DivideByZeroException();
+        if (a.limbs == null && !a.wide && b.limbs == null && !b.wide)
+        {
+            if (a.small == long.MinValue && b.small == -1) return default;
+            return new FastBigInteger(a.small % b.small);
+        }
+        if (a.Length <= 2 && b.Length <= 2)
+        {
+            var remainder = a.Magnitude128 % b.Magnitude128;
+            return FromMagnitude(remainder, a.Sign < 0);
+        }
+        return new FastBigInteger(a.ToBigInteger() % b.ToBigInteger());
+    }
+
     public static FastBigInteger operator *(FastBigInteger a, FastBigInteger b)
     {
         if (a.IsZero || b.IsZero) return default;

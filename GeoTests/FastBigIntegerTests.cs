@@ -56,7 +56,11 @@ public class FastBigIntegerTests
         Assert.Equal(-a, (-x).ToBigInteger());
         Assert.Equal(Math.Sign(a.CompareTo(b)), Math.Sign(x.CompareTo(y)));
         Assert.Equal(BigInteger.GreatestCommonDivisor(a, b), FastBigInteger.GreatestCommonDivisor(x, y).ToBigInteger());
-        if (b != 0) Assert.Equal(a / b, (x / y).ToBigInteger());
+        if (b != 0)
+        {
+            Assert.Equal(a / b, (x / y).ToBigInteger());
+            Assert.Equal(a % b, (x % y).ToBigInteger());
+        }
         Assert.Equal(a, x.ToBigInteger()); // arithmetic never changes an aliased input
     }
 

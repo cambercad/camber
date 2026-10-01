@@ -78,6 +78,27 @@ built against both snapshots.
 
 ## Recorded comparison
 
+### Camber-owned BigRational replacement (2026-10-01)
+
+Windows/.NET 10.0.401, Release with tiered compilation disabled, compared
+against `8261851`. Each process ran two warmups and five measured samples;
+small workloads have 15 samples per variant, and the threaded bolt has five.
+Benchmark processes ran sequentially, without concurrent tests or builds.
+The final implementation restores small-number addition and same-denominator
+equality fast paths, hashes already-normalized internal values directly, and
+caches the large constants used by the unchanged rational-to-double conversion.
+
+Median cylinder Boolean time decreased from 59.86 ms to 56.17 ms (6.2%),
+with 0.5% more cumulative allocation. The threaded bolt decreased from 8.34 s
+to 7.99 s (4.1%) and allocated 1.0% less; every build had 80,410 triangles.
+Integer, normalized, and unreduced hashing were within 1.6% of the baseline;
+point deduplication was 3.0% slower and point insertion 8.7% slower, with
+unchanged allocation. These workloads do not establish performance for all
+modeling operations. Raw samples, including the initial unoptimized candidate,
+are in `results/rational-replacement-windows-net10.json`.
+
+### Earlier rational-hashing comparison
+
 Linux, .NET SDK 10.0.401, Release, tiered compilation disabled. Three processes
 per variant in baseline/candidate/candidate/baseline/baseline/candidate order;
 15 timed samples per workload per variant. Tests and other benchmark processes

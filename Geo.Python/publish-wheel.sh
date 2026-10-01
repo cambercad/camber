@@ -12,7 +12,7 @@ set -euo pipefail
 
 RUNTIME="linux-x64"
 CONFIGURATION="Release"
-WHEEL_VERSION="0.1.5"
+WHEEL_VERSION="0.1.6"
 BOOTSTRAP=0
 
 while [[ $# -gt 0 ]]; do
@@ -160,7 +160,7 @@ rm -rf "$BUILD_VENV"
 python3 -m venv "$BUILD_VENV"
 # shellcheck disable=SC1091
 source "$BUILD_VENV/bin/activate"
-python -m pip install --upgrade pip setuptools wheel cffi
+python -m pip install --upgrade pip setuptools wheel cffi auditwheel patchelf
 
 STAGE="$ROOT/_wheel_stage"
 DIST="$REPO_ROOT/dist"
@@ -171,9 +171,9 @@ ls -la "$STAGE"
 
 shopt -s nullglob
 case "$RUNTIME" in
-  # PyPI rejects bare linux_x86_64; use a manylinux tag for native wheels.
-  linux-x64) PLAT="manylinux_2_17_x86_64" ;;
-  linux-arm64) PLAT="manylinux_2_17_aarch64" ;;
+  # Temporary native tags; auditwheel determines the actual manylinux policy.
+  linux-x64) PLAT="linux_x86_64" ;;
+  linux-arm64) PLAT="linux_aarch64" ;;
   *) PLAT="${RUNTIME//-/_}" ;;
 esac
 
@@ -193,9 +193,7 @@ esac
 )
 
 for whl in "$STAGE"/cambercad-*.whl; do
-  dest_name="$(basename "$whl")"
-  cp -f "$whl" "$DIST/$dest_name"
-  echo "Wrote $DIST/$dest_name"
+  python -m auditwheel repair --plat auto --wheel-dir "$DIST" "$whl"
 done
 rm -rf "$STAGE" "$BUILD_VENV"
 deactivate 2>/dev/null || true

@@ -94,11 +94,11 @@ Both Windows and Linux publish scripts write **only** `cambercad-*.whl` into the
 ```text
 camber/
   dist/
-    cambercad-0.1.5-py3-none-win_amd64.whl
-    cambercad-0.1.5-py3-none-manylinux_2_17_x86_64.whl
+    cambercad-0.1.6-py3-none-win_amd64.whl
+    cambercad-0.1.6-py3-none-manylinux_2_38_x86_64.whl
 ```
 
-That layout matches PyPI (`twine upload dist/cambercad-*.whl`). Dependency wheels (`cffi`, …) are staged temporarily and not kept in `dist/`. Scripts retag DotWrap’s `py3-none-any` name to a platform tag so Win/Linux wheels can sit side by side. PyPI rejects a bare `linux_x86_64` tag; Linux wheels use `manylinux_2_17_x86_64`.
+That layout matches PyPI (`twine upload dist/cambercad-0.1.6-*.whl`). Dependency wheels (`cffi`, …) are staged temporarily and not kept in `dist/`. Scripts retag DotWrap’s `py3-none-any` name to a platform tag so Win/Linux wheels can sit side by side. The Linux build uses auditwheel to validate native dependencies and determine the minimum glibc version; the Ubuntu 24.04 build requires glibc 2.38. Build on an older compatible toolchain to support older glibc releases.
 
 ## Build the wheel (Windows)
 
@@ -129,7 +129,7 @@ Your distro needs the .NET SDK, a C/C++ toolchain (`clang` or `gcc`), and Python
 cd <this-repo>/Geo.Python
 bash publish-wheel.sh --bootstrap   # first time: apt + .NET 10 into ~/.dotnet
 # later: bash publish-wheel.sh
-# → writes <this-repo>/dist/cambercad-*-manylinux_2_17_x86_64.whl
+# → writes <this-repo>/dist/cambercad-*-manylinux_*.whl
 #
 # If the repo lives on /mnt/c (Windows drive), the script copies sources to
 # ~/camber-linux-build automatically (NTFS breaks Native AOT timestamps).
@@ -190,8 +190,6 @@ Full license texts are under [`third_party/`](third_party/).
 
 | Component | License | Where | Notes |
 |-----------|---------|--------|--------|
-| Microsoft **BigRational** ([microsoftarchive/bcl](https://github.com/microsoftarchive/bcl)) | MIT | `RationalNumbers/BigRational.cs` | Active default for exact arithmetic |
-| **BigRat** by Christian Ohle ([c-ohle/RationalNumerics](https://github.com/c-ohle/RationalNumerics)) | MIT | `RationalNumbers/BigRationalFast.cs` | Vendored; not the default path today (`FAST_BIG_RAT` is off in `BigRationalHybrid.cs`) |
 | **Clipper** 6.4.2 C# (Angus Johnson) | Boost Software License 1.0 | `NURBS/Triangulator/Clipper.cs` | Polygon clipping / offsets |
 | **DotWrap** 0.3.0 (NuGet, build-time) | MIT | `Geo.Python/Geo.Python.csproj` | Generates the Python native module |
 

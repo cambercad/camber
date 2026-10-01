@@ -35,4 +35,20 @@ public class RationalCommonDenominatorTests
         value.Simplify();
         Assert.Equal(BigRationalHybrid.One, value);
     }
+
+    [Theory]
+    [InlineData(5, 6, 1, 2, 1, 3)]
+    [InlineData(-5, 6, 1, 2, -1, 3)]
+    [InlineData(5, 6, -1, 2, 1, 3)]
+    public void RemainderAndDivRemFollowTruncatingRationalSemantics(
+        int an, int ad, int bn, int bd, int expectedN, int expectedD)
+    {
+        var dividend = new BigRational(an, ad);
+        var divisor = new BigRational(bn, bd);
+        var expectedRemainder = new BigRational(expectedN, expectedD);
+        Assert.Equal(expectedRemainder, dividend % divisor);
+        var quotient = BigRational.DivRem(dividend, divisor, out var remainder);
+        Assert.Equal(dividend / divisor, quotient);
+        Assert.Equal(expectedRemainder, remainder);
+    }
 }
