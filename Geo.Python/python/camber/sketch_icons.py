@@ -1,10 +1,7 @@
-"""SolidWorks-style sketch icons drawn with ImGui (same glyphs as GeoScriptViewer, no image files)."""
+"""Sketch icons drawn with pyglet primitives; no image assets required."""
 
 import math
 
-INK = (0.18, 0.18, 0.20)
-INK_ON_ACCENT = (0.98, 0.98, 0.98)
-ACCENT = (1.00, 0.65, 0.16)
 BTN_W = 60
 BTN_H = 60
 ICON = 24
@@ -15,37 +12,25 @@ CONTENT_W = COLS * BTN_W + (COLS - 1) * ITEM_GAP
 PANEL_W = PAD * 2 + CONTENT_W
 
 
-def _u32(imgui, rgb, a=1.0):
-    r, g, b = rgb
-    try:
-        return imgui.GetColorU32((r, g, b, a))
-    except Exception:
-        pass
-    try:
-        return imgui.ColorConvertFloat4ToU32((r, g, b, a))
-    except Exception:
-        pass
-    return int(a * 255) << 24 | int(b * 255) << 16 | int(g * 255) << 8 | int(r * 255)
+def _rgba(rgb, alpha=1.0):
+    return tuple(round(max(0.0, min(1.0, channel))*255) for channel in (*rgb, alpha))
 
 
-def _dl(imgui):
-    getter = getattr(imgui, "GetWindowDrawList", None) or getattr(imgui, "get_window_draw_list", None)
-    return getter()
+def _dl(ui):
+    return ui.GetWindowDrawList()
 
 
-def _pos(imgui):
-    getter = getattr(imgui, "GetCursorScreenPos", None) or getattr(imgui, "get_cursor_screen_pos", None)
-    p = getter()
-    return (float(p[0]), float(p[1])) if hasattr(p, "__len__") else (float(p.x), float(p.y))
+def _pos(ui):
+    return ui.GetCursorScreenPos()
 
 
 def _pt(ox, oy, x, y, s=ICON):
     return (ox + x * s / 24.0, oy + y * s / 24.0)
 
 
-def _text_size(imgui, text):
+def _text_size(ui, text):
     try:
-        size = imgui.CalcTextSize(text)
+        size = ui.CalcTextSize(text)
         if hasattr(size, "__len__"):
             return float(size[0]), float(size[1])
         return float(size.x), float(size.y)
@@ -311,59 +296,54 @@ def symbol_drawer(symbol):
     return draw
 
 
-def _imgui_size(imgui, width, height):
-    ctor = getattr(imgui, "ImVec2", None)
-    if ctor is not None:
-        try:
-            return ctor(float(width), float(height))
-        except Exception:
-            pass
-    return (float(width), float(height))
+def _invisible_button(ui, button_id, width, height):
+    return ui.InvisibleButton(button_id, (width, height))
 
 
-def _invisible_button(imgui, button_id, width, height):
-    size = _imgui_size(imgui, width, height)
-    clicked = False
-    try:
-        clicked = imgui.InvisibleButton(button_id, size)
-    except TypeError:
-        try:
-            clicked = imgui.InvisibleButton(button_id, size, 0)
-        except Exception:
-            clicked = imgui.Button(button_id, size)
-    if isinstance(clicked, tuple):
-        clicked = clicked[0]
-    return bool(clicked)
+_TOOLTIPS = {
+    "select": "Select curves or drag sketch handles.",
+    "line": "Draw a line between two points.",
+    "polyline": "Draw connected line segments.",
+    "arc": "Draw an arc through three points.",
+    "circle": "Draw a circle from its center and radius.",
+    "rectangle": "Draw a rectangle from opposite corners.",
+    "con_coincident": "Make two points occupy the same position.",
+    "con_horizontal": "Keep a line horizontal.",
+    "con_vertical": "Keep a line vertical.",
+    "con_parallel": "Keep two lines parallel.",
+    "con_perpendicular": "Keep two lines at right angles.",
+    "con_tangent": "Make line tangent to circle/arc. Coincident joins ends; Radius holds size.",
+    "con_equal": "Match two line lengths or circular radii.",
+    "con_midpoint": "Place a point at a line's midpoint.",
+    "con_concentric": "Give two circles or arcs the same center.",
+    "con_fix": "Keep a point at its current position.",
+    "dim_length": "Set a line's length.",
+    "dim_radius": "Set a circle or arc radius.",
+    "dim_distance": "Set the distance between two points.",
+    "dim_angle": "Set the angle between two lines.",
+    "fit": "Center the view on the sketch plane.",
+    "undo": "Undo the last sketch action.",
+}
 
 
-def icon_button(imgui, tool_id, label, drawer, active):
-    p = _pos(imgui)
-    clicked = _invisible_button(imgui, "##sk_" + tool_id, BTN_W, BTN_H)
+def icon_button(ui, tool_id, label, drawer, active):
+    p = _pos(ui)
+    clicked = _invisible_button(ui, "##sk_" + tool_id, BTN_W, BTN_H)
     hovered = False
     try:
-        hovered = bool(imgui.IsItemHovered())
+        hovered = bool(ui.IsItemHovered())
     except Exception:
         pass
-    dl = _dl(imgui)
-    if active:
-        ink = _u32(imgui, INK_ON_ACCENT)
-        label_col = INK_ON_ACCENT
-        bg = _u32(imgui, (0.18, 0.42, 0.82), 0.95)
-    elif hovered:
-        ink = _u32(imgui, INK)
-        label_col = INK
-        bg = _u32(imgui, (0.78, 0.80, 0.84), 0.95)
-    else:
-        ink = _u32(imgui, INK)
-        label_col = INK
-        bg = _u32(imgui, (0.88, 0.88, 0.90), 0.94)
-    accent = _u32(imgui, ACCENT)
+    dl = _dl(ui)
+    ink = ui.theme["text"]
+    bg = ui.theme["selected" if active else "hover" if hovered else "control"]
+    accent = ui.theme["accent"]
     x1, y1 = p[0] + BTN_W, p[1] + BTN_H
     try:
         dl.AddRectFilled(p, (x1, y1), bg, 5.0)
     except TypeError:
         dl.AddRectFilled(p, (x1, y1), bg)
-    tw, th = _text_size(imgui, label)
+    tw, th = _text_size(ui, label)
     ox = p[0] + (BTN_W - ICON) * 0.5
     avail = BTN_H - th - 8
     oy = p[1] + max(4.0, (avail - ICON) * 0.5)
@@ -371,13 +351,13 @@ def icon_button(imgui, tool_id, label, drawer, active):
     try:
         dl.AddText(
             (p[0] + (BTN_W - tw) * 0.5, p[1] + BTN_H - th - 5),
-            _u32(imgui, label_col),
+            ink,
             label)
     except Exception:
         pass
     if hovered:
         try:
-            imgui.SetTooltip(label)
+            ui.SetTooltip(_TOOLTIPS.get(tool_id, label))
         except Exception:
             pass
     return clicked
@@ -387,30 +367,28 @@ def dimension_button_width():
     return (CONTENT_W - ITEM_GAP) * 0.5
 
 
-def dimension_editor(imgui, kind, value, focus=False):
+def dimension_editor(ui, kind, value, focus=False):
     """Value box that stays inside the 3-column palette width.
 
-    A default ImGui InputDouble is wider than PANEL_W (label + ~250px field).
-    That forces a horizontal scrollbar, which shrinks the content region and
-    wraps the icon grid from 3 columns to 2.
+    Keep the input and action buttons inside the three-column palette width.
     """
     caption = (kind or "value").replace("_", " ").title()
-    wrapped_text(imgui, caption)
+    wrapped_text(ui, caption)
     changed = False
     new_value = float(value)
     pushed = False
     try:
-        imgui.PushItemWidth(float(CONTENT_W))
+        ui.PushItemWidth(float(CONTENT_W))
         pushed = True
     except Exception:
         pushed = False
     if focus:
         try:
-            imgui.SetKeyboardFocusHere()
+            ui.SetKeyboardFocusHere()
         except Exception:
             pass
     try:
-        result = imgui.InputDouble("##sk_dimension", new_value, 0.0, 0.0, "%.4f")
+        result = ui.InputDouble("##sk_dimension", new_value, 0.0, 0.0, "%.4f")
         if isinstance(result, tuple):
             changed = bool(result[0])
             new_value = float(result[1])
@@ -419,7 +397,7 @@ def dimension_editor(imgui, kind, value, focus=False):
             changed = abs(new_value - float(value)) > 1e-15
     except Exception:
         try:
-            result = imgui.InputFloat("##sk_dimension", float(new_value))
+            result = ui.InputFloat("##sk_dimension", float(new_value))
             if isinstance(result, tuple):
                 changed = bool(result[0])
                 new_value = float(result[1])
@@ -427,147 +405,49 @@ def dimension_editor(imgui, kind, value, focus=False):
             pass
     if pushed:
         try:
-            imgui.PopItemWidth()
+            ui.PopItemWidth()
         except Exception:
             pass
     apply_w = dimension_button_width()
-    apply_clicked = action_button(imgui, "Apply", width=apply_w, button_id="dimension_apply")
-    imgui.SameLine()
-    cancel_clicked = action_button(imgui, "Cancel", width=apply_w, button_id="dimension_cancel")
+    apply_clicked = action_button(ui, "Apply", width=apply_w,
+                                  button_id="dimension_apply", primary=True)
+    ui.SameLine()
+    cancel_clicked = action_button(ui, "Cancel", width=apply_w, button_id="dimension_cancel")
     return changed, new_value, apply_clicked, cancel_clicked
 
 
-def action_button(imgui, label, width=78, height=26, button_id=None):
-    p = _pos(imgui)
-    clicked = _invisible_button(imgui, "##sk_act_" + (button_id or label), width, height)
-    hovered = False
-    try:
-        hovered = bool(imgui.IsItemHovered())
-    except Exception:
-        pass
-    dl = _dl(imgui)
-    bg = _u32(imgui, (0.78, 0.80, 0.84) if hovered else (0.88, 0.88, 0.90), 0.95)
-    try:
-        dl.AddRectFilled(p, (p[0] + width, p[1] + height), bg, 5.0)
-    except TypeError:
-        dl.AddRectFilled(p, (p[0] + width, p[1] + height), bg)
-    try:
-        tw, th = _text_size(imgui, label)
-        dl.AddText(
-            (p[0] + (width - tw) * 0.5, p[1] + (height - th) * 0.5),
-            _u32(imgui, INK),
-            label)
-    except Exception:
-        pass
-    return clicked
+def action_button(ui, label, width=78, height=26, button_id=None, primary=False):
+    return ui.Button(label + "##sk_act_" + (button_id or label), width, height,
+                     primary=primary)
 
 
-def _push_style_var(imgui, name, value):
-    push = getattr(imgui, "PushStyleVar", None)
-    if push is None:
-        return False
-    idx = getattr(imgui, name, None)
-    if idx is None:
-        return False
-    try:
-        push(int(idx), value)
-        return True
-    except Exception:
-        try:
-            push(idx, value)
-            return True
-        except Exception:
-            return False
+def begin_palette(ui, title="Sketch"):
+    ui.PushStyleVar(ui.ImGuiStyleVar_WindowPadding, (PAD, 10))
+    ui.PushStyleVar(ui.ImGuiStyleVar_ItemSpacing, (ITEM_GAP, 6))
+    width = ui.GetIO().DisplaySize[0]
+    ui.SetNextWindowPos((width-10, 10), ui.ImGuiCond_Always, (1.0, 0.0))
+    ui.SetNextWindowSize((PANEL_W, 0), ui.ImGuiCond_Always)
+    ui.SetNextWindowSizeConstraints((PANEL_W, 0), (PANEL_W, 10000))
+    return ui.Begin(title, ui.ImGuiWindowFlags_NoCollapse |
+                    ui.ImGuiWindowFlags_AlwaysAutoResize)
 
 
-def _push_palette_style(imgui):
-    count = 0
-    if _push_style_var(imgui, "ImGuiStyleVar_WindowPadding", _imgui_size(imgui, PAD, 10)):
-        count += 1
-    if _push_style_var(imgui, "ImGuiStyleVar_ItemSpacing", _imgui_size(imgui, ITEM_GAP, 6)):
-        count += 1
-    return count
+def end_palette(ui):
+    ui.End()
+    ui.PopStyleVar(2)
 
 
-def _pop_palette_style(imgui, count):
-    if not count:
-        return
-    pop = getattr(imgui, "PopStyleVar", None)
-    if pop is None:
-        return
-    try:
-        pop(int(count))
-    except TypeError:
-        for _ in range(int(count)):
-            try:
-                pop()
-            except Exception:
-                pass
-
-
-_PALETTE_STYLE_COUNT = [0]
-
-
-def begin_palette(imgui, title="Sketch"):
-    _PALETTE_STYLE_COUNT[0] = _push_palette_style(imgui)
-    try:
-        io = imgui.GetIO()
-        size = io.DisplaySize
-        w = float(size[0] if hasattr(size, "__len__") else size.x)
-        imgui.SetNextWindowPos((w - 10, 10), cond=1, pivot=(1.0, 0.0))
-    except Exception:
-        try:
-            imgui.SetNextWindowPos((10, 10), cond=1)
-        except Exception:
-            pass
-    try:
-        imgui.SetNextWindowSize((PANEL_W, 0), cond=1)
-    except Exception:
-        pass
-    try:
-        imgui.SetNextWindowSizeConstraints(
-            _imgui_size(imgui, PANEL_W, 0),
-            _imgui_size(imgui, PANEL_W, 10000),
-        )
-    except Exception:
-        pass
-    flags = 0
-    for name in (
-        "ImGuiWindowFlags_NoCollapse",
-        "ImGuiWindowFlags_AlwaysAutoResize",
-        "ImGuiWindowFlags_NoClose",
-        "ImGuiWindowFlags_NoScrollbar",
-        "ImGuiWindowFlags_NoScrollWithMouse",
-    ):
-        flags |= int(getattr(imgui, name, 0) or 0)
-    try:
-        return imgui.Begin(title, flags)
-    except TypeError:
-        try:
-            return imgui.Begin(title)
-        except TypeError:
-            return imgui.Begin(title)
-
-
-def end_palette(imgui):
-    end = getattr(imgui, "End", None)
-    if end is not None:
-        end()
-    _pop_palette_style(imgui, _PALETTE_STYLE_COUNT[0])
-    _PALETTE_STYLE_COUNT[0] = 0
-
-
-def _text_width(imgui, text):
-    w, _h = _text_size(imgui, text)
+def _text_width(ui, text):
+    w, _h = _text_size(ui, text)
     return w
 
 
-def _wrap_to_width(imgui, text, wrap_w):
+def _wrap_to_width(ui, text, wrap_w):
     """Break long names (pipe:face-Name) so they stay inside wrap_w."""
     if not text:
         return ""
     wrap_w = max(float(wrap_w), 8.0)
-    if _text_width(imgui, text) <= wrap_w:
+    if _text_width(ui, text) <= wrap_w:
         return text
     breaks = set(" :/-_.")
     lines = []
@@ -576,7 +456,7 @@ def _wrap_to_width(imgui, text, wrap_w):
     while i < len(text):
         ch = text[i]
         trial = current + ch
-        if _text_width(imgui, trial) <= wrap_w or not current:
+        if _text_width(ui, trial) <= wrap_w or not current:
             current = trial
             i += 1
             continue
@@ -595,34 +475,34 @@ def _wrap_to_width(imgui, text, wrap_w):
     return "\n".join(lines)
 
 
-def wrapped_text(imgui, text):
+def wrapped_text(ui, text):
     if text is None:
         text = ""
     wrap_w = float(CONTENT_W)
     try:
-        avail = imgui.GetContentRegionAvail()
+        avail = ui.GetContentRegionAvail()
         aw = float(avail[0] if hasattr(avail, "__len__") else avail.x)
         if 8.0 < aw < wrap_w + 1.0:
             wrap_w = aw
     except Exception:
         pass
-    text = _wrap_to_width(imgui, text, wrap_w)
+    text = _wrap_to_width(ui, text, wrap_w)
     try:
-        imgui.PushTextWrapPos(imgui.GetCursorPosX() + wrap_w)
+        ui.PushTextWrapPos(ui.GetCursorPosX() + wrap_w)
     except Exception:
         try:
-            imgui.PushTextWrapPos(wrap_w)
+            ui.PushTextWrapPos(wrap_w)
         except Exception:
             pass
     try:
-        imgui.TextUnformatted(text)
+        ui.TextUnformatted(text)
     except Exception:
         try:
-            imgui.Text(text)
+            ui.Text(text)
         except Exception:
             pass
     try:
-        imgui.PopTextWrapPos()
+        ui.PopTextWrapPos()
     except Exception:
         pass
 

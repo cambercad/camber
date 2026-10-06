@@ -6,38 +6,6 @@ namespace Geo
 {
     public static partial class LoftBuilder
     {
-        /// <summary>
-        /// Scale-aware tolerances from the loft lattice: minimum squared cross norm for triangle area,
-        /// and minimum squared edge length for skipping collapsed u-quads (replaces raw 1e-16 with model-relative values).
-        /// </summary>
-        private static void ComputeLoftMeshTolerancesFromGrid(Vec3D[][] grid, int vRows, int m,
-            out double minSquaredCrossNorm, out double minSquaredEdgeLen)
-        {
-            double minX = double.MaxValue, minY = minX, minZ = minX;
-            double maxX = double.MinValue, maxY = maxX, maxZ = maxX;
-            for (int v = 0; v < vRows; v++)
-            {
-                for (int k = 0; k < m; k++)
-                {
-                    Vec3D p = grid[v][k];
-                    if (p.X < minX) minX = p.X;
-                    if (p.Y < minY) minY = p.Y;
-                    if (p.Z < minZ) minZ = p.Z;
-                    if (p.X > maxX) maxX = p.X;
-                    if (p.Y > maxY) maxY = p.Y;
-                    if (p.Z > maxZ) maxZ = p.Z;
-                }
-            }
-            double dx = maxX - minX;
-            double dy = maxY - minY;
-            double dz = maxZ - minZ;
-            double L = Math.Max(dx, Math.Max(dy, dz));
-            if (L < 1e-30)
-                L = 1;
-            minSquaredCrossNorm = MeshConstructionHelpers.LoftMinSquaredCrossNormFromMaxExtent(L);
-            double edgeEps = L * 1e-14;
-            minSquaredEdgeLen = Math.Max(TolSq, edgeEps * edgeEps);
-        }
 
         // A matched polygon side stays in the affine plane of its authored
         // section edges. Independent XYZ rounding must not turn it into a
@@ -259,24 +227,26 @@ namespace Geo
             {
                 int width = closed ? columns.Count + 1 : columns.Count;
                 for (int row = 0; row < rows; row++)
-                for (int column = 0; column < width; column++)
-                {
-                    int g = column == columns.Count ? 0 : column;
-                    double u = column == columns.Count ? 1 : columns[g];
-                    if (kinds[g] == UColumnKind.CreaseLeft)
-                        u = Math.BitDecrement(u == 0 && closed ? 1 : u);
-                    else if (kinds[g] == UColumnKind.CreaseRight)
-                        u = Math.BitIncrement(u == 1 && closed ? 0 : u);
-                    u = Math.Clamp(u, 0, 1);
-                    double v = rowParameters != null ? rowParameters[row] : (double)row / (rows - 1);
-                    var normal = constructionSupport.EvaluateNormal(u, v).Normalized();
-                    int index = baseVertex + row * width + column;
-                    // U/V derivatives follow the emitted quad winding. A local
-                    // comparison with finite-difference crease normals can reverse
-                    // isolated vertices; closed-solid orientation is applied once
-                    // to the whole mesh by EnsurePositiveVolume.
-                    normals[index] = normal;
-                }
+                    for (int column = 0; column < width; column++)
+                    {
+                        int g = column == columns.Count ? 0 : column;
+                        double u = column == columns.Count ? 1 : columns[g];
+                        if (kinds[g] == UColumnKind.CreaseLeft)
+                            u = u == 0 && closed ? 1 : u;
+                        else if (kinds[g] == UColumnKind.CreaseRight)
+                            u = u == 1 && closed ? 0 : u;
+                        u = Math.Clamp(u, 0, 1);
+                        double v = rowParameters != null ? rowParameters[row] : (double)row / (rows - 1);
+                        var normal = (constructionSupport is NURBS.BSplineSurface spline
+                            ? spline.EvaluateNormal(u, v, kinds[g] == UColumnKind.CreaseLeft)
+                            : constructionSupport.EvaluateNormal(u, v)).Normalized();
+                        int index = baseVertex + row * width + column;
+                        // U/V derivatives follow the emitted quad winding. A local
+                        // comparison with finite-difference crease normals can reverse
+                        // isolated vertices; closed-solid orientation is applied once
+                        // to the whole mesh by EnsurePositiveVolume.
+                        normals[index] = normal;
+                    }
                 return;
             }
             if (strips.Any(strip => strip == null)) return;
@@ -332,15 +302,12 @@ namespace Geo
             return vertexU;
         }
 
-        private static void EmitSideQuads(
-            Vec3D[][] grid,
+        internal static void EmitSideQuads(
             int m,
             int vRows,
             int baseVert,
             bool closedU,
-            IReadOnlyList<Vec3D> vertices,
-            double minSquaredCrossNorm,
-            double minSquaredEdgeLen,
+            IReadOnlyList<Rat3Hybrid> precisePositions,
             List<Tri> triangles,
             List<int> groups,
             int groupId,
@@ -354,29 +321,18 @@ namespace Geo
                 {
                     int u0 = q;
                     int u1 = q + 1;
-                    int g0 = LoftVertexIndexToGridG(u0, closedU, m);
-                    int g1 = LoftVertexIndexToGridG(u1, closedU, m);
-                    if (Vec3DOps.DistanceSquared(grid[v][g0], grid[v][g1]) <= minSquaredEdgeLen)
-                        continue;
-                    if (Vec3DOps.DistanceSquared(grid[v + 1][g0], grid[v + 1][g1]) <= minSquaredEdgeLen)
-                        continue;
-
                     int i00 = baseVert + v * uVertCount + u0;
                     int i01 = baseVert + v * uVertCount + u1;
                     int i10 = i00 + uVertCount;
                     int i11 = i01 + uVertCount;
                     var triA = new Tri(i00, i01, i10);
                     var triB = new Tri(i01, i11, i10);
-                    Vec3D p00 = vertices[i00];
-                    Vec3D p01 = vertices[i01];
-                    Vec3D p10 = vertices[i10];
-                    Vec3D p11 = vertices[i11];
-                    if (!MeshConstructionHelpers.IsDegenerateTriangleMesh(triA, p00, p01, p10, minSquaredCrossNorm))
+                    if (!MeshConstructionHelpers.IsCollapsedTriangle(triA, precisePositions))
                     {
                         triangles.Add(triA);
                         groups.Add(columnGroups == null ? groupId : columnGroups[q]);
                     }
-                    if (!MeshConstructionHelpers.IsDegenerateTriangleMesh(triB, p01, p11, p10, minSquaredCrossNorm))
+                    if (!MeshConstructionHelpers.IsCollapsedTriangle(triB, precisePositions))
                     {
                         triangles.Add(triB);
                         groups.Add(columnGroups == null ? groupId : columnGroups[q]);

@@ -108,6 +108,7 @@ namespace NURBS
             {
                 var s = surface.Evaluate(Clamp01(uv[i].X), Clamp01(uv[i].Y));
                 double e = (s - points[i]).Length();
+                if (!double.IsFinite(e)) return double.PositiveInfinity;
                 if (e > max)
                     max = e;
             }

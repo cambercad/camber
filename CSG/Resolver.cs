@@ -133,8 +133,14 @@ namespace CSG
             Rat3Hybrid ip1 = default;
             int ipCount = 0;
 
-            ProcessEdgesVsTriangle(tr1, tri2, tr2, lockId != 2, specialCoplanarTriangleTreatment, ref ip0, ref ip1, ref ipCount, stats);
-            ProcessEdgesVsTriangle(tr2, tri1, tr1, lockId != 1, specialCoplanarTriangleTreatment, ref ip0, ref ip1, ref ipCount, stats);
+            // Nine edge-pair wedges and six vertex-plane signs are shared by
+            // both passes. Swapping the two vertex pairs preserves Orient3D's
+            // sign; the (A,C) wedge is stored reversed to represent edge (C,A).
+            // Cache exact predicate answers only, including zero/touch cases.
+            Span<sbyte> pairSigns = stackalloc sbyte[15];
+            pairSigns.Fill(2); // Unknown; predicate answers are -1, 0 or 1.
+            ProcessEdgesVsTriangle(tr1, tri2, tr2, lockId != 2, specialCoplanarTriangleTreatment, ref ip0, ref ip1, ref ipCount, stats, pairSigns, false);
+            ProcessEdgesVsTriangle(tr2, tri1, tr1, lockId != 1, specialCoplanarTriangleTreatment, ref ip0, ref ip1, ref ipCount, stats, pairSigns, true);
 
             if(ipCount == 1)
             {
@@ -184,7 +190,7 @@ namespace CSG
             ref Rat3Hybrid ip0,
             ref Rat3Hybrid ip1,
             ref int ipCount,
-            ResolvePairStats stats)
+            ResolvePairStats stats, Span<sbyte> pairSigns, bool reversedPair)
         {
             for (int i = 0; i < 3; ++i)
             {
@@ -193,7 +199,8 @@ namespace CSG
                 SegmentTriangleIntersectionType type = TriangleSegmentIntersector.SegmentIntersectsTriangle(
                     edgeTri[i], edgeTri[(i + 1) % 3],
                     triPointsFixed.A, triPointsFixed.B, triPointsFixed.C,
-                    out intersectionPoint, out onBoundary, out startIsOnTriangle, out endIsOnTriangle, stats);
+                    out intersectionPoint, out onBoundary, out startIsOnTriangle, out endIsOnTriangle, stats,
+                    pairSigns, i, reversedPair);
                 if (type == SegmentTriangleIntersectionType.Coplanar)
                 {
                     if (stats != null)

@@ -38,7 +38,7 @@ Wheels are **per OS** (Windows amd64, Linux x86_64), not per Python version. CPy
 pip install cambercad
 ```
 
-Optional OpenGL viewer (pyglet + imgui + numpy):
+Optional OpenGL viewer (pyglet + numpy):
 
 ```text
 pip install "cambercad[view]"
@@ -70,14 +70,14 @@ That runs `dotnet test camber.sln` and Python `unittest` under `Geo.Python/pytho
 - Load / edit triangle meshes from outside camber
 - Named topology for picking and scripting
 - Export: STL, OBJ, STEP, IGES, USDA
-- Optional viewer: pyglet + imgui
+- Optional viewer: pyglet
 
 ## Python dependencies
 
 | Use case | Packages |
 |----------|----------|
 | Import `camber`, model, export | **`cffi`** only (ships with the wheel’s native module) |
-| `.show()` / interactive sketch | **`pyglet`**, **`imgui[pyglet]`**, **`numpy`** |
+| `.show()` / interactive sketch | **`pyglet`**, **`numpy`** |
 
 Install the viewer stack with the `view` extra:
 
@@ -94,11 +94,11 @@ Both Windows and Linux publish scripts write **only** `cambercad-*.whl` into the
 ```text
 camber/
   dist/
-    cambercad-0.1.6-py3-none-win_amd64.whl
-    cambercad-0.1.6-py3-none-manylinux_2_38_x86_64.whl
+    cambercad-0.1.7-py3-none-win_amd64.whl
+    cambercad-0.1.7-py3-none-manylinux_2_38_x86_64.whl
 ```
 
-That layout matches PyPI (`twine upload dist/cambercad-0.1.6-*.whl`). Dependency wheels (`cffi`, …) are staged temporarily and not kept in `dist/`. Scripts retag DotWrap’s `py3-none-any` name to a platform tag so Win/Linux wheels can sit side by side. The Linux build uses auditwheel to validate native dependencies and determine the minimum glibc version; the Ubuntu 24.04 build requires glibc 2.38. Build on an older compatible toolchain to support older glibc releases.
+That layout matches PyPI (`twine upload dist/cambercad-0.1.7-*.whl`). Dependency wheels (`cffi`, …) are staged temporarily and not kept in `dist/`. Scripts retag DotWrap’s `py3-none-any` name to a platform tag so Win/Linux wheels can sit side by side. The Linux build uses auditwheel to validate native dependencies and determine the minimum glibc version; the Ubuntu 24.04 build requires glibc 2.38. Build on an older compatible toolchain to support older glibc releases.
 
 ## Build the wheel (Windows)
 
@@ -159,7 +159,7 @@ Git clone alone cannot replace a published platform wheel: Native AOT needs the 
 uv venv
 # kernel only:
 uv pip install dist\cambercad-*.whl
-# or kernel + viewer (pyglet, imgui, numpy):
+# or kernel + viewer (pyglet, numpy):
 uv pip install "dist\cambercad-*.whl[view]"
 ```
 
@@ -193,4 +193,4 @@ Full license texts are under [`third_party/`](third_party/).
 | **Clipper** 6.4.2 C# (Angus Johnson) | Boost Software License 1.0 | `NURBS/Triangulator/Clipper.cs` | Polygon clipping / offsets |
 | **DotWrap** 0.3.0 (NuGet, build-time) | MIT | `Geo.Python/Geo.Python.csproj` | Generates the Python native module |
 
-Optional runtime deps (not vendored): **cffi**, and for the viewer **pyglet** / **imgui** / **numpy**.
+Optional runtime deps (not vendored): **cffi**, and for the viewer **pyglet** / **numpy**.

@@ -1,5 +1,6 @@
 ﻿using System.Threading;
 using GeoCore;
+using System.Runtime.CompilerServices;
 
 namespace CSG
 {
@@ -22,7 +23,8 @@ namespace CSG
                 out intersectionPointIsOnBoundary, out startIsOnTriangle, out endIsOnTriangle, null);
 
         internal static SegmentTriangleIntersectionType SegmentIntersectsTriangle(in Rat3Hybrid segmentStart, in Rat3Hybrid segmentEnd,
-           in Rat3Hybrid a, in Rat3Hybrid b, in Rat3Hybrid c, out Rat3Hybrid intersection, out bool intersectionPointIsOnBoundary, out bool startIsOnTriangle, out bool endIsOnTriangle, ResolvePairStats stats)
+           in Rat3Hybrid a, in Rat3Hybrid b, in Rat3Hybrid c, out Rat3Hybrid intersection, out bool intersectionPointIsOnBoundary, out bool startIsOnTriangle, out bool endIsOnTriangle, ResolvePairStats stats,
+           Span<sbyte> pairSigns = default, int edgeIndex = 0, bool reversedPair = false)
         {
             intersectionPointIsOnBoundary = false;
             startIsOnTriangle = false;
@@ -38,8 +40,10 @@ namespace CSG
             Interlocked.Increment(ref FullTestCount);
             if (stats != null) Interlocked.Increment(ref stats.SegTriFull);
 
-            int ab = Orient3DSign(segmentStart, segmentEnd, a, b);
-            int bc = Orient3DSign(segmentStart, segmentEnd, b, c);
+            int first = reversedPair ? edgeIndex : edgeIndex * 3;
+            int stride = reversedPair ? 3 : 1;
+            int ab = CachedOrient3DSign(segmentStart, segmentEnd, a, b, pairSigns, first);
+            int bc = CachedOrient3DSign(segmentStart, segmentEnd, b, c, pairSigns, first + stride);
             // Opposite nonzero wedge signs cannot satisfy either consistent
             // orientation below. Avoid a third exact predicate for this miss;
             // zero signs still follow the full boundary/coplanar path.
@@ -48,14 +52,15 @@ namespace CSG
                 intersection = default;
                 return SegmentTriangleIntersectionType.NoIntersection;
             }
-            int ac = -Orient3DSign(segmentStart, segmentEnd, a, c);
+            int ac = -CachedOrient3DSign(segmentStart, segmentEnd, a, c, pairSigns, first + 2 * stride, true);
 
             if ((ab >= 0 && bc >= 0 && ac >= 0) || (ab <= 0 && bc <= 0 && ac <= 0))
             {
                 intersectionPointIsOnBoundary = ab == 0 || bc == 0 || ac == 0;
 
-                int up = Orient3DSign(segmentStart, a, b, c);
-                int down = Orient3DSign(segmentEnd, a, b, c);
+                int plane = reversedPair ? 12 : 9;
+                int up = CachedOrient3DSign(segmentStart, a, b, c, pairSigns, plane + edgeIndex);
+                int down = CachedOrient3DSign(segmentEnd, a, b, c, pairSigns, plane + (edgeIndex + 1) % 3);
 
                 if (up == 0 && down == 0 /*ab == 0 && bc == 0 && ac == 0*/)
                 {
@@ -163,6 +168,18 @@ namespace CSG
         public static int Orient3DSign(in Rat3Hybrid pa, in Rat3Hybrid pb, in Rat3Hybrid pc, in Rat3Hybrid pd) =>
             BigRationalHybrid.SignOfOrient3D(
                 pa.X, pa.Y, pa.Z, pb.X, pb.Y, pb.Z, pc.X, pc.Y, pc.Z, pd.X, pd.Y, pd.Z);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int CachedOrient3DSign(in Rat3Hybrid a, in Rat3Hybrid b, in Rat3Hybrid c, in Rat3Hybrid d,
+            Span<sbyte> signs, int index, bool negateStoredSign = false)
+        {
+            if (!signs.IsEmpty && signs[index] != 2)
+                return negateStoredSign ? -signs[index] : signs[index];
+            int sign = Orient3DSign(a, b, c, d);
+            if (!signs.IsEmpty)
+                signs[index] = (sbyte)(negateStoredSign ? -sign : sign);
+            return sign;
+        }
 
         private static bool SegmentTriangleAabbDisjoint(
             in Rat3Hybrid segmentStart, in Rat3Hybrid segmentEnd,

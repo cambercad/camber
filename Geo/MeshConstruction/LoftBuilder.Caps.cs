@@ -6,16 +6,9 @@ namespace Geo
 {
     public static partial class LoftBuilder
     {
-        /// <summary>Sketch-space coincidence for cap rim (crease duplicate columns may differ by ~1e-15 in double).</summary>
-        private static bool SketchPointsNearlyEqual(Vec2D a, Vec2D b, double sketchSpan)
-        {
-            double eps = Math.Max(1e-10, 1e-12 * Math.Max(1.0, sketchSpan));
-            return Math.Abs(a.X - b.X) <= eps && Math.Abs(a.Y - b.Y) <= eps;
-        }
-
         /// <summary>Removes consecutive sketch-space duplicates (e.g. crease left/right columns) for ear clipping; maps clean vertex index → original rim index.</summary>
         private static void SanitizeSketchLoopForCapTriangulation(
-            Vec2D[] sketchLoop, double sketchSpan, out List<Vec2D> cleanSketch, out List<int> cleanToOrig)
+            Vec2D[] sketchLoop, Rat3Hybrid[] preciseRim, out List<Vec2D> cleanSketch, out List<int> cleanToOrig)
         {
             cleanSketch = new List<Vec2D>();
             cleanToOrig = new List<int>();
@@ -23,7 +16,7 @@ namespace Geo
             for (int i = 0; i < n; i++)
             {
                 if (cleanSketch.Count == 0 ||
-                    !SketchPointsNearlyEqual(cleanSketch[^1], sketchLoop[i], sketchSpan))
+                    preciseRim[cleanToOrig[^1]] != preciseRim[i])
                 {
                     cleanSketch.Add(sketchLoop[i]);
                     cleanToOrig.Add(i);
@@ -31,7 +24,7 @@ namespace Geo
             }
 
             while (cleanSketch.Count >= 2 &&
-                   SketchPointsNearlyEqual(cleanSketch[0], cleanSketch[^1], sketchSpan))
+                   preciseRim[cleanToOrig[0]] == preciseRim[cleanToOrig[^1]])
             {
                 cleanSketch.RemoveAt(cleanSketch.Count - 1);
                 cleanToOrig.RemoveAt(cleanToOrig.Count - 1);
@@ -52,90 +45,13 @@ namespace Geo
             return a;
         }
 
-        private static bool PreflightCapPolygon(List<Vec2D> cleanSketch, double sketchSpan, bool expectPositiveSignedArea)
-        {
-            if (cleanSketch.Count < 3)
-                return false;
-            double area2 = PolygonSignedArea2D(cleanSketch);
-            double scale = Math.Max(1.0, sketchSpan * sketchSpan);
-            if (Math.Abs(area2) < 1e-20 * scale)
-                return false;
-            return expectPositiveSignedArea ? area2 > 0 : area2 < 0;
-        }
-
-        /// <summary>Copy sanitized rim and, if CW, reflect sketch Y so the loop is CCW for ear clipping.</summary>
-        private static List<Vec2D> CopyCapSketchLoopCcWForEarClip(IReadOnlyList<Vec2D> cleanSketch)
-        {
-            var pts = new List<Vec2D>(cleanSketch.Count);
-            for (int i = 0; i < cleanSketch.Count; i++)
-                pts.Add(cleanSketch[i]);
-
-            if (PolygonSignedArea2D(pts) < 0)
-            {
-                for (int i = 0; i < pts.Count; i++)
-                {
-                    Vec2D p = pts[i];
-                    pts[i] = new Vec2D(p.X, -p.Y);
-                }
-            }
-
-            return pts;
-        }
-
-        /// <summary><see cref="LoftCapTriangulationMode.Robust"/>: only reject degenerate caps after the same CCW align as triangulation.</summary>
-        private static bool PreflightCapSketchNonDegenerateAfterCcWAlign(IReadOnlyList<Vec2D> cleanSketch, double sketchSpan)
-        {
-            List<Vec2D> pts = CopyCapSketchLoopCcWForEarClip(cleanSketch);
-            if (pts.Count < 3)
-                return false;
-            double area2 = PolygonSignedArea2D(pts);
-            double scale = Math.Max(1.0, sketchSpan * sketchSpan);
-            return area2 > 0 && Math.Abs(area2) >= 1e-20 * scale;
-        }
-
-        private static double MaxAbsVec2SketchCoords(IReadOnlyList<Vec2D> pts)
-        {
-            double m = 0;
-            for (int i = 0; i < pts.Count; i++)
-            {
-                m = Math.Max(m, Math.Abs(pts[i].X));
-                m = Math.Max(m, Math.Abs(pts[i].Y));
-            }
-            return m;
-        }
-
-        /// <summary>
-        /// CCW-align in sketch space, then triangulate via exact <see cref="Int2"/> coordinates (same ear clip + Delaunay pipeline,
-        /// different arithmetic). Avoids near-degenerate <see cref="Vec2D"/> orientation tests on NACA-like caps without changing triangulation sources.
-        /// </summary>
-        private static List<Tri> TriangulateSimpleClosedCapInSketchSpace(List<Vec2D> cleanSketch, double sketchSpan)
-        {
-            List<Vec2D> pts = CopyCapSketchLoopCcWForEarClip(cleanSketch);
-            double spanSafe = Math.Max(sketchSpan, 1e-15);
-            double q = 1_000_000.0 / spanSafe;
-            double maxAbs = MaxAbsVec2SketchCoords(pts);
-            if (maxAbs > 1e-15)
-                q = Math.Min(q, (int.MaxValue - 8) / maxAbs);
-
-            var ip = new List<Int2>(pts.Count);
-            for (int i = 0; i < pts.Count; i++)
-            {
-                Vec2D p = pts[i];
-                ip.Add(new Int2((int)Math.Round(p.X * q), (int)Math.Round(p.Y * q)));
-            }
-
-            return Triangulator.TriangulatePolygon(ip, delaunayPostProcess: true);
-        }
-
-        private static void EmitPlanarCapFromSketch2D(
+        internal static void EmitPlanarCapFromSketch2D(
             Vec2D[] sketchLoop,
-            Vec3D[] worldRow,
             Rat3Hybrid[] preciseRim,
             Vec3D capNormalUnit,
             bool flipWinding,
             int groupId,
             LoftCapTriangulationMode capMode,
-            double minSquaredCrossNorm,
             CoordinateConverter converter,
             List<Vec3D> vertices,
             List<Vec3D> normals,
@@ -145,23 +61,10 @@ namespace Geo
             List<int> triangleGroups)
         {
             int n = sketchLoop.Length;
-            if (worldRow == null || worldRow.Length != n)
-                throw new ArgumentException("worldRow must match sketchLoop length.", nameof(worldRow));
+            if (preciseRim == null || preciseRim.Length != n)
+                throw new ArgumentException("preciseRim must match sketchLoop length.", nameof(preciseRim));
             if (n < 3)
                 throw new ArgumentException("Cap requires at least three points.", nameof(sketchLoop));
-
-            Vec2D min = new Vec2D(double.MaxValue, double.MaxValue);
-            Vec2D max = new Vec2D(double.MinValue, double.MinValue);
-            for (int i = 0; i < n; i++)
-            {
-                Vec2D p = sketchLoop[i];
-                if (p.X < min.X) min.X = p.X;
-                if (p.Y < min.Y) min.Y = p.Y;
-                if (p.X > max.X) max.X = p.X;
-                if (p.Y > max.Y) max.Y = p.Y;
-            }
-
-            double span = Math.Max(max.X - min.X, max.Y - min.Y);
 
             // Dedicated cap rim verts: independent UV island from minimum-area rectangle in sketch space.
             // The cap is a distinct planar face; its sharp rim retains separate normals.
@@ -170,7 +73,6 @@ namespace Geo
             int capBase = vertices.Count;
             for (int i = 0; i < n; i++)
             {
-                Vec3D pos = worldRow[i];
                 rimIdx[i] = capBase + i;
                 vertices.Add(converter.Convert(preciseRim[i]));
                 normals.Add(capNormalUnit);
@@ -178,30 +80,49 @@ namespace Geo
                 precisePositions.Add(preciseRim[i]);
             }
 
-            SanitizeSketchLoopForCapTriangulation(sketchLoop, span, out var cleanSketch, out var cleanToOrig);
-            bool robust = capMode == LoftCapTriangulationMode.Robust;
-            bool expectCcW = !flipWinding;
-            bool preflightOk = robust
-                ? PreflightCapSketchNonDegenerateAfterCcWAlign(cleanSketch, span)
-                : PreflightCapPolygon(cleanSketch, span, expectCcW);
+            // Duplicate removal and triangulation must agree with the side mesh.
+            SanitizeSketchLoopForCapTriangulation(sketchLoop, preciseRim, out var cleanSketch, out var cleanToOrig);
+            if (cleanToOrig.Count < 3)
+                throw new InvalidOperationException("Loft end cap: polygon collapsed to fewer than three exact rim vertices.");
 
-            bool useFanCap = cleanSketch.Count >= 3 &&
-                IsConvexClosedPolygon2D(cleanSketch.ToArray(), cleanSketch.Count, span);
+            // The side and cap share authoritative rational positions. A second
+            // integer-grid rounding of sketch coordinates can turn collinear rim
+            // vertices into tiny ears; dropping those ears then opens the solid.
+            // Project the existing exact plane instead, without moving its rim.
+            int axis = Math.Abs(capNormalUnit.X) > Math.Abs(capNormalUnit.Y)
+                ? (Math.Abs(capNormalUnit.X) > Math.Abs(capNormalUnit.Z) ? 0 : 2)
+                : (Math.Abs(capNormalUnit.Y) > Math.Abs(capNormalUnit.Z) ? 1 : 2);
+            var projected = new List<Rat2Hybrid>(cleanToOrig.Count);
+            foreach (int i in cleanToOrig)
+            {
+                var p = preciseRim[i];
+                projected.Add(axis == 0 ? new Rat2Hybrid(p.Y, p.Z)
+                    : axis == 1 ? new Rat2Hybrid(p.Z, p.X) : new Rat2Hybrid(p.X, p.Y));
+            }
+            var area = BigRationalHybrid.Zero;
+            for (int i = 0; i < projected.Count; i++)
+            {
+                var a = projected[i]; var b = projected[(i + 1) % projected.Count];
+                area += a.X * b.Y - a.Y * b.X;
+            }
+            if (area.Sign() == 0)
+                throw new InvalidOperationException("Loft end cap: exact rim has zero projected area.");
+            if (area.Sign() < 0)
+                for (int i = 0; i < projected.Count; i++)
+                    projected[i] = new Rat2Hybrid(projected[i].X, -projected[i].Y);
 
+            bool useFanCap = IsConvexClosedPolygon2D(projected);
             if (useFanCap)
             {
-                Vec3D centroid = new Vec3D(0, 0, 0);
                 var preciseCentroid = new Rat3Hybrid(0, 0, 0);
                 Vec2D sketchCentroid = new Vec2D(0, 0);
                 for (int i = 0; i < n; i++)
                 {
-                    centroid += worldRow[i];
                     preciseCentroid += preciseRim[i];
                     preciseCentroid.Simplify();
                     sketchCentroid.X += sketchLoop[i].X;
                     sketchCentroid.Y += sketchLoop[i].Y;
                 }
-                centroid = centroid * (1.0 / n);
                 sketchCentroid = sketchCentroid * (1.0 / n);
                 int ci = vertices.Count;
                 preciseCentroid /= new BigRationalHybrid(n);
@@ -214,14 +135,12 @@ namespace Geo
                 for (int i = 0; i < n; i++)
                 {
                     int j = (i + 1) % n;
-                    if (SketchPointsNearlyEqual(sketchLoop[i], sketchLoop[j], span))
+                    if (preciseRim[i] == preciseRim[j])
                         continue;
                     Tri newTri = flipWinding
                         ? new Tri(rimIdx[i], rimIdx[j], ci)
                         : new Tri(rimIdx[j], rimIdx[i], ci);
-                    Vec3D pa = vertices[rimIdx[i]];
-                    Vec3D pb = vertices[rimIdx[j]];
-                    if (MeshConstructionHelpers.IsDegenerateTriangleMesh(newTri, pa, pb, vertices[ci], minSquaredCrossNorm))
+                    if (MeshConstructionHelpers.IsCollapsedTriangle(newTri, precisePositions))
                         continue;
                     triangles.Add(newTri);
                     triangleGroups.Add(groupId);
@@ -229,18 +148,14 @@ namespace Geo
                 return;
             }
 
-            if (cleanSketch.Count < 3)
-                throw new InvalidOperationException("Loft end cap: polygon collapsed to fewer than three points after removing consecutive duplicates.");
+            // Strict mode preserves its authored-winding check. Robust mode
+            // uses the exact projected area above, without a model-size cutoff.
+            if (capMode != LoftCapTriangulationMode.Robust &&
+                (PolygonSignedArea2D(cleanSketch) > 0) != !flipWinding)
+                throw new InvalidOperationException("Loft end cap: polygon winding preflight failed.");
+            List<Tri> capTris = Triangulator.TriangulatePolygon(projected, delaunayPostProcess: true);
 
-            if (!preflightOk)
-                throw new InvalidOperationException(
-                    robust
-                        ? "Loft end cap: degenerate polygon in sketch space after sanitize."
-                        : "Loft end cap: polygon winding/area preflight failed; try LoftCapTriangulationMode.Robust or fix profile orientation.");
-
-            List<Tri> capTris = TriangulateSimpleClosedCapInSketchSpace(cleanSketch, span);
-
-            EmitCapTrisFromClean(capTris, cleanToOrig, rimIdx, flipWinding, groupId, vertices, minSquaredCrossNorm, triangles, triangleGroups);
+            EmitCapTrisFromClean(capTris, cleanToOrig, rimIdx, flipWinding, groupId, triangles, triangleGroups);
         }
 
         private static void EmitCapTrisFromClean(
@@ -249,8 +164,6 @@ namespace Geo
             int[] rimIdx,
             bool flipWinding,
             int groupId,
-            IReadOnlyList<Vec3D> vertices,
-            double minSquaredCrossNorm,
             List<Tri> triangles,
             List<int> triangleGroups)
         {
@@ -265,40 +178,25 @@ namespace Geo
                     ? new Tri(rimIdx[oa], rimIdx[ob], rimIdx[oc])
                     : new Tri(rimIdx[oa], rimIdx[oc], rimIdx[ob]);
 
-                Vec3D pa = vertices[rimIdx[oa]];
-                Vec3D pb = vertices[rimIdx[ob]];
-                Vec3D pc = vertices[rimIdx[oc]];
-                if (MeshConstructionHelpers.IsDegenerateTriangleMesh(newTri, pa, pb, pc, minSquaredCrossNorm))
-                    continue;
+                // Exact ear clipping emits positive-area triangles. Their rim
+                // edges are topological constraints, even when display-space
+                // area is small; removing a triangle here creates a hole.
 
                 triangles.Add(newTri);
                 triangleGroups.Add(groupId);
             }
         }
 
-        private static bool IsConvexClosedPolygon2D(Vec2D[] pts, int n, double sketchSpan)
+        private static bool IsConvexClosedPolygon2D(IReadOnlyList<Rat2Hybrid> pts)
         {
-            if (n < 3)
-                return false;
             int sign = 0;
-            for (int i = 0; i < n; i++)
+            for (int i = 0; i < pts.Count; i++)
             {
-                int i1 = (i + 1) % n;
-                int i2 = (i + 2) % n;
-                var p0 = pts[i];
-                var p1 = pts[i1];
-                var p2 = pts[i2];
-                if (SketchPointsNearlyEqual(p0, p1, sketchSpan) || SketchPointsNearlyEqual(p1, p2, sketchSpan))
-                    continue;
-                double cross = (p1.X - p0.X) * (p2.Y - p1.Y) - (p1.Y - p0.Y) * (p2.X - p1.X);
-                double scale = Math.Max(1.0, sketchSpan * sketchSpan);
-                if (Math.Abs(cross) < 1e-14 * scale)
-                    continue;
-                int s = cross > 0 ? 1 : -1;
-                if (sign == 0)
-                    sign = s;
-                else if (s != sign)
-                    return false;
+                var a = pts[i]; var b = pts[(i + 1) % pts.Count]; var c = pts[(i + 2) % pts.Count];
+                int turn = ((b.X - a.X) * (c.Y - b.Y) - (b.Y - a.Y) * (c.X - b.X)).Sign();
+                if (turn == 0) continue;
+                if (sign != 0 && turn != sign) return false;
+                sign = turn;
             }
             return sign != 0;
         }

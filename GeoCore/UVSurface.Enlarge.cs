@@ -14,6 +14,7 @@
             List<Vec3D> normals,
             List<Tri> triangles,
             double enlargementDistance,
+            CoordinateConverter converter,
             List<Vec2D> uvCoordinates = null,
             bool useAngleBisector = false,
             bool useAdaptiveScaling = false)
@@ -23,12 +24,26 @@
                 throw new Exception();
 #endif
 
-            int originalVertexCount = vertices.Count;
-            int originalTriangleCount = triangles.Count;
-
             // Extract boundary loops
             List<bool> closed;
             var boundaryLoops = Adjacency.ExtractBoundaryLoops(triangles, out closed, out var edges);
+            foreach (bool isClosed in closed)
+                if (!isClosed) throw new InvalidOperationException("Surface extension requires closed boundary loops.");
+
+            // Shape construction may use doubles, but the attachment must not:
+            // retain every source vertex/edge, and add displacements to its exact
+            // position. Rounding whole world positions can erase a narrow collar.
+            Vec3D Difference(int a, int b)
+            {
+                var delta = verticesPrecise[a] - verticesPrecise[b];
+                return new Vec3D(delta.X.ToDouble(), delta.Y.ToDouble(), delta.Z.ToDouble()) * converter.SmallestUnit();
+            }
+            BigRationalHybrid Exact(double value)
+            {
+                if (!double.IsFinite(value)) throw new InvalidOperationException("Surface extension displacement is nonfinite.");
+                var rational = new BigRational(value);
+                return new BigRationalHybrid(rational.Numerator, rational.Denominator);
+            }
 
             // Build a map from boundary edges to their triangle info for winding detection
             var edgeToTriangleMap = new Dictionary<(int, int), TriangleEdge>();
@@ -42,8 +57,6 @@
             }
 
             // --- Step 1: Create new rim vertices and triangles ---
-            var newVertexIndicesGlobal = new List<int>();
-
             foreach (var loop in boundaryLoops)
             {
                 int loopCount = loop.Count;
@@ -61,8 +74,7 @@
                 }
 
                 // Determine offset direction and loop orientation for this entire loop (only check once)
-                bool loopOrientedOutward = DetermineLoopOrientation(vertices, triangles, edgeToTriangleMap, 
-                                                                     loop, normals);
+                bool loopOrientedOutward = DetermineLoopOrientation(triangles, edgeToTriangleMap, loop);
 
                 for (int i = 0; i < loopCount; i++)
                 {
@@ -70,14 +82,13 @@
                     int curr = loop[i];
                     int next = loop[(i + 1) % loopCount];
 
-                    Vec3D vPrev = vertices[prev];
-                    Vec3D vCurr = vertices[curr];
-                    Vec3D vNext = vertices[next];
                     Vec3D nCurr = normals[curr].Normalized();
 
                     // Edge tangents
-                    Vec3D t1 = (vCurr - vPrev).Normalized();
-                    Vec3D t2 = (vNext - vCurr).Normalized();
+                    Vec3D incoming = Difference(curr, prev);
+                    Vec3D outgoing = Difference(next, curr);
+                    Vec3D t1 = incoming.Normalized();
+                    Vec3D t2 = outgoing.Normalized();
 
                     // --- Option 2: Use true angle bisector weighting ---
                     Vec3D avgTangent;
@@ -103,19 +114,21 @@
                     double localScale = 1.0;
                     if (useAdaptiveScaling)
                     {
-                        double len1 = (vCurr - vPrev).Length();
-                        double len2 = (vNext - vCurr).Length();
+                        double len1 = incoming.Length();
+                        double len2 = outgoing.Length();
                         double avgLen = (len1 + len2) * 0.5;
                         localScale = Math.Clamp(avgLen / enlargementDistance, 0.5, 2.0);
                     }
 
                     Vec3D offset = offsetDir * (enlargementDistance * localScale);
-                    Vec3D newVertex = vCurr + offset;
-
-                    vertices.Add(newVertex);
+                    var displacement = offset / converter.SmallestUnit();
+                    var newVertex = verticesPrecise[curr] + new Rat3Hybrid(
+                        Exact(displacement.X), Exact(displacement.Y), Exact(displacement.Z));
+                    newVertex.Simplify();
+                    verticesPrecise.Add(newVertex);
+                    vertices.Add(converter.Convert(newVertex));
                     normals.Add(new Vec3D(0, 0, 0)); // temporary placeholder
                     newVertexIndices[i] = vertices.Count - 1;
-                    newVertexIndicesGlobal.Add(vertices.Count - 1);
 
                     // Generate UV coordinate for new vertex if UV coordinates are provided
                     if (uvCoordinates != null)
@@ -154,9 +167,6 @@
                 }
             }
 
-            // --- Step 2: Recompute normals ONLY for new vertices ---
-            RecomputeAngleWeightedNormalsForNewVertices(vertices, normals, triangles, originalVertexCount);
-
 #if DEBUG
             if (!MeshAnalysis.AreTrianglesConsistentlyOriented(verticesPrecise, triangles))
                 throw new Exception();
@@ -167,25 +177,34 @@
         /// Recomputes angle-weighted normals only for vertices added after originalVertexCount.
         /// </summary>
         private static void RecomputeAngleWeightedNormalsForNewVertices(
-            List<Vec3D> vertices,
+            List<Rat3Hybrid> vertices,
             List<Vec3D> normals,
             List<Tri> triangles,
             int originalVertexCount)
         {
             // Accumulate angle-weighted normals
             var accum = new Vec3D[vertices.Count];
+            Vec3D Direction(int a, int b)
+            {
+                var delta = vertices[a] - vertices[b];
+                return new Vec3D(delta.X.ToDouble(), delta.Y.ToDouble(), delta.Z.ToDouble()).Normalized();
+            }
 
             foreach (var tri in triangles)
             {
-                Vec3D v0 = vertices[tri.A];
-                Vec3D v1 = vertices[tri.B];
-                Vec3D v2 = vertices[tri.C];
-
-                Vec3D e0 = v1 - v0;
-                Vec3D e1 = v2 - v1;
-                Vec3D e2 = v0 - v2;
-
-                Vec3D n = Vec3DOps.Cross(e0, v2 - v0).Normalized();
+                if (tri.A < originalVertexCount && tri.B < originalVertexCount && tri.C < originalVertexCount)
+                    continue;
+                Vec3D e0 = Direction(tri.B, tri.A);
+                Vec3D e1 = Direction(tri.C, tri.B);
+                Vec3D e2 = Direction(tri.A, tri.C);
+                var faceNormal = Rat3Hybrid.Cross(vertices[tri.B] - vertices[tri.A], vertices[tri.C] - vertices[tri.A]);
+                if (faceNormal.IsZero()) throw new InvalidOperationException("Surface extension contains an exactly collapsed triangle.");
+                // Normalize in rational space first to avoid overflow/underflow
+                // and cancellation in the normal of a very narrow collar.
+                var magnitude = BigRationalHybrid.Max(BigRationalHybrid.Abs(faceNormal.X),
+                    BigRationalHybrid.Max(BigRationalHybrid.Abs(faceNormal.Y), BigRationalHybrid.Abs(faceNormal.Z)));
+                faceNormal /= magnitude;
+                Vec3D n = new Vec3D(faceNormal.X.ToDouble(), faceNormal.Y.ToDouble(), faceNormal.Z.ToDouble()).Normalized();
 
                 double a0 = AngleBetween(-e2, e0);
                 double a1 = AngleBetween(-e0, e1);
@@ -223,11 +242,9 @@
         /// This result is used for both offset direction correction and rim triangle winding.
         /// </summary>
         private static bool DetermineLoopOrientation(
-            List<Vec3D> vertices,
             List<Tri> triangles,
             Dictionary<(int, int), TriangleEdge> edgeToTriangleMap,
-            List<int> loop,
-            List<Vec3D> normals)
+            List<int> loop)
         {
             if (loop.Count < 2)
                 return true; // Degenerate case, assume correct orientation

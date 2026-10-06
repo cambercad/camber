@@ -249,7 +249,17 @@ namespace GeoCore
             if (positions == null || triangles == null || triangles.Count == 0)
                 return 0;
 
+            var min = positions[0];
+            var max = positions[0];
+            for (int i = 1; i < positions.Count; i++)
+            {
+                var p = positions[i];
+                min = new Vec3D(Math.Min(min.X, p.X), Math.Min(min.Y, p.Y), Math.Min(min.Z, p.Z));
+                max = new Vec3D(Math.Max(max.X, p.X), Math.Max(max.Y, p.Y), Math.Max(max.Z, p.Z));
+            }
+            var origin = (min + max) / 2;
             double vol6 = 0;
+            double compensation = 0;
             for (int i = 0; i < triangles.Count; i++)
             {
                 var t = triangles[i];
@@ -258,10 +268,14 @@ namespace GeoCore
                     continue;
                 if (ia == ib || ib == ic || ia == ic)
                     continue;
-                var a = positions[ia];
-                var b = positions[ib];
-                var c = positions[ic];
-                vol6 += Vec3DOps.Dot(a, Vec3DOps.Cross(b, c));
+                var a = positions[ia] - origin;
+                var b = positions[ib] - origin;
+                var c = positions[ic] - origin;
+                double term = Vec3DOps.Dot(a, Vec3DOps.Cross(b, c));
+                double corrected = term - compensation;
+                double next = vol6 + corrected;
+                compensation = (next - vol6) - corrected;
+                vol6 = next;
             }
 
             return vol6 / 6.0;
@@ -289,6 +303,82 @@ namespace GeoCore
             var volume = sixVolume / new BigRationalHybrid(6);
             volume.Simplify();
             return volume;
+        }
+
+        /// <summary>Exact volume comparison with a certified interval filter.
+        /// Avoids forming a huge common denominator merely to decide a sign.</summary>
+        public static int CompareSignedMeshVolume(IList<Rat3Hybrid> positions, IList<Tri> triangles,
+            BigRationalHybrid threshold)
+        {
+            if (positions == null || triangles == null || positions.Count == 0 || triangles.Count == 0)
+                return (-threshold).Sign();
+            static BigRationalHybrid Exact(double value)
+            {
+                var rational = new BigRational(value);
+                return new BigRationalHybrid(rational.Numerator, rational.Denominator);
+            }
+            // Center the tetrahedral fan in the mesh bounds. The signed volume
+            // is translation invariant; this reduces interval cancellation for
+            // elongated meshes when the first vertex is far from their center.
+            var min = positions[0];
+            var max = positions[0];
+            for (int i = 1; i < positions.Count; i++)
+            {
+                var point = positions[i];
+                if (point.X < min.X) min.X = point.X;
+                if (point.Y < min.Y) min.Y = point.Y;
+                if (point.Z < min.Z) min.Z = point.Z;
+                if (point.X > max.X) max.X = point.X;
+                if (point.Y > max.Y) max.Y = point.Y;
+                if (point.Z > max.Z) max.Z = point.Z;
+            }
+            var origin = new Rat3Hybrid((min.X + max.X) / new BigRationalHybrid(2),
+                (min.Y + max.Y) / new BigRationalHybrid(2),
+                (min.Z + max.Z) / new BigRationalHybrid(2));
+            var bounds = new (VolumeInterval X, VolumeInterval Y, VolumeInterval Z)[positions.Count];
+            for (int i = 0; i < positions.Count; i++)
+            {
+                var point = positions[i] - origin;
+                if (!Enclose(point.X, out var x) || !Enclose(point.Y, out var y) || !Enclose(point.Z, out var z))
+                    return Fallback();
+                bounds[i] = (x, y, z);
+            }
+            var sum = new VolumeInterval(0, 0);
+            foreach (var triangle in triangles)
+            {
+                var a = bounds[triangle.A]; var b = bounds[triangle.B]; var c = bounds[triangle.C];
+                sum += a.X * (b.Y * c.Z - b.Z * c.Y) +
+                    a.Y * (b.Z * c.X - b.X * c.Z) + a.Z * (b.X * c.Y - b.Y * c.X);
+            }
+            if (double.IsFinite(sum.Lower) && Exact(sum.Lower) > threshold * new BigRationalHybrid(6)) return 1;
+            if (double.IsFinite(sum.Upper) && Exact(sum.Upper) < threshold * new BigRationalHybrid(6)) return -1;
+            return Fallback();
+
+            int Fallback() => (ComputeSignedMeshVolume(positions, triangles) - threshold).Sign();
+            bool Enclose(BigRationalHybrid value, out VolumeInterval result)
+            {
+                double approximate = value.ToDouble();
+                double lo = Math.BitDecrement(approximate), hi = Math.BitIncrement(approximate);
+                result = new VolumeInterval(lo, hi);
+                // Verify conversion bounds rather than assuming ToDouble's
+                // rounding behavior for arbitrarily large rational operands.
+                return double.IsFinite(lo) && double.IsFinite(hi) && Exact(lo) <= value && Exact(hi) >= value;
+            }
+        }
+
+        private readonly record struct VolumeInterval(double Lower, double Upper)
+        {
+            public static VolumeInterval operator +(VolumeInterval a, VolumeInterval b) =>
+                new(Math.BitDecrement(a.Lower + b.Lower), Math.BitIncrement(a.Upper + b.Upper));
+            public static VolumeInterval operator -(VolumeInterval a, VolumeInterval b) =>
+                new(Math.BitDecrement(a.Lower - b.Upper), Math.BitIncrement(a.Upper - b.Lower));
+            public static VolumeInterval operator *(VolumeInterval a, VolumeInterval b)
+            {
+                double aa = a.Lower * b.Lower, ab = a.Lower * b.Upper;
+                double ba = a.Upper * b.Lower, bb = a.Upper * b.Upper;
+                return new(Math.BitDecrement(Math.Min(Math.Min(aa, ab), Math.Min(ba, bb))),
+                    Math.BitIncrement(Math.Max(Math.Max(aa, ab), Math.Max(ba, bb))));
+            }
         }
 
         public static bool IsWatertightMesh(IList<Vec3D> points, IList<Tri> triangles, bool allowTouch = false)

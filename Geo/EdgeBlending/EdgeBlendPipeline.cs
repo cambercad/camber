@@ -181,20 +181,58 @@ namespace Geo
                 NURBS.BSplineLinearExtrudeSurface => true,
                 NurbsConstruction.MeshUvMappedSurface mapped => IsLinearExtrusion(mapped.Inner),
                 TransformedNurbsSurface transformed => IsLinearExtrusion(transformed.Inner),
+                NURBS.BSplineSurface spline => IsTranslationalControlNet(spline),
                 _ => false,
             };
             if (!a.HasNurbs || !b.HasNurbs ||
                 !IsLinearExtrusion(a.NurbsSurface) || !IsLinearExtrusion(b.NurbsSurface)) return false;
             var vertices = edge.EdgeSegments.SelectMany(s => new[] { s.X, s.Y }).Distinct().ToArray();
             double uA = surfaceA.Uv[vertices[0]].X, uB = surfaceB.Uv[vertices[0]].X;
-            if ((uA != 0 && uA != 1) || (uB != 0 && uB != 1) ||
+            var rangeA = a.ParamRange ?? ParametricRange.UnitSquare;
+            var rangeB = b.ParamRange ?? ParametricRange.UnitSquare;
+            if ((uA != rangeA.UMin && uA != rangeA.UMax) ||
+                (uB != rangeB.UMin && uB != rangeB.UMax) ||
                 vertices.Any(i => surfaceA.Uv[i].X != uA || surfaceB.Uv[i].X != uB)) return false;
-            var normalA = a.NurbsSurface.EvaluateNormal(uA, .5);
-            var normalB = b.NurbsSurface.EvaluateNormal(uB, .5);
+            var normalA = BoundaryNormal(a.NurbsSurface, uA, .5, uA == rangeA.UMax);
+            var normalB = BoundaryNormal(b.NurbsSurface, uB, .5, uB == rangeB.UMax);
             if (normalA.LengthSquared() == 0 || normalB.LengthSquared() == 0) return false;
             // Same analytic parameter tolerance as the primitive cases below;
             // mesh incidence and Boolean classification remain exact.
             return Vec3DOps.Cross(normalA.Normalized(), normalB.Normalized()).LengthSquared() <= 1e-24;
+        }
+
+        private static Vec3D BoundaryNormal(INurbsSurface surface, double u, double v, bool fromLeft)
+        {
+            if (surface is TransformedNurbsSurface transformed)
+                return transformed.Transform.TransformDirection(BoundaryNormal(transformed.Inner, u, v, fromLeft));
+            if (surface is NurbsConstruction.MeshUvMappedSurface mapped && !mapped.SwapMeshUv)
+            {
+                var parameter = mapped.MapMeshUv(u, v);
+                return BoundaryNormal(mapped.Inner, parameter.X, parameter.Y, fromLeft);
+            }
+            return surface is NURBS.BSplineSurface spline
+                ? spline.EvaluateNormal(u, v, fromLeft) : surface.EvaluateNormal(u, v);
+        }
+
+        private static bool IsTranslationalControlNet(NURBS.BSplineSurface surface)
+        {
+            // A loft of translated profiles is geometrically an extrusion too.
+            // Certify the whole control net, not a few smooth display normals.
+            var net = surface.ControlPoints;
+            var first = NURBS.DeBoor.Project(net[0][0]);
+            var direction = NURBS.DeBoor.Project(net[0][^1]) - first;
+            if (direction.LengthSquared() == 0) return false;
+            for (int i = 0; i < net.Length; i++)
+                for (int j = 0; j < net[i].Length; j++)
+                {
+                    if (net[i][j].W != net[i][0].W) return false;
+                    var reference = NURBS.DeBoor.Project(net[0][j]) - first;
+                    var offset = NURBS.DeBoor.Project(net[i][j]) - NURBS.DeBoor.Project(net[i][0]);
+                    if ((offset - reference).LengthSquared() > 1e-24 * Math.Max(1, reference.LengthSquared()) ||
+                        Vec3DOps.Cross(reference, direction).LengthSquared() >
+                        1e-24 * Math.Max(1, reference.LengthSquared() * direction.LengthSquared())) return false;
+                }
+            return true;
         }
 
         private static bool AreAnalyticallyTangent(SurfaceMetaData a, SurfaceMetaData b)
@@ -722,7 +760,9 @@ namespace Geo
                 {
                     string patch = mesh.groupIdToExtendedName[id];
                     if (!mesh.TryGetTopologySurface(patch, out var surface)) { supports.Clear(); break; }
-                    var meta = mesh.surfaceMetaData[patch];
+                    // Construction metadata is optional. The registry's mesh
+                    // adapter must also resolve imported/unannotated supports.
+                    mesh.surfaceMetaData.TryGetValue(patch, out var meta);
                     int index = mesh.Mesh.TrianglesEx.FindIndex(triangle => triangle.GroupId == id);
                     if (index < 0) { supports.Clear(); break; }
                     var triangle = mesh.Mesh.Triangles[index];
@@ -1062,13 +1102,9 @@ namespace Geo
                         }
                     }
 
+                blendEdge.TrimBySurface(extendedOpenCornerTrimSurfaces, extensionOnlyOpenCornerTrimSurfaces);
                 if (blendEdge.BlendType == EdgeBlendType.Convex)
-                {
-                    blendEdge.TrimBySurface(extendedOpenCornerTrimSurfaces, extensionOnlyOpenCornerTrimSurfaces);
                     blendEdge.TrimByVolume(fullMesh, cc);
-                }
-                else
-                    blendEdge.TrimBySurface(extendedOpenCornerTrimSurfaces, extensionOnlyOpenCornerTrimSurfaces);
 
                 var capClosures = new List<(UVSurface Surface, SurfaceMetaData Metadata)>();
                 if (closedSupportCaps.TryGetValue(blendEdge, out var caps))
@@ -1418,7 +1454,7 @@ namespace Geo
                     if (LiesStrictlyOnSegment(a.A, b.A, b.B) || LiesStrictlyOnSegment(a.B, b.A, b.B) ||
                         LiesStrictlyOnSegment(b.A, a.A, a.B) || LiesStrictlyOnSegment(b.B, a.A, a.B))
                         throw new InvalidOperationException(
-                            $"Edge-blend patches contain a non-conforming T-junction between patches {a.Surface} and {b.Surface}.");
+                            $"Edge-blend patches contain a non-conforming T-junction between patches {a.Surface} and {b.Surface}: {converter.Convert(a.A)} -> {converter.Convert(a.B)} / {converter.Convert(b.A)} -> {converter.Convert(b.B)}.");
                 }
 
             // Do not require each exact boundary vertex to have degree two here:

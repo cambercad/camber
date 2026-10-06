@@ -16,6 +16,25 @@ public class GeoAPICopyMeshTests : IDisposable
     }
 
     [Fact]
+    public void CopyMesh_NonAxialRotationPreservesExactPlanes()
+    {
+        var api = new GeoAPI(new Box3D(new Vec3D(-20), new Vec3D(20)), .001);
+        var box = api.CreateCuboid(new Vec3D(0), new Vec3D(10, 8, 6), "box");
+        var frame = new CoordinateSystem(new Vec3D(2, -3, 1),
+            new Vec3D(.6, .8, 0), new Vec3D(-.48, .36, .8), new Vec3D(.64, -.48, .6));
+        var copy = api.CopyMesh(box, CoordinateSystem.Default, frame, "posed_", SurfacePatchNameAffix.Prefix, "posed");
+        foreach (string patch in copy.groupIdToExtendedName.Values)
+        {
+            Assert.True(copy.TryGetSurface(patch, out var surface));
+            Assert.True(surface.IsSurfacePlanar(), patch);
+        }
+        double exactSourceVolume = Math.Abs(MeshAnalysis.ComputeSignedMeshVolume(
+            api.Converter.Convert(box.Mesh.PrecisionPositions), box.Mesh.Triangles));
+        Assert.InRange(Math.Abs(AbsMeshVolume(copy) - exactSourceVolume), 0, 1e-10);
+        Assert.True(MeshAnalysis.IsWatertightMesh(copy.Mesh.PrecisionPositions, copy.Mesh.Triangles, true));
+    }
+
+    [Fact]
     public void CopyMesh_DecoratesSurfaceNames_PrefixAndSuffix()
     {
         var api = new GeoAPI(new Box3D(new Vec3D(0), new Vec3D(5)), 1e-4);

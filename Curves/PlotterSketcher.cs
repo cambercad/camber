@@ -456,7 +456,35 @@ Adds a 2D line segment. If startPoint is not the current strip end, a new discon
             return line;
         }
 
-        /// <summary>Adds a curve whose shape is defined by its supplied samples.</summary>
+        /// <summary>Adds one analytic curve defined by its control polygon.</summary>
+        [APIDescription(@"AddBezier(controlPoints: IReadOnlyList[Vec2D], flags: CurveFlags = None) -> Bezier2D
+Adds one exact Bezier curve from its control polygon, not an interpolating spline.")]
+        public Bezier2D AddBezier(IReadOnlyList<Vec2D> controlPoints, CurveFlags flags = CurveFlags.None)
+        {
+            ArgumentNullException.ThrowIfNull(controlPoints);
+            var curve = new Bezier2D(controlPoints.ToArray()) { Flags = flags };
+            StartNewStripIfDisconnected(curve.StartPosition);
+            AddCurveToStrip(curve);
+            return curve;
+        }
+
+        [APIDescription(@"AddBSpline(controlPoints: IReadOnlyList[Vec2D], degree: int = 3, knots: IReadOnlyList[float] = None, weights: IReadOnlyList[float] = None, flags: CurveFlags = None) -> BSpline2D
+Adds one exact B-spline or rational NURBS curve. Omitted knots are uniform/clamped; supplied knots are the full knot vector.")]
+        public BSpline2D AddBSpline(IReadOnlyList<Vec2D> controlPoints, int degree = 3,
+            IReadOnlyList<double> knots = null, IReadOnlyList<double> weights = null,
+            CurveFlags flags = CurveFlags.None)
+        {
+            ArgumentNullException.ThrowIfNull(controlPoints);
+            if (degree < 1 || degree >= controlPoints.Count)
+                throw new ArgumentOutOfRangeException(nameof(degree), "Degree must be positive and less than the control-point count.");
+            var curve = new BSpline2D(controlPoints.ToArray(),
+                knots?.ToArray() ?? NURBS.BSplineCurve.UniformKnotVector(degree, controlPoints.Count),
+                degree, weights?.ToArray()) { Flags = flags };
+            StartNewStripIfDisconnected(curve.StartPosition);
+            AddCurveToStrip(curve);
+            return curve;
+        }
+
         public SampledCurve AddSampledCurve(List<Vec2D> points, CurveFlags flags = CurveFlags.None)
         {
             if (points == null || points.Count < 2)

@@ -4,6 +4,31 @@ using GeoCore;
 public class FastBigIntegerTests
 {
     [Fact]
+    public void LargeIntegerIdentityArithmeticDoesNotAllocate()
+    {
+        var original = (BigInteger.One << 4096) + 65537;
+        var value = new FastBigInteger(original);
+        var one = new FastBigInteger(1);
+        var minusOne = new FastBigInteger(-1);
+        var zero = new FastBigInteger(0);
+        void Exercise()
+        {
+            value = (one * value) / one;
+            value = (value * minusOne) / minusOne;
+            value += zero;
+            value = zero + value;
+            value += value % minusOne;
+            value = value * FastBigInteger.GreatestCommonDivisor(value, minusOne);
+        }
+        for (int i = 0; i < 64; i++) Exercise();
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 1000; i++) Exercise();
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.Equal(original, value.ToBigInteger());
+        Assert.Equal(0, allocated);
+    }
+
+    [Fact]
     public void ArithmeticMatchesBigIntegerAcrossBoundariesAndLargeValues()
     {
         var random = new Random(928471);

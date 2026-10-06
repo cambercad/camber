@@ -9,8 +9,33 @@ public sealed class CurvedShoulderFinFilletTests : IDisposable
 {
     public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
 
-    [Fact]
-    public void ReducedFinRootReproducesPartialTerminationLimitation()
+    [Theory]
+    [InlineData(false, 1.2)]
+    [InlineData(true, 1.2)]
+    [InlineData(false, .3)]
+    [InlineData(true, .3)]
+    public void ReducedFinRootReproducesPartialTerminationLimitation(bool chamfer, double amount)
+    {
+        var (api, joined) = Fixture();
+        int edge = joined.GroupEdges.FindIndex(item =>
+            item.Name.Contains("revolved_hub-Line4") && item.Name.Contains("fin-Side"));
+        Assert.True(edge >= 0, "The curved-shoulder/fin fixture must expose the intended root edge.");
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+        {
+            if (chamfer)
+                api.Chamfer(joined, [joined.GetEdgeReference(edge)], amount, .15, "beveled_fin_root");
+            else
+                api.Fillet(joined, [joined.GetEdgeReference(edge)], amount, .15, "rounded_fin_root");
+        });
+        // The exact CSG trim is the normal path; the contour-only fallback can
+        // therefore report a different endpoint detail for the same valid
+        // but currently unsupported partial termination. Keep the regression
+        // tied to this edge rather than to a particular internal strategy.
+        Assert.Contains("revolved_hub-Line4", error.Message);
+    }
+
+    private static (GeoAPI Api, AnchorMesh Joined) Fixture()
     {
         var api = new GeoAPI(new Box3D(new Vec3D(-130, -130, -10),
             new Vec3D(130, 130, 115)), .15);
@@ -63,12 +88,36 @@ public sealed class CurvedShoulderFinFilletTests : IDisposable
         joined.EnsureCoplanarPostProcessed();
         MeshPipelineTestHelpers.AssertWatertightAllowTouch(joined.Mesh);
 
-        int edge = joined.GroupEdges.FindIndex(item =>
-            item.Name.Contains("revolved_hub-Line4") && item.Name.Contains("fin-Side"));
-        Assert.True(edge >= 0, "The curved-shoulder/fin fixture must expose the intended root edge.");
+        return (api, joined);
+    }
 
+    [Fact]
+    public void BooleanUvInterpolationDoesNotCertifySupportFidelity()
+    {
+        var (api, joined) = Fixture();
+        Assert.True(joined.TryGetTopologySurface("revolved_hub-Arc1", out var surface));
+        double geometryError = 0, parameterError = 0;
+        foreach (var triangle in surface.Triangles)
+            foreach (int vertex in new[] { triangle.A, triangle.B, triangle.C })
+            {
+                var point = surface.Points[vertex];
+                double radial = Math.Sqrt(point.X * point.X + point.Y * point.Y);
+                geometryError = Math.Max(geometryError,
+                    Math.Abs(Math.Sqrt((radial - 112) * (radial - 112) + (point.Z - 90) * (point.Z - 90)) - 84));
+                var uv = surface.Uv[vertex];
+                parameterError = Math.Max(parameterError,
+                    (surface.NurbsSurface.Evaluate(uv.X, uv.Y) - point).Length());
+            }
+        double permitted = .15 + 2 * Math.Sqrt(3) * api.Converter.SmallestUnit();
+        Assert.InRange(geometryError, 0, permitted);
+        // CSG interpolates attributes affinely on authoritative triangles.
+        // On a nonlinear chart, evaluating that UV need not return the closest
+        // analytic point. Geometric fidelity alone cannot certify this chart.
+        Assert.True(parameterError > permitted,
+            $"This fixture must expose parameter drift; error {parameterError:G17}, permitted {permitted:G17}");
+        int group = joined.extendedNameToGroupId["revolved_hub-Arc1"];
         var error = Assert.Throws<InvalidOperationException>(() =>
-            api.Fillet(joined, [joined.GetEdgeReference(edge)], 1.2, .15, "rounded_fin_root"));
-        Assert.Contains("endpoint contour crosses the original trim face", error.Message);
+            SupportSurfaceExtension.RestoreDomain(surface, joined.Mesh, group, .15, api.Converter));
+        Assert.Contains("Support refinement did not converge", error.Message);
     }
 }

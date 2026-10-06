@@ -157,6 +157,8 @@
         /// </exception>
         public UVSurface GetExtendedSurface(double extensionLength, CoordinateConverter cs, out UVSurface extensionOnly, bool useAngleBisector = false, bool useAdaptiveScaling = false)
         {
+            if (!double.IsFinite(extensionLength) || extensionLength <= 0)
+                throw new ArgumentOutOfRangeException(nameof(extensionLength), "Extension length must be finite and positive.");
             // Ensure normals are available for the extension algorithm
             List<Vec3D> surfaceNormals = Normals;
             
@@ -165,12 +167,13 @@
             List<Vec3D> normals = new List<Vec3D>(surfaceNormals);
             List<Tri> triangles = new List<Tri>(Triangles);
             List<Vec2D> uvCoordinates = new List<Vec2D>(Uv);
+            List<Rat3Hybrid> pts = new List<Rat3Hybrid>(PointsPrecise);
             
             int originalVertexCount = vertices.Count;
             int originalTriangleCount = triangles.Count;
             
             // Apply the tangential enlargement
-            TangentiallyEnlargeSurface(vertices, PointsPrecise, normals, triangles, extensionLength, 
+            TangentiallyEnlargeSurface(vertices, pts, normals, triangles, extensionLength, cs,
                 uvCoordinates, useAngleBisector, useAdaptiveScaling);
             
             // Check if any vertices were added
@@ -185,11 +188,9 @@
                 planeNormal = GetSurfaceNormal(out planeD);
             }
 
-            List<Rat3Hybrid> pts = new List<Rat3Hybrid>(PointsPrecise);
             for (int i = originalVertexCount; i < vertices.Count; ++i)
             {
-                var p = cs.Convert(vertices[i]);
-                var precise = new Rat3Hybrid(p.X, p.Y, p.Z);
+                var precise = pts[i];
 
                 if (surfaceIsPlanar)
                 {
@@ -197,8 +198,10 @@
                     precise.Simplify();
                 }
 
-                pts.Add(precise);
+                pts[i] = precise;
+                vertices[i] = cs.Convert(precise);
             }
+            RecomputeAngleWeightedNormalsForNewVertices(pts, normals, triangles, originalVertexCount);
 
             List<Tri> extensionOnlyTriangles = new List<Tri>(triangles.Count - originalTriangleCount);
             for(int i=originalTriangleCount;i < triangles.Count; ++i)            

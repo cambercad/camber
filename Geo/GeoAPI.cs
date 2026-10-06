@@ -2034,8 +2034,22 @@ Side patches are named ""<meshName>-<contourSegmentName>"". Helper geometry is e
         {
             maxDeviation = ResolveMaxDeviation(maxDeviation);
             name = name ?? GenerateName("Revolve");
+            // Profile chord error and angular chord error accumulate on the
+            // revolved surface. Each receives half the surface budget, not the
+            // full tolerance (which nearly doubled sphere/Boolean seam error).
+            double samplingDeviation = maxDeviation / 2;
             // Allow open profiles for revolves - valid when start and end lie on the revolution axis
-            List<List<List<Vec2D>>> profile = sketch.Tessellate(maxDeviation, out var contourN, out var names, out var metaData2D, maxDeviation, SketchTessellationFlags.AllowOpenContour | SketchTessellationFlags.ExcludeHelperGeometry);
+            List<List<List<Vec2D>>> profile = sketch.Tessellate(samplingDeviation, out var contourN, out var names, out var metaData2D, samplingDeviation, SketchTessellationFlags.AllowOpenContour | SketchTessellationFlags.ExcludeHelperGeometry);
+            // Straight meridians have no profile chord error. Keep their full
+            // angular budget so journals share the exact circle sampling of
+            // extruded bores at the same part tolerance.
+            double angularDeviation = maxDeviation;
+            foreach (var curve in metaData2D.Values)
+                if (curve.Instance is not Line2D)
+                {
+                    angularDeviation = samplingDeviation;
+                    break;
+                }
 
             // Validate open profile geometry for revolves
             // For revolving around X-axis: Y coordinate represents radius from axis
@@ -2104,7 +2118,7 @@ Side patches are named ""<meshName>-<contourSegmentName>"". Helper geometry is e
                 : null;
 
             int numGroups = Revolver.GenerateRevolvedMesh(converter, profile, contourN, angle,
-                output, maxDeviation, names, name, out var triangleGroupToName, revolveFrame, 0);
+                output, angularDeviation, names, name, out var triangleGroupToName, revolveFrame, 0);
 
             ReserveGeneratedGroupIds(output.TriangleGroups, numGroups, triangleGroupToName);
 

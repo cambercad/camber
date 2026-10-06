@@ -3,9 +3,8 @@
 Pipe 1 is the only ground. Each next pipe is added at the origin, mated, and
 solved; previous flange mates keep the seated chain in place.
 
-Each joint uses end frames retained from the sweep's terminal sketch planes. The
-boolean-fused flanges do not preserve the original terminal face names, so the
-assembly uses explicit plane/axis datums at those same design references.
+Each joint mates the named pipe end faces and two flange side faces. The end
+faces seat the flanges; the north and east faces align their bolt patterns.
 """
 from camber import Part, vec3
 from pipe import create_pipe
@@ -28,34 +27,39 @@ assembly.fix(bodies[0])
 def mate_flanged_ends(top_index, bottom_index):
     top = bodies[top_index]
     bottom = bodies[bottom_index]
-    top_frame = pipes[top_index]._pipe_end_frames[1]
-    bottom_frame = pipes[bottom_index]._pipe_end_frames[0]
+    top_name = pipes[top_index].name
+    bottom_name = pipes[bottom_index].name
 
     assembly.coincident(
-        top.plane_at(top_frame.origin, top_frame.z),
-        bottom.plane_at(bottom_frame.origin, bottom_frame.z),
+        top.plane(top_name + "-ExtrudeTop"),
+        bottom.plane(bottom_name + "-ExtrudeBottom"),
         opposite_normals=True,
     )
     assembly.coincident(
-        top.plane_at(top_frame.origin + top_frame.y * 180.0, top_frame.y),
-        bottom.plane_at(bottom_frame.origin + bottom_frame.y * 180.0, bottom_frame.y),
+        top.plane(top_name + "-top_flange-north"),
+        bottom.plane(bottom_name + "-bottom_flange-north"),
         opposite_normals=False,
     )
-    assembly.concentric(
-        top.axis_at(top_frame.origin, top_frame.z),
-        bottom.axis_at(bottom_frame.origin, bottom_frame.z),
+    assembly.coincident(
+        top.plane(top_name + "-top_flange-east"),
+        bottom.plane(bottom_name + "-bottom_flange-east"),
+        opposite_normals=False,
     )
 
 
 for i in range(1, PIPE_COUNT):
     bodies.append(assembly.add_part(pipes[i]))
     mate_flanged_ends(i - 1, i)
-    assembly.solve()
+    result = assembly.solve()
+    if not result.converged:
+        raise RuntimeError(result)
     print("after joint {0}->{1}: {2}".format(i, i + 1, [b.pose for b in bodies]))
 
 if PIPE_COUNT == 4:
     mate_flanged_ends(3, 0)
-    assembly.solve()
+    result = assembly.solve()
+    if not result.converged:
+        raise RuntimeError(result)
     print("after close: {0}".format([b.pose for b in bodies]))
 
 assembly.show(title="Camber")

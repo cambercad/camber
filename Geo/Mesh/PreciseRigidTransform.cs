@@ -19,6 +19,19 @@ internal sealed class PreciseRigidTransform
         return result;
     }
 
+    /// <summary>Preserve an existing affine matrix exactly, without per-point lattice rounding.</summary>
+    public PreciseRigidTransform(CoordinateConverter converter, in Mat4D matrix)
+    {
+        rowX = new Rat3Hybrid(Exact(matrix.M11), Exact(matrix.M12), Exact(matrix.M13));
+        rowY = new Rat3Hybrid(Exact(matrix.M21), Exact(matrix.M22), Exact(matrix.M23));
+        rowZ = new Rat3Hybrid(Exact(matrix.M31), Exact(matrix.M32), Exact(matrix.M33));
+        var min = converter.OperatingSpace.Min;
+        var origin = new Rat3Hybrid(Exact(min.X), Exact(min.Y), Exact(min.Z));
+        var translation = new Rat3Hybrid(Exact(matrix.M14), Exact(matrix.M24), Exact(matrix.M34));
+        offset = (Rotate(origin) + translation - origin) / Exact(converter.SmallestUnit());
+        offset.Simplify();
+    }
+
     public PreciseRigidTransform(CoordinateConverter converter, in Transform transform)
     {
         var q = TransformMath.NormalizeDefault(transform.Orientation);

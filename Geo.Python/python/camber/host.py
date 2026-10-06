@@ -1,11 +1,24 @@
-"""Pyglet window + imgui + pyglet GL. Used by solids and the sketch UI."""
+"""Pyglet window, native pyglet UI and GL. Shared by solids and sketch editing."""
 
 import ctypes
 import math
-from contextlib import contextmanager
 
 from . import glview as _g
 from .clipboard import copy_to_clipboard, create_window
+
+
+def _name_ranges(names):
+    """Contiguous vertex ranges per entity, computed once when uploading a scene."""
+    ranges = {}
+    start = 0
+    while start < len(names):
+        name = names[start]
+        end = start + 1
+        while end < len(names) and names[end] == name:
+            end += 1
+        ranges.setdefault(name, []).append(slice(start, end))
+        start = end
+    return ranges
 
 
 class MeshHandle(object):
@@ -60,12 +73,11 @@ class Viewer(object):
     """Window host. Sketch code talks to this the way it used to talk to Polyscope."""
 
     def __init__(self, title="Camber", *, visible=True, size=None):
-        pyglet, np, imgui, create_renderer = _g._import_gl(ui=visible)
+        pyglet, np, ui_class = _g._import_gl(ui=visible)
         self._pyglet = pyglet
         self._np = np
-        self._imgui = imgui
-        self._imgui_context = None
-        self._imgui_letters = set()
+        self._ui = None
+        self._ui_letters = set()
         self._gl = pyglet.gl
         w, h = size or (_g._WINDOW_W, _g._WINDOW_H)
         try:
@@ -76,46 +88,44 @@ class Viewer(object):
         except Exception:
             pass
         window = None
-        for major, minor in ((4, 0), (3, 3)):
-            try:
-                config = pyglet.gl.Config(
-                    double_buffer=True,
-                    depth_size=24,
-                    sample_buffers=0,
-                    samples=0,
-                    major_version=major,
-                    minor_version=minor,
-                )
-                window = create_window(w, h, title, resizable=True, config=config, visible=visible)
+        for samples in (4, 0):
+            for major, minor in ((4, 0), (3, 3)):
+                try:
+                    config = pyglet.gl.Config(
+                        double_buffer=True,
+                        depth_size=24,
+                        stencil_size=8,
+                        sample_buffers=int(samples > 0),
+                        samples=samples,
+                        major_version=major,
+                        minor_version=minor,
+                    )
+                    window = create_window(w, h, title, resizable=True, config=config, visible=visible)
+                    break
+                except Exception:
+                    window = None
+            if window is not None:
                 break
-            except Exception:
-                window = None
         if window is None:
             window = create_window(w, h, title, resizable=True, visible=visible)
         self.window = window
         self._closed = False
-        self._impl = None
         self._solid = None
         self._overlays = {}
         self._scene = None
         self._peel = None
         self._dummy_depth = 0
+        self._section_cap = None
+        self._section_cap_key = None
         for name in ("_mesh_prog", "_wire_prog", "_line_prog", "_point_prog",
                      "_flat_prog", "_blit_prog", "_resolve_prog", "_depth_copy_prog",
                      "_blit_vl", "_resolve_vl", "_depth_copy_vl"):
             setattr(self, name, None)
-        previous_ui_context = imgui.get_current_context() if imgui is not None else None
         try:
             self.title = title
             if visible:
-                self._imgui_context = imgui.create_context()
-                imgui.set_current_context(self._imgui_context)
-                from .imgui_compat import apply_viewer_style
-                apply_viewer_style(imgui)
-                self._impl = create_renderer(window, self._imgui_context)
-                io = imgui.get_io()
-                io.get_clipboard_text_fn = window.get_clipboard_text
-                io.set_clipboard_text_fn = window.set_clipboard_text
+                self._ui = ui_class(window)
+                self._ui.shortcut_letters = self._ui_letters
             self._batch = pyglet.graphics.Batch()
             self._mesh_prog = self._compile(_g._MESH_VERT, _g._MESH_FRAG)
             self._wire_prog = self._compile(_g._WIRE_VERT, _g._WIRE_FRAG)
@@ -138,6 +148,8 @@ class Viewer(object):
             self._wireframe = False
             self.checker = True
             self._solid_transparent = False
+            self.section_plane = None
+            self.section_fill = True
             self._held = set()
             self._transparency = "none"
             self._draw_fbo = 0
@@ -160,27 +172,6 @@ class Viewer(object):
         except BaseException:
             self.close()
             raise
-        finally:
-            if imgui is not None:
-                imgui.set_current_context(previous_ui_context)
-
-    @contextmanager
-    def _ui_context(self):
-        context = getattr(self, "_imgui_context", None)
-        if context is None:
-            yield
-            return
-        imgui = self._imgui
-        previous = imgui.get_current_context()
-        previous_letters = imgui._camber_letters
-        imgui.set_current_context(context)
-        imgui._camber_letters = self._imgui_letters
-        try:
-            yield
-        finally:
-            # close() may destroy the context while this scope is active.
-            imgui.set_current_context(None if previous is context and self._imgui_context is None else previous)
-            imgui._camber_letters = previous_letters
 
     def _compile(self, vert, frag):
         shader = self._pyglet.graphics.shader
@@ -239,6 +230,9 @@ class Viewer(object):
             return None
         self._held.add(symbol)
         self._letter(symbol, True)
+        if symbol == self._pyglet.window.key.D and self._ui is not None and not self._ui.text_input_focused:
+            self._ui.set_theme("dark" if self._ui.theme_name == "light" else "light")
+            return None
         if self._wants_keyboard():
             return None
         if symbol == self._pyglet.window.key.W:
@@ -252,12 +246,12 @@ class Viewer(object):
         self._held.discard(symbol)
         self._letter(symbol, False)
 
+    def on_deactivate(self):
+        self._held.clear()
+        self._ui_letters.clear()
+
     def _wants_keyboard(self):
-        try:
-            with self._ui_context():
-                return bool(self._imgui.GetIO().WantCaptureKeyboard)
-        except Exception:
-            return False
+        return self._ui is not None and self._ui.io.WantCaptureKeyboard
 
     def _letter(self, symbol, down):
         try:
@@ -266,7 +260,7 @@ class Viewer(object):
             return
         if not name or len(name) != 1 or not name.isalpha():
             return
-        letters = self._imgui_letters
+        letters = self._ui_letters
         if letters is None:
             return
         if down:
@@ -287,12 +281,7 @@ class Viewer(object):
         """Release owned GL resources while their context is still current."""
         if self._closed:
             return
-        context = self._imgui_context
-        previous = self._imgui.get_current_context() if context is not None else None
-        with self._ui_context():
-            self._close_resources()
-        if context is not None:
-            self._imgui.set_current_context(None if previous is context else previous)
+        self._close_resources()
 
     def _close_resources(self):
         # Set this before invoking any native cleanup.  A driver/context loss
@@ -301,6 +290,8 @@ class Viewer(object):
         try:
             self.window.switch_to()
             self._release_solid()
+            self._delete(self._section_cap)
+            self._section_cap = None
             for record in self._overlays.values():
                 self._release_gpu(record)
             self._overlays.clear()
@@ -320,43 +311,38 @@ class Viewer(object):
                 if resource is not None:
                     resource.delete()
                     setattr(self, name, None)
-            if self._impl is not None:
-                self._impl.shutdown()
-                self._impl = None
+            if self._ui is not None:
+                self._ui.shutdown()
+                self._ui = None
         finally:
-            try:
-                if getattr(self, "_imgui_context", None) is not None:
-                    self._imgui.destroy_context(self._imgui_context)
-                    self._imgui_context = None
-            finally:
-                self.window.close()
+            self.window.close()
 
     def on_draw(self):
         if self._closed:
             return
-        with self._ui_context():
-            self._draw_frame()
+        self._draw_frame()
 
     def _draw_frame(self):
         self._sync_size()
-        if hasattr(self._impl, "process_inputs"):
-            self._impl.process_inputs()
-        if self._imgui is None:
+        if self._ui is None:
             self._draw_scene()
             return
-        self._imgui.new_frame()
+        self._ui.new_frame()
         if self._tick is not None:
             self._tick()
         if self._closed:
             return
+        x, y, w, h = self._ui.viewport_rect
+        sx = self.camera.width / max(1, self.window.width)
+        sy = self.camera.height / max(1, self.window.height)
+        self.camera.viewport = (x*sx, y*sy, w*sx, h*sy)
         self._draw_scene()
         self._bind_window()
-        self._imgui.render()
         gl = self._gl
         gl.glDisable(gl.GL_DEPTH_TEST)
         gl.glEnable(gl.GL_BLEND)
         try:
-            self._impl.render(self._imgui.get_draw_data())
+            self._ui.render()
         finally:
             gl.glDisable(gl.GL_BLEND)
             gl.glEnable(gl.GL_DEPTH_TEST)
@@ -507,7 +493,8 @@ class Viewer(object):
 
     def key_down(self, name):
         key = getattr(self._pyglet.window.key, name, None)
-        return key is not None and key in self._held
+        return (not self._wants_keyboard() and key is not None and key in self._held
+                and (self._ui is None or key not in self._ui._consumed_keys))
 
     def register_surface_mesh(
             self, name, verts, faces, color=(0.7, 0.7, 0.7), transparency=0.0,
@@ -662,6 +649,9 @@ class Viewer(object):
             out["point_base"] = base
         out["opaque_mesh"] = None
         out["selected_line"] = False
+        out["name_ranges"] = {key: _name_ranges(packed.get(key) or ()) for key in
+                              ("vert_names", "line_names", "line_cap_names", "point_names")}
+        out["color_state"] = {}
         return out
 
     def _is_sel(self, name, sel):
@@ -678,7 +668,15 @@ class Viewer(object):
     def _write_colors(self, vl, colors):
         if vl is None:
             return
-        flat = self._flat(colors).tolist()
+        flat = self._flat(colors)
+        try:
+            # pyglet exposes a ctypes view whose getter invalidates the GPU
+            # buffer. A NumPy copy avoids converting millions of floats to
+            # Python objects for each selection change.
+            self._np.ctypeslib.as_array(vl.in_color)[:] = flat
+            return
+        except (AttributeError, TypeError, ValueError):
+            pass
         try:
             vl.set_attribute_data("in_color", flat)
             return
@@ -697,43 +695,45 @@ class Viewer(object):
         refs = list(mate_refs or [])
         from .view import _constraint_ref_color
 
-        def paint(vl, base, names, hl_rgb, alias_lookup=None):
+        def paint(part, key, vl, base, hl_rgb, alias_lookup=None):
             if vl is None or base is None:
                 return False, None
-            if not sel and not refs:
-                self._write_colors(vl, base)
-                return False, None
-            colors = base.copy()
-            hl = self._np.asarray(hl_rgb, dtype="f4")
-            any_hl = False
-            for i, name in enumerate(names):
+            ranges = part["name_ranges"][key]
+            changes = []
+            for name in ranges:
                 aliases = None
                 if alias_lookup is not None:
                     aliases = alias_lookup.get(name)
                 mate = _constraint_ref_color(name, refs, aliases)
                 if mate is not None:
-                    colors[i] = mate
-                    any_hl = True
+                    changes.append((name, tuple(mate)))
                 elif sel and (
                         self._is_sel(name, sel)
                         or (aliases and any(self._is_sel(alias, sel) for alias in aliases))):
-                    colors[i] = hl
-                    any_hl = True
+                    changes.append((name, tuple(hl_rgb)))
+            state = tuple(changes)
+            previous, colors = part["color_state"].get(key, ((), None))
+            if state == previous:
+                return bool(state), colors
+            colors = base.copy() if changes else base
+            for name, color in changes:
+                for span in ranges[name]:
+                    colors[span] = color
             self._write_colors(vl, colors)
-            return any_hl, colors
+            part["color_state"][key] = state, colors
+            return bool(changes), colors
 
         selected_line = False
         for part in self._gpu_parts():
             packed = part["packed"]
             _, mesh_colors = paint(
-                part["mesh"], part["base"], packed["vert_names"], _g._SELECT_SURFACE)
+                part, "vert_names", part["mesh"], part["base"], _g._SELECT_SURFACE)
             selected_line = paint(
-                part["line"], part["line_base"], packed["line_names"], _g._SELECT_CURVE)[0] or selected_line
+                part, "line_names", part["line"], part["line_base"], _g._SELECT_CURVE)[0] or selected_line
             paint(
-                part.get("line_cap"), part.get("line_cap_base"),
-                packed.get("line_cap_names") or [], _g._SELECT_CURVE)
+                part, "line_cap_names", part.get("line_cap"), part.get("line_cap_base"), _g._SELECT_CURVE)
             paint(
-                part["point"], part["point_base"], packed["point_names"], _g._SELECT_POINT,
+                part, "point_names", part["point"], part["point_base"], _g._SELECT_POINT,
                 packed.get("point_aliases") or {})
             self._rebuild_opaque_highlight(part, refs, mesh_colors)
         solid["selected_line"] = selected_line
@@ -776,6 +776,16 @@ class Viewer(object):
         self._mesh_prog["u_view"] = view
         self._mesh_prog["u_proj"] = proj
         self._mesh_prog["u_checker"] = bool(self.checker)
+        plane = self.section_plane
+        self._mesh_prog["u_section_enabled"] = plane is not None
+        self._mesh_prog["u_section_normal"] = plane[0] if plane else (0.0, 0.0, 1.0)
+        self._mesh_prog["u_section_offset"] = float(plane[1]) if plane else 0.0
+        for program in (self._line_prog, self._point_prog):
+            program.use()
+            program["u_section_enabled"] = plane is not None
+            program["u_section_normal"] = plane[0] if plane else (0.0, 0.0, 1.0)
+            program["u_section_offset"] = float(plane[1]) if plane else 0.0
+        self._mesh_prog.use()
         self._mesh_prog["u_wireframe"] = False
         if "u_eye" in names:
             self._mesh_prog["u_eye"] = tuple(float(x) for x in cam.eye)
@@ -988,18 +998,18 @@ class Viewer(object):
         line_rb = line_fbo = line_resolve_fbo = line_color = 0
         if samples > 1:
             color_rb = self._make_rb(gl.GL_RGBA8, w, h, samples)
-            depth_rb = self._make_rb(gl.GL_DEPTH_COMPONENT24, w, h, samples)
+            depth_rb = self._make_rb(gl.GL_DEPTH24_STENCIL8, w, h, samples)
             fbo = self._gl_gen(gl.glGenFramebuffers)
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo)
             gl.glFramebufferRenderbuffer(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_RENDERBUFFER, color_rb)
-            gl.glFramebufferRenderbuffer(gl.GL_FRAMEBUFFER, gl.GL_DEPTH_ATTACHMENT, gl.GL_RENDERBUFFER, depth_rb)
+            gl.glFramebufferRenderbuffer(gl.GL_FRAMEBUFFER, gl.GL_DEPTH_STENCIL_ATTACHMENT, gl.GL_RENDERBUFFER, depth_rb)
         else:
             color = self._make_tex(gl.GL_RGBA8, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, w, h)
-            depth = self._make_tex(gl.GL_DEPTH_COMPONENT24, gl.GL_DEPTH_COMPONENT, gl.GL_UNSIGNED_INT, w, h, True)
+            depth = self._make_tex(gl.GL_DEPTH24_STENCIL8, gl.GL_DEPTH_STENCIL, gl.GL_UNSIGNED_INT_24_8, w, h, True)
             fbo = self._gl_gen(gl.glGenFramebuffers)
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo)
             gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, color, 0)
-            gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_DEPTH_ATTACHMENT, gl.GL_TEXTURE_2D, depth, 0)
+            gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_DEPTH_STENCIL_ATTACHMENT, gl.GL_TEXTURE_2D, depth, 0)
         gl.glDrawBuffer(gl.GL_COLOR_ATTACHMENT0)
         status = gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER)
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
@@ -1420,6 +1430,67 @@ class Viewer(object):
         self._set_peel(False)
         self._unbind_tex_units()
 
+    def _draw_section_caps(self, parts):
+        """Fill the cut using GPU winding counts, including cavities and holes.
+
+        Each closed occurrence is counted separately, so overlapping assembly
+        parts cannot cancel one another. Moving the plane uploads four vertices;
+        it never runs CSG or rebuilds the solid mesh.
+        """
+        if self.section_plane is None or not self.section_fill or not parts:
+            return
+        gl = self._gl
+        normal, offset = self.section_plane
+        bounds = self.get_bounding_box()
+        key = (normal, offset, bounds)
+        if key != self._section_cap_key:
+            center = tuple((a+b)*.5 for a, b in zip(*bounds))
+            center = _g._add(center, _g._mul(normal, offset-_g._dot(normal, center)))
+            axis = min(range(3), key=lambda i: abs(normal[i]))
+            u = _g._norm3(_g._cross(normal, tuple(float(i == axis) for i in range(3))))
+            v = _g._cross(normal, u)
+            half = tuple((b-a)*.5 for a, b in zip(*bounds))
+            ru = max(sum(abs(u[i])*half[i] for i in range(3)), 1e-12)*1.01
+            rv = max(sum(abs(v[i])*half[i] for i in range(3)), 1e-12)*1.01
+            vertices = [_g._add(center, _g._add(_g._mul(u, a*ru), _g._mul(v, b*rv)))
+                        for a, b in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+            if self._section_cap is None:
+                self._section_cap = self._indexed(self._flat_prog, 4, (0, 1, 2, 0, 2, 3), in_pos=vertices)
+            else:
+                self._section_cap.in_pos = self._flat(vertices)
+            self._section_cap_key = key
+        gl.glEnable(gl.GL_STENCIL_TEST)
+        gl.glDisable(gl.GL_BLEND)
+        try:
+            for part in parts:
+                if part.get("mesh") is None:
+                    continue
+                gl.glStencilMask(0xff)
+                gl.glClearStencil(0)
+                gl.glClear(gl.GL_STENCIL_BUFFER_BIT)
+                gl.glColorMask(False, False, False, False)
+                gl.glDepthMask(False)
+                gl.glDisable(gl.GL_DEPTH_TEST)
+                gl.glStencilFunc(gl.GL_ALWAYS, 0, 0xff)
+                gl.glStencilOpSeparate(gl.GL_FRONT, gl.GL_KEEP, gl.GL_KEEP, gl.GL_INCR_WRAP)
+                gl.glStencilOpSeparate(gl.GL_BACK, gl.GL_KEEP, gl.GL_KEEP, gl.GL_DECR_WRAP)
+                self._draw(self._mesh_prog, part["mesh"])
+                gl.glColorMask(True, True, True, True)
+                gl.glDepthMask(True)
+                gl.glEnable(gl.GL_DEPTH_TEST)
+                gl.glStencilFunc(gl.GL_NOTEQUAL, 0, 0xff)
+                gl.glStencilMask(0)
+                gl.glStencilOp(gl.GL_KEEP, gl.GL_KEEP, gl.GL_KEEP)
+                self._flat_prog.use()
+                self._flat_prog["u_color"] = (.95, .66, .27, 1.0)
+                self._draw(self._flat_prog, self._section_cap)
+        finally:
+            gl.glDisable(gl.GL_STENCIL_TEST)
+            gl.glStencilMask(0xff)
+            gl.glColorMask(True, True, True, True)
+            gl.glDepthMask(True)
+            gl.glEnable(gl.GL_DEPTH_TEST)
+
     def _draw_scene(self):
         np = self._np
         cam = self.camera
@@ -1433,7 +1504,7 @@ class Viewer(object):
             ssaa -= 1
         self._draw_ssaa = ssaa
         sw, sh = fw * ssaa, fh * ssaa
-        use_fbo = ssaa > 1 or int(getattr(_g, "_MSAA", 1)) > 1
+        use_fbo = ssaa > 1 or int(getattr(_g, "_MSAA", 1)) > 1 or self.section_plane is not None
         scene = self._ensure_scene(sw, sh) if use_fbo else None
         if scene is None:
             self._draw_fbo = getattr(self, "_capture_fbo", 0)
@@ -1472,6 +1543,7 @@ class Viewer(object):
             for part in parts:
                 if part.get("mesh") is not None:
                     self._draw(self._mesh_prog, part["mesh"])
+        self._draw_section_caps(parts)
 
         opaque = []
         translucent = []
@@ -1574,16 +1646,16 @@ def run_solid(obj, title="Camber", colors=None, checker=None):
     viewer.set_solid(packed)
     viewer.checker = not bool(colors) if checker is None else bool(checker)
     viewer.camera.fit(*packed["bounds"])
-    from .inspection import Section
-    viewer.inspection = obj if isinstance(obj, Section) else None
+    from .inspection import Section, _ViewerInspection
+    viewer.inspection = _ViewerInspection(viewer, obj)
     measuring = [False]
     measure_start = [None]
-    if viewer.inspection is not None:
+    if isinstance(obj, Section):
         _orient_view_to_frame(viewer, obj.plane)
     selected = []
     viewer.selected = selected
-    imgui = viewer._imgui
-    latch = {"f": False, "p": False, "s": False, "v": False, "esc": False, "m": False}
+    ui = viewer._ui
+    latch = {"f": False, "p": False, "s": False, "v": False, "esc": False, "m": False, "i": False}
     toast_until = [0.0]
     sketch_session = [None]
     action_toast = ["", 0.0]
@@ -1598,6 +1670,11 @@ def run_solid(obj, title="Camber", colors=None, checker=None):
     operation_sel = [-1]
     mate_refs = [[]]
     menu_open = [True]
+    dock_title = ("Assembly (M hide)" if part_names else
+                  "Constraints (M hide, T transparency)" if is_assembly else
+                  "Features (M hide)" if operations else None)
+    if dock_title and ui is not None:
+        ui.dock_panel(dock_title, "left")
 
     def apply_colors():
         viewer.highlight_solid(selected, mate_refs[0])
@@ -1626,7 +1703,7 @@ def run_solid(obj, title="Camber", colors=None, checker=None):
             toast_until[0] = 0.0
 
     def pick_at():
-        io = imgui.GetIO()
+        io = ui.GetIO()
         pos = getattr(io, "MousePos", None)
         if pos is None:
             return None
@@ -1648,10 +1725,11 @@ def run_solid(obj, title="Camber", colors=None, checker=None):
         if not visible:
             return None
         return _g.pick_name(
-            visible[0], origin, direction, point_r, curve_r, packeds=visible)
+            visible[0], origin, direction, point_r, curve_r, packeds=visible,
+            clip_plane=viewer.section_plane)
 
     def orbit_pivot_at_mouse():
-        io = imgui.GetIO()
+        io = ui.GetIO()
         pos = getattr(io, "MousePos", None)
         size = getattr(io, "DisplaySize", None)
         if pos is None or size is None:
@@ -1666,13 +1744,10 @@ def run_solid(obj, title="Camber", colors=None, checker=None):
             2.0 * mx / width - 1.0, 1.0 - 2.0 * my / height)
         nearest = None
         for scene in viewer.visible_part_packeds():
-            face = _g.closest_triangle(
-                origin, direction, scene["mesh_pos"], scene["mesh_idx"],
-                scene.get("triangle_cache"))
+            face, distance, _ = scene["triangle_cache"].ray(
+                origin, direction, clip_plane=viewer.section_plane)
             if face < 0:
                 continue
-            distance = _g.triangle_hit_distance(
-                origin, direction, scene["mesh_pos"], scene["mesh_idx"][face])
             if distance != float("inf") and (nearest is None or distance < nearest):
                 nearest = distance
         if nearest is None:
@@ -1680,8 +1755,8 @@ def run_solid(obj, title="Camber", colors=None, checker=None):
         return tuple(origin[i] + direction[i] * nearest for i in range(3))
 
     def tick():
-        io = imgui.GetIO()
-        want = _want_mouse(imgui, io)
+        io = ui.GetIO()
+        want = _want_mouse(ui, io)
         if viewer.key_down("Q"):
             viewer.unshow()
             return
@@ -1692,18 +1767,26 @@ def run_solid(obj, title="Camber", colors=None, checker=None):
             sketch_selected = list(selected)
             picked_name = session["state"].get("last_picked_name") or ""
             if sketch_selected:
-                _draw_footnote(imgui, "Picked: " + _g._selection_python(sketch_selected))
+                _draw_footnote(ui, "Picked: " + _g._selection_python(sketch_selected))
             elif picked_name:
-                _draw_footnote(imgui, "Picked: \"" + picked_name + "\"")
+                _draw_footnote(ui, "Picked: \"" + picked_name + "\"")
             else:
-                _draw_footnote(imgui, "Sketch: click a handle or named part anchor")
+                _draw_footnote(ui, "Sketch: click a handle or named part anchor")
             if session["state"]["done"] is not None:
                 transparent[0] = bool(getattr(viewer, "_solid_transparent", False))
                 _leave_sketch_mode(viewer, session, sketch_session, action_toast, transparent)
                 apply_colors()
             return
 
-        tick_cad_camera(viewer, imgui, io, want, orbit_pivot_at_mouse)
+        if viewer.key_down("I"):
+            if not latch["i"]:
+                viewer.inspection.open = not viewer.inspection.open
+                latch["i"] = True
+        else:
+            latch["i"] = False
+        viewer.inspection.draw(ui, selected, lambda: _selected_plane_context(obj, selected))
+
+        tick_cad_camera(viewer, ui, io, want, orbit_pivot_at_mouse)
         if viewer.key_down("F"):
             if not latch["f"]:
                 viewer.camera.fit(*packed["bounds"])
@@ -1725,7 +1808,7 @@ def run_solid(obj, title="Camber", colors=None, checker=None):
                     announce()
         else:
             latch["esc"] = False
-        if viewer.inspection is not None:
+        if isinstance(obj, Section):
             if viewer.key_down("M"):
                 if not latch["m"]:
                     measuring[0] = not measuring[0]
@@ -1743,15 +1826,17 @@ def run_solid(obj, title="Camber", colors=None, checker=None):
                     latch["m"] = True
             else:
                 latch["m"] = False
+            if dock_title:
+                ui.set_dock_visible(dock_title, menu_open[0] and sketch_session[0] is None)
             if is_assembly:
                 mate_changed, vis_changed = _draw_assembly_panel(
-                    imgui, constraints, mate_sel, menu_open, part_names, hidden_parts)
+                    ui, constraints, mate_sel, menu_open, part_names, hidden_parts)
                 if mate_changed:
                     apply_mate_highlights()
                 if vis_changed:
                     apply_visibility()
             elif operations:
-                _draw_operations_panel(imgui, operations, operation_sel, menu_open)
+                _draw_operations_panel(ui, operations, operation_sel, menu_open)
         if viewer.key_down("V"):
             if not latch["v"]:
                 plane = _selected_plane_context(obj, selected)
@@ -1778,14 +1863,14 @@ def run_solid(obj, title="Camber", colors=None, checker=None):
                     ]
                 else:
                     _enter_sketch_mode(
-                        viewer, imgui, plane, sketch_session, action_toast, selected, apply_colors)
+                        viewer, ui, plane, sketch_session, action_toast, selected, apply_colors)
                 latch["s"] = True
         else:
             latch["s"] = False
         if sketch_session[0] is not None:
             return
         if not want:
-            released = _left_click_released(imgui, io)
+            released = _left_click_released(ui, io)
             if released is not None and measuring[0]:
                 mouse = getattr(io, "MousePos", (0.0, 0.0))
                 size = getattr(io, "DisplaySize", (1.0, 1.0))
@@ -1825,16 +1910,17 @@ def run_solid(obj, title="Camber", colors=None, checker=None):
             footnote = display_label + "    V: normal to planar face    S: sketch on that face"
         else:
             footnote = "Click a planar face, then press S to sketch  (V: view normal)"
-        if viewer.inspection is not None:
+        if isinstance(obj, Section):
             footnote = ("Pick second surface" if measure_start[0] else "Pick first surface") if measuring[0] else "M: measure between two surface picks"
             footnote += "    Model units; point-to-point distance    Esc: cancel"
         if constraints or part_names:
             footnote += "    M: assembly panel"
-        sel_top = _draw_footnote(imgui, footnote)
+        footnote += "    I: inspect / section    D: theme"
+        sel_top = _draw_footnote(ui, footnote)
         if time.monotonic() < toast_until[0]:
-            _draw_copy_toast(imgui, sel_top)
+            _draw_copy_toast(ui, sel_top)
         elif time.monotonic() < action_toast[1]:
-            _draw_copy_toast(imgui, sel_top, action_toast[0])
+            _draw_copy_toast(ui, sel_top, action_toast[0])
         _ = _CAD
 
     viewer.set_user_callback(tick)

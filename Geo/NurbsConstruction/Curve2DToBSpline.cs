@@ -99,18 +99,7 @@ namespace Geo.NurbsConstruction
 
         public static BSplineCurve BSpline2DToBSpline(BSpline2D spline, CoordinateSystem frame)
         {
-            var points = spline.ControlPoints.Select(p => frame.PointTo3D(p)).ToArray();
-            if (spline.IsRational)
-            {
-                var weighted = new Vec4D[points.Length];
-                for (int i = 0; i < points.Length; i++)
-                {
-                    double w = spline.Weights[i];
-                    weighted[i] = new Vec4D(points[i].X * w, points[i].Y * w, points[i].Z * w, w);
-                }
-                return new BSplineCurve(spline.Degree, weighted, spline.Knots, false);
-            }
-            return new BSplineCurve(spline.Degree, points, spline.Knots, false);
+            return spline.ToSpatialCurve(frame);
         }
 
         public static BSplineCurve HermiteToBSpline(CubicHermiteSpline2D hermite, CoordinateSystem frame)

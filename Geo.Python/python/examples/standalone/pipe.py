@@ -34,7 +34,6 @@ def create_pipe(part=None, part_name="pipe"):
         if cached.name == part_name:
             return cached
         copied = part.copy_solid(cached, part_name)
-        copied._pipe_end_frames = cached._pipe_end_frames
         return copied
 
     p0 = (0.0, 0.0)
@@ -140,7 +139,6 @@ def create_pipe(part=None, part_name="pipe"):
         ],
         end_chamfer,
     )
-    pipe._pipe_end_frames = (bottom_frame, top_frame)
     _PIPE_CACHE[part] = pipe
     return pipe
 

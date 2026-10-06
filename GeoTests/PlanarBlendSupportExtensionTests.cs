@@ -10,6 +10,35 @@ public class PlanarBlendSupportExtensionTests : IDisposable
     public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
 
     [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void AcutePrismCornerSupportsPartialAndCompleteBlends(bool chamfer, bool completeCorner)
+    {
+        var api = new GeoAPI(new Box3D(new Vec3D(-10, -10, -10), new Vec3D(110, 30, 30)), .02);
+        var sketch = new PlotterSketcherCoordSys("wedge", CoordinateSystem.Default);
+        sketch.AddLine(new Vec2D(0, 0), new Vec2D(100, 0)).Name = "lower";
+        sketch.AddLine(new Vec2D(100, 0), new Vec2D(100, 17.6326980708465)).Name = "back";
+        sketch.AddLine(new Vec2D(100, 17.6326980708465), new Vec2D(0, 0)).Name = "upper";
+        var solid = api.Extrude(sketch, 20, name: "prism");
+        var edges = new List<string> { "[prism-lower,prism-upper]" };
+        if (completeCorner)
+        {
+            edges.Add("[prism-lower,prism-ExtrudeTop]");
+            edges.Add("[prism-upper,prism-ExtrudeTop]");
+        }
+        // A 10-degree corner needs a contact setback much larger than the
+        // radius; it still fits comfortably within this 100 mm prism.
+        var result = chamfer ? api.Chamfer(solid, edges, .25, .02, "bevel") :
+            api.Fillet(solid, edges, .25, .02, "round");
+        Assert.True(MeshAnalysis.IsWatertightMesh(result.Mesh.Positions, result.Mesh.Triangles));
+        double before = MeshAnalysis.ComputeSignedMeshVolume(solid.Mesh.Positions, solid.Mesh.Triangles);
+        double after = MeshAnalysis.ComputeSignedMeshVolume(result.Mesh.Positions, result.Mesh.Triangles);
+        Assert.InRange(after, 0, before - .01);
+    }
+
+    [Theory]
     [InlineData(false, 0)]
     [InlineData(true, 0)]
     [InlineData(false, 2)]

@@ -1,10 +1,62 @@
 using CSG;
 using GeoCore;
+using System.Numerics;
 
 namespace GeoTests;
 
 public class SegmentTriangleEarlyRejectionTests
 {
+    [Fact]
+    public void SharedPairPredicatesMatchUncachedIntersectionsExactly()
+    {
+        var a = new Rat3Hybrid[] { new(0, 0, 0), new(10, 0, 0), new(0, 10, 0) };
+        Check(a, [new(2, 2, -1), new(2, 2, 1), new(7, 1, 0)]);
+        Check(a, [new(2, 2, 0), new(7, 2, 0), new(2, 7, 0)]);
+        Check(a, [new(0, 0, 0), new(0, 0, 5), new(-5, 0, 0)]);
+        Check(a, a);
+        var random = new Random(29157);
+        for (int i = 0; i < 250; i++)
+        {
+            BigInteger denominator = (BigInteger.One << (1 + i % 160)) + 7;
+            Rat3Hybrid Point() => new(new BigRationalHybrid(random.Next(-100, 101), denominator),
+                new BigRationalHybrid(random.Next(-100, 101), denominator + 2),
+                new BigRationalHybrid(random.Next(-100, 101), denominator + 4));
+            Check([Point(), Point(), Point()], [Point(), Point(), Point()]);
+        }
+
+        static void Check(Rat3Hybrid[] first, Rat3Hybrid[] second)
+        {
+            // Populate lazily in each direction, including the transposed wedge
+            // lookups and repeated vertex-plane signs on the second pass.
+            Span<sbyte> signs = stackalloc sbyte[15];
+            signs.Fill(2);
+            for (int pass = 0; pass < 2; pass++)
+            {
+                var edge = pass == 0 ? first : second;
+                var face = pass == 0 ? second : first;
+                for (int i = 0; i < 3; i++)
+                {
+                    var expected = TriangleSegmentIntersector.SegmentIntersectsTriangle(edge[i], edge[(i + 1) % 3],
+                        face[0], face[1], face[2], out var point, out bool boundary, out bool start, out bool end);
+                    var actual = TriangleSegmentIntersector.SegmentIntersectsTriangle(edge[i], edge[(i + 1) % 3],
+                        face[0], face[1], face[2], out var cachedPoint, out bool cachedBoundary, out bool cachedStart,
+                        out bool cachedEnd, null, signs, i, pass == 1);
+                    Assert.Equal(expected, actual);
+                    Assert.Equal(boundary, cachedBoundary);
+                    Assert.Equal(start, cachedStart);
+                    Assert.Equal(end, cachedEnd);
+                    if (actual == SegmentTriangleIntersectionType.Intersect)
+                    {
+                        Assert.Equal(point, cachedPoint);
+                        for (int axis = 0; axis < 3; axis++)
+                            Assert.Equal(BitConverter.DoubleToInt64Bits(point[axis].ToDouble()),
+                                BitConverter.DoubleToInt64Bits(cachedPoint[axis].ToDouble()));
+                    }
+                }
+            }
+        }
+    }
+
     [Fact]
     public void ContradictoryExactWedgesRejectWithoutBoundaryFlags()
     {

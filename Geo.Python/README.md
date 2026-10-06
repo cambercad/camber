@@ -1,6 +1,6 @@
 # Camber (Python)
 
-`camber` is a pip-installable CAD kernel: sketch, extrude, boolean, STL/STEP. The 3D viewer (pyglet + imgui) is **optional**.
+`camber` is a pip-installable CAD kernel: sketch, extrude, boolean, STL/STEP. The 3D viewer (pyglet) is **optional**.
 
 Published package: **`cambercad`**. Import: **`import camber`**.
 
@@ -75,18 +75,18 @@ Still in the same venv:
 python -m pip install --upgrade pip
 python -m pip install --force-reinstall (Get-ChildItem dist\camber*.whl | Select-Object -Last 1).FullName
 # Kernel needs cffi (usually pulled in by the wheel). Viewer is optional:
-python -m pip install pyglet "imgui[pyglet]" numpy
+python -m pip install "pyglet>=2.1.16,<3" numpy
 ```
 
 Check:
 
 ```powershell
-python -c "import camber, pyglet, imgui; print('ok', camber.__file__)"
+python -c "import camber, pyglet; print('ok', camber.__file__)"
 ```
 
 If `import camber` fails, the wheel is not installed in **this** venv. Activate `.venv` again and retry step 3.
 
-If `import pyglet` or `import imgui` fails: `python -m pip install pyglet "imgui[pyglet]" numpy`.
+If `import pyglet` fails: `python -m pip install "pyglet>=2.1.16,<3" numpy`.
 
 ---
 
@@ -103,6 +103,15 @@ You should see `ok … triangles` and an STL path. That does **not** open a view
 ---
 
 ## 5. Run with the OpenGL viewer (3D window)
+
+The viewer's dockable UI is a reusable pyglet module (`python/camber/gui.py`).
+Run `python python/examples/standalone/control_gallery.py` from `Geo.Python`
+to try its tabs, splitters, text fields, choice controls, trees, and light/dark
+themes without loading a CAD model. The gallery's theme button switches at
+runtime; other pyglet consumers can call `ui.set_theme("light")` or
+`ui.set_theme("dark")` on their `camber.gui.UI` instance.
+In the Camber viewer, press `D` to switch the UI theme; text fields keep `D`
+for typing while focused.
 
 From `Geo.Python`:
 
@@ -224,7 +233,7 @@ python -m pip install --force-reinstall (Get-ChildItem dist\camber*.whl | Select
 | Symptom | Fix |
 |---------|-----|
 | `No module named 'camber'` | Activate `.venv`, reinstall the `.whl` from `dist\` |
-| `The OpenGL viewer needs pyglet` / import error on `show()` | `python -m pip install pyglet "imgui[pyglet]" numpy` |
+| `The OpenGL viewer needs pyglet` / import error on `show()` | `python -m pip install "pyglet>=2.1.16,<3" numpy` |
 | Two Pythons / “works in IDE, not in terminal” | `where.exe python` — must be `Geo.Python\.venv\Scripts\python.exe` |
 | Publish fails at link | Install VS **Desktop development with C++** |
 | Old geometry after code changes | Rebuild wheel (`publish-wheel.ps1`) **and** `--force-reinstall` the new `.whl` |
@@ -297,6 +306,18 @@ Inspection is separate from model construction and can take longer for large
 assemblies with many intersecting bounding boxes.
 
 ### Section views and measurements
+
+In the ordinary 3D viewer, press **I** to open Inspect. Ctrl-click two named
+points, edges or faces and choose **Measure minimum distance**. All combinations
+are supported, including edge–surface. Picking and closest-distance calculations
+run on the CPU in C# using cached BVHs; Python only handles viewer data and UI.
+Distances follow the displayed geometry's tessellation tolerance.
+
+Inspect also offers a live section plane (X/Y/Z, view direction, or a selected
+planar face), a position slider and reverse-side control. This visual clipping
+does not modify the CAD model. Section fill is intended for closed solids;
+disable it when inspecting open sheets. Use `camber.section` below when an
+actual capped geometry snapshot is needed.
 
 ```python
 cut = camber.section(assembly, "XZ", offset=0)  # or a camber.Frame

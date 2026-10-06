@@ -283,5 +283,26 @@ class DerivedPointCoincidentTests(unittest.TestCase):
             self.assertGreater(circle["radius"], 1.0)
 
 
+class TangentInteractionTests(unittest.TestCase):
+    @unittest.skipUnless(_NATIVE_AVAILABLE, "requires the installed camber native module")
+    def test_line_arc_tangent_solves_and_updates_sketch_geometry(self):
+        part = Part(vec3(-20.0), vec3(20.0), tolerance=0.01)
+        sketch = part.sketch("xy", constrained=True, name="tangent_arc")
+        actions = [
+            {"kind": "line", "p0": (-5.0, 0.0), "p1": (5.0, 0.0)},
+            {"kind": "arc", "start": (-1.0, 0.0), "mid": (0.0, 1.0), "end": (1.0, 0.0)},
+        ]
+        apply_actions(sketch, actions)
+        state = {"sketch": sketch, "actions": actions, "batches": [], "status": ""}
+
+        self.assertTrue(sketch_ui._append_and_solve(state, [
+            {"kind": "tangent", "curves": [0, 1]},
+        ]))
+        line, arc = sketch_ui._geometry_actions(state)
+        self.assertGreater(line["p0"][1], 0.1)
+        self.assertGreater(abs(arc["start"][0]), 0.5)
+        self.assertAlmostEqual(line["p0"][1], arc["mid"][1], places=5)
+
+
 if __name__ == "__main__":
     unittest.main()

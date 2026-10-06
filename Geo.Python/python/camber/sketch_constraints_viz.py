@@ -9,7 +9,8 @@ import math
 from . import naming as _naming
 from . import pick as _pick
 
-CONSTRAINT_COLOR = (0.7, 0.2, 0.8)
+SKETCH_BLUE = (0.02, 0.28, 1.0)
+CONSTRAINT_COLOR = SKETCH_BLUE
 DIMENSION_COLOR = (1.0, 0.5, 0.0)
 KIND_CONS = "cons"
 KIND_DIM = "dim"
@@ -21,7 +22,7 @@ _GOLDEN_RATIO = 1.61803398875
 
 
 DIMENSION_KINDS = ("length", "radius", "distance", "angle")
-LABEL_SCALE = 4.5
+LABEL_SCALE = 2.25
 
 
 class ConstraintOverlay(object):

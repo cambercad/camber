@@ -870,7 +870,8 @@ public class OffsetSketchIdentityTests : IDisposable
         };
         var indices = new List<List<int>>();
         var loops = NURBS.PolygonManipulator.Offset(
-            square, Offset, indices, NURBS.JoinType.jtRound, NURBS.EndType.etClosedLine, 0.02, 2);
+            square, Offset, indices, NURBS.JoinType.jtRound, NURBS.EndType.etClosedLine,
+            NURBS.PolygonManipulator.WorldDistanceToClipperUnits(0.02, square), 2);
         int[] counts = new int[4];
         for (int i = 0; i < indices.Count; i++)
         {

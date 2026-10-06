@@ -288,7 +288,7 @@ def render(catalog):
         )
         body.append('<section id="{0}"><h2>{1}</h2>'.format(esc(sid), esc(title)))
         for item in items:
-            iid = item["name"].replace(".", "-")
+            iid = item["name"].replace(".", "-").replace(" ", "-")
             nav.append(
                 '<a class="nav-symbol" data-target="{0}" href="#{0}">{1}</a>'.format(
                     esc(iid), esc(item["name"])
@@ -469,7 +469,7 @@ __NAV__
 <main>
 <header class="hero">
 <h1>camber API</h1>
-<p class="lead">Public Python surface. Points are tuples or vec2/vec3. Solids: + union, − cut, &amp; intersect. max_deviation=-1 uses the Part default. There is no Solid | operator.</p>
+<p class="lead">Public Python surface. Points are tuples or vec2/vec3. Solids: + union, − subtract, &amp; intersect. max_deviation=-1 uses the Part default. There is no Solid | operator. <a href="camber-naming.html">Entity naming guide</a>.</p>
 <div class="search-row">
   <label class="search">
     <input id="q" type="search" placeholder="Search symbols and descriptions…" autocomplete="off" aria-label="Search API">
@@ -561,6 +561,11 @@ def main():
     with open(out, "w", encoding="utf-8") as f:
         f.write(page)
     print(out)
+    from build_naming_html import render_naming
+    naming_out = os.path.join(os.path.dirname(out), "camber-naming.html")
+    with open(naming_out, "w", encoding="utf-8") as f:
+        f.write(render_naming(render))
+    print(naming_out)
 
 
 if __name__ == "__main__":

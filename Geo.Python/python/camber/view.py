@@ -1,4 +1,4 @@
-"""Viewer entry: pyglet + imgui solids and sketches."""
+"""Viewer entry: pyglet + ui solids and sketches."""
 
 import math
 import time
@@ -17,13 +17,6 @@ _SELECT_SURFACE = (1.0, 0.48, 0.06)
 _SELECT_CURVE = (0.82, 0.20, 0.05)
 _SELECT_POINT = (1.0, 0.88, 0.0)
 _POINT_COLOR = (0.16, 0.16, 0.17)
-# Fully saturated gold, slightly orange (HSV ~32°, S=1, V=1).
-_CONSTRAINT_GOLD = (1.0, 0.55, 0.0, 1.0)
-_CONSTRAINT_GOLD_HOVER = (1.0, 0.68, 0.0, 1.0)
-_CONSTRAINT_GOLD_ACTIVE = (1.0, 0.42, 0.0, 1.0)
-_CONSTRAINT_SELECT = _CONSTRAINT_GOLD
-_CONSTRAINT_SELECT_HOVER = _CONSTRAINT_GOLD_HOVER
-_CONSTRAINT_SELECT_ACTIVE = _CONSTRAINT_GOLD_ACTIVE
 _CONSTRAINT_REF_COLORS = (
     (0.90, 0.12, 0.12),
     (0.12, 0.70, 0.22),
@@ -67,7 +60,7 @@ def show(obj, title="Camber"):
     _gl_show(obj, title=title)
 
 
-def _enter_sketch_mode(ps, imgui, plane, sketch_session, action_toast, selected, apply_colors):
+def _enter_sketch_mode(ps, ui, plane, sketch_session, action_toast, selected, apply_colors):
     from .sketch_ui import begin_sketch_session
 
     def on_selection(names):
@@ -77,7 +70,7 @@ def _enter_sketch_mode(ps, imgui, plane, sketch_session, action_toast, selected,
     try:
         session = begin_sketch_session(
             ps,
-            imgui,
+            ui,
             plane["part"],
             plane=plane["name"],
             frame=plane["frame"],
@@ -140,7 +133,7 @@ def init_viewer(ps, title="Camber", ground="shadow_only"):
     _try_set(ps, "set_shadow_blur_iters", 6)
     _try_set(ps, "set_SSAA_factor", 2)
     _try_set(ps, "set_build_default_gui_panels", False)
-    _try_set(ps, "set_open_imgui_window_for_user_callback", False)
+    _try_set(ps, "set_open_ui_window_for_user_callback", False)
     _try_set(ps, "set_view_projection_mode", "orthographic")
 
 
@@ -867,255 +860,52 @@ def _set_face_colors(mesh, colors, default):
     _set_mesh_colors(mesh, colors, default, "faces")
 
 
-def _selectable(imgui, label, selected):
-    fn = getattr(imgui, "Selectable", None)
-    if fn is None:
-        return False
-    try:
-        clicked = fn(label, bool(selected))
-    except TypeError:
-        try:
-            clicked = fn(label)
-        except Exception:
-            return False
-    if isinstance(clicked, tuple):
-        clicked = clicked[0]
-    return bool(clicked)
-
-
-def _push_style_colors(imgui, pairs):
-    pushed = 0
-    seen = set()
-    for name, color in pairs:
-        idx = getattr(imgui, name, None)
-        if idx is None or idx in seen:
-            continue
-        seen.add(idx)
-        try:
-            imgui.PushStyleColor(int(idx), color)
-            pushed += 1
-            continue
-        except TypeError:
-            pass
-        except Exception:
-            continue
-        try:
-            imgui.PushStyleColor(int(idx), color[0], color[1], color[2], color[3])
-            pushed += 1
-            continue
-        except Exception:
-            pass
-        try:
-            vec4 = getattr(imgui, "ImVec4", None)
-            if vec4 is not None:
-                imgui.PushStyleColor(int(idx), vec4(color[0], color[1], color[2], color[3]))
-                pushed += 1
-        except Exception:
-            pass
-    return pushed
-
-
-def _push_constraint_window_colors(imgui):
-    gold = _CONSTRAINT_GOLD
-    return _push_style_colors(imgui, (
-        ("ImGuiCol_TitleBg", gold),
-        ("ImGuiCol_TitleBgActive", gold),
-        ("ImGuiCol_TitleBgCollapsed", gold),
-        ("Col_TitleBg", gold),
-        ("Col_TitleBgActive", gold),
-        ("Col_TitleBgCollapsed", gold),
-    ))
-
-
-def _push_constraint_select_colors(imgui):
-    return _push_style_colors(imgui, (
-        ("ImGuiCol_Header", _CONSTRAINT_SELECT),
-        ("ImGuiCol_HeaderHovered", _CONSTRAINT_SELECT_HOVER),
-        ("ImGuiCol_HeaderActive", _CONSTRAINT_SELECT_ACTIVE),
-        ("Col_Header", _CONSTRAINT_SELECT),
-        ("Col_HeaderHovered", _CONSTRAINT_SELECT_HOVER),
-        ("Col_HeaderActive", _CONSTRAINT_SELECT_ACTIVE),
-    ))
-
-
-def _pop_style_color(imgui, count):
-    if not count:
-        return
-    pop = getattr(imgui, "PopStyleColor", None)
-    if pop is None:
-        return
-    try:
-        pop(int(count))
-    except TypeError:
-        for _ in range(int(count)):
-            try:
-                pop()
-            except Exception:
-                break
-    except Exception:
-        pass
-
-
-def _imgui_flag(result, attr):
-    """pyimgui 2 returns a struct with .selected / .opened, not a raw bool."""
-    if result is None:
-        return False
-    flag = getattr(result, attr, None)
-    if flag is not None:
-        return bool(flag)
-    if isinstance(result, tuple) and result:
-        return bool(result[0])
-    return bool(result)
-
-
-def _begin_tab_bar(imgui, name):
-    fn = getattr(imgui, "BeginTabBar", None)
-    if fn is None:
-        return False
-    try:
-        opened = fn(name)
-    except Exception:
-        return False
-    return _imgui_flag(opened, "opened")
-
-
-def _end_tab_bar(imgui):
-    fn = getattr(imgui, "EndTabBar", None)
-    if fn is not None:
-        try:
-            fn()
-        except Exception:
-            pass
-
-
-def _begin_tab_item(imgui, label):
-    fn = getattr(imgui, "BeginTabItem", None)
-    if fn is None:
-        return False
-    try:
-        opened = fn(label)
-    except TypeError:
-        try:
-            opened = fn(label, None)
-        except Exception:
-            return False
-    except Exception:
-        return False
-    return _imgui_flag(opened, "selected")
-
-
-def _end_tab_item(imgui):
-    fn = getattr(imgui, "EndTabItem", None)
-    if fn is not None:
-        try:
-            fn()
-        except Exception:
-            pass
-
-
-def _checkbox(imgui, label, value):
-    fn = getattr(imgui, "Checkbox", None)
-    if fn is None:
-        return False, value
-    try:
-        result = fn(label, bool(value))
-    except Exception:
-        return False, value
-    if isinstance(result, tuple):
-        changed = bool(result[0])
-        if len(result) > 1:
-            return changed, bool(result[1])
-        return changed, value
-    return bool(result), value
-
-
-def _draw_assembly_panel(imgui, constraints, selected_index, menu_open, part_names, hidden_parts):
+def _draw_assembly_panel(ui, constraints, selected_index, menu_open, part_names, hidden_parts):
     """Tabs for assembly parts (visibility) and mates. Returns (mate_changed, vis_changed)."""
     if (not constraints and not part_names) or not menu_open[0]:
         return False, False
-    cond = int(getattr(imgui, "ImGuiCond_FirstUseEver", 4) or 4)
-    flags = 0
-    for name in ("ImGuiWindowFlags_NoCollapse", "ImGuiWindowFlags_NoFocusOnAppearing"):
-        flags |= int(getattr(imgui, name, 0) or 0)
-    try:
-        imgui.SetNextWindowPos((12.0, 12.0), cond)
-    except TypeError:
-        try:
-            imgui.SetNextWindowPos((12.0, 12.0))
-        except Exception:
-            pass
-    try:
-        imgui.SetNextWindowSize((560.0, 360.0), cond)
-    except TypeError:
-        pass
-    title = "Assembly (M hide)"
-    if not part_names:
-        title = "Constraints (M hide, T transparency)"
-    win_pushed = _push_constraint_window_colors(imgui)
-    visible, still_open = _begin_closable(imgui, title, flags, menu_open[0])
+    title = "Assembly (M hide)" if part_names else "Constraints (M hide, T transparency)"
+    visible, still_open = ui.Begin(title, menu_open[0], ui.ImGuiWindowFlags_NoCollapse)
     menu_open[0] = still_open
-    if not visible:
-        _end_overlay(imgui)
-        _pop_style_color(imgui, win_pushed)
-        return False, False
     mate_changed = False
     vis_changed = False
     try:
-        use_tabs = bool(part_names) and bool(constraints)
-        if use_tabs and _begin_tab_bar(imgui, "##asm_tabs"):
-            if _begin_tab_item(imgui, "Parts"):
-                vis_changed = _draw_parts_tab(imgui, part_names, hidden_parts)
-                _end_tab_item(imgui)
-            if _begin_tab_item(imgui, "Constraints"):
-                mate_changed = _draw_constraints_tab(imgui, constraints, selected_index)
-                _end_tab_item(imgui)
-            _end_tab_bar(imgui)
-        elif part_names and constraints:
-            vis_changed = _draw_parts_tab(imgui, part_names, hidden_parts)
-            try:
-                imgui.Separator()
-            except Exception:
-                pass
-            mate_changed = _draw_constraints_tab(imgui, constraints, selected_index)
-        elif part_names:
-            vis_changed = _draw_parts_tab(imgui, part_names, hidden_parts)
-        else:
-            mate_changed = _draw_constraints_tab(imgui, constraints, selected_index)
+        if visible:
+            if part_names and constraints:
+                ui.BeginTabBar("##asm_tabs")
+                if ui.BeginTabItem("Parts"):
+                    vis_changed = _draw_parts_tab(ui, part_names, hidden_parts)
+                    ui.EndTabItem()
+                if ui.BeginTabItem("Constraints"):
+                    mate_changed = _draw_constraints_tab(ui, constraints, selected_index)
+                    ui.EndTabItem()
+                ui.EndTabBar()
+            elif part_names:
+                vis_changed = _draw_parts_tab(ui, part_names, hidden_parts)
+            else:
+                mate_changed = _draw_constraints_tab(ui, constraints, selected_index)
     finally:
-        _end_overlay(imgui)
-        _pop_style_color(imgui, win_pushed)
+        ui.End()
     return mate_changed, vis_changed
 
 
-def _draw_parts_tab(imgui, part_names, hidden_parts):
+def _draw_parts_tab(ui, part_names, hidden_parts):
     changed = False
-    try:
-        imgui.TextUnformatted("Visible parts")
-    except Exception:
-        try:
-            imgui.Text("Visible parts")
-        except Exception:
-            pass
-    if imgui.Button("Show all"):
+    ui.Text("Visible parts")
+    if ui.Button("Show all"):
         if hidden_parts:
             hidden_parts.clear()
             changed = True
-    try:
-        imgui.SameLine()
-    except Exception:
-        pass
-    if imgui.Button("Hide all"):
+    ui.SameLine()
+    if ui.Button("Hide all"):
         before = len(hidden_parts)
         hidden_parts.update(part_names)
         if len(hidden_parts) != before:
             changed = True
-    try:
-        imgui.Separator()
-    except Exception:
-        pass
+    ui.Separator()
     for i, name in enumerate(part_names):
         visible = name not in hidden_parts
-        toggled, value = _checkbox(imgui, "{0}##part{1}".format(name, i), visible)
+        toggled, value = ui.Checkbox("{0}##part{1}".format(name, i), visible)
         if toggled:
             changed = True
             if value:
@@ -1125,76 +915,46 @@ def _draw_parts_tab(imgui, part_names, hidden_parts):
     return changed
 
 
-def _draw_constraints_tab(imgui, constraints, selected_index):
+def _draw_constraints_tab(ui, constraints, selected_index):
     changed = False
-    try:
-        imgui.TextUnformatted("A red   B green   extra yellow/blue")
-    except Exception:
-        try:
-            imgui.Text("A red   B green   extra yellow/blue")
-        except Exception:
-            pass
-    try:
-        imgui.Separator()
-    except Exception:
-        pass
-    pushed = _push_constraint_select_colors(imgui)
-    try:
-        for i, constraint in enumerate(constraints):
-            label = "{0}. {1}##c{2}".format(i + 1, _constraint_row_text(constraint), i)
-            if _selectable(imgui, label, selected_index[0] == i):
-                if selected_index[0] == i:
-                    selected_index[0] = -1
-                else:
-                    selected_index[0] = i
-                changed = True
-    finally:
-        _pop_style_color(imgui, pushed)
+    ui.Text("A red   B green   extra yellow/blue")
+    ui.Separator()
+    for i, constraint in enumerate(constraints):
+        label = "{0}. {1}##c{2}".format(i + 1, _constraint_row_text(constraint), i)
+        if ui.Selectable(label, selected_index[0] == i):
+            selected_index[0] = -1 if selected_index[0] == i else i
+            changed = True
     return changed
 
 
-def _draw_operations_panel(imgui, operations, selected_index, menu_open):
+def _draw_operations_panel(ui, operations, selected_index, menu_open):
     """Read-only CAD-style feature list for a displayed Part."""
     if not operations or not menu_open[0]:
         return False
-    cond = int(getattr(imgui, "ImGuiCond_FirstUseEver", 4) or 4)
-    flags = 0
-    for name in ("ImGuiWindowFlags_NoCollapse", "ImGuiWindowFlags_NoFocusOnAppearing"):
-        flags |= int(getattr(imgui, name, 0) or 0)
-    try:
-        imgui.SetNextWindowPos((12.0, 12.0), cond)
-        imgui.SetNextWindowSize((560.0, 360.0), cond)
-    except (TypeError, AttributeError):
-        pass
-    pushed = _push_constraint_window_colors(imgui)
-    visible, still_open = _begin_closable(imgui, "Features (M hide)", flags, menu_open[0])
+    visible, still_open = ui.Begin("Features (M hide)", menu_open[0], ui.ImGuiWindowFlags_NoCollapse)
     menu_open[0] = still_open
-    if not visible:
-        _end_overlay(imgui)
-        _pop_style_color(imgui, pushed)
-        return False
     changed = False
     try:
-        imgui.TextUnformatted("Feature history")
-        imgui.Separator()
-        for i, operation in enumerate(operations):
-            label = "{0}. {1}##op{2}".format(getattr(operation, "index", i + 1),
-                                               _operation_row_text(operation), i)
-            if _selectable(imgui, label, selected_index[0] == i):
-                selected_index[0] = -1 if selected_index[0] == i else i
-                changed = True
-            if selected_index[0] == i:
-                entities = tuple(getattr(operation, "entities", ()) or ())
-                if entities:
-                    imgui.TextUnformatted("    " + ", ".join(entities))
+        if visible:
+            ui.Text("Feature history")
+            ui.Separator()
+            for i, operation in enumerate(operations):
+                label = "{0}. {1}##op{2}".format(getattr(operation, "index", i + 1),
+                                                   _operation_row_text(operation), i)
+                if ui.Selectable(label, selected_index[0] == i):
+                    selected_index[0] = -1 if selected_index[0] == i else i
+                    changed = True
+                if selected_index[0] == i:
+                    entities = tuple(getattr(operation, "entities", ()) or ())
+                    if entities:
+                        ui.Text("    " + ", ".join(entities))
     finally:
-        _end_overlay(imgui)
-        _pop_style_color(imgui, pushed)
+        ui.End()
     return changed
 
-def _draw_constraints_panel(imgui, constraints, selected_index, menu_open):
+def _draw_constraints_panel(ui, constraints, selected_index, menu_open):
     changed, _vis = _draw_assembly_panel(
-        imgui, constraints, selected_index, menu_open, [], set())
+        ui, constraints, selected_index, menu_open, [], set())
     return changed
 
 
@@ -1224,13 +984,13 @@ def _paint_named(obj, names, default, select_color, selected_set, defined_on):
             pass
 
 
-def _pick_name_at(ps, imgui, catalog, tables, screen):
+def _pick_name_at(ps, ui, catalog, tables, screen):
     """Catalog points/curves plus GPU mesh pick. Faces keep the surface hit."""
     catalog_name = None
     catalog_kind = None
-    origin, direction = camera_ray(ps, imgui, screen)
+    origin, direction = camera_ray(ps, ui, screen)
     if origin is not None and direction is not None:
-        wpp = _world_per_pixel(ps, imgui)
+        wpp = _world_per_pixel(ps, ui)
         pixel = _pick.PICK_PX * wpp if wpp is not None and wpp > 0.0 else 0.0
         tolerance = max(pixel, 1e-6)
         catalog_name = _pick.hit(catalog, origin, direction, tolerance, tolerance)
@@ -1287,70 +1047,70 @@ def _resolve_pick_name(pick, tables):
     return names[idx]
 
 
-def _draw_footnote(imgui, text):
+def _draw_footnote(ui, text):
     if not text:
         return None
-    screen_w, screen_h = _display_wh(imgui)
+    screen_w, screen_h = _display_wh(ui)
     margin = 14.0
     max_w = max(160.0, screen_w - 2.0 * margin)
     wrap_w = max_w - 20.0
-    win_w, win_h = _wrapped_text_size(imgui, text, wrap_w)
+    win_w, win_h = _wrapped_text_size(ui, text, wrap_w)
     win_w = min(max_w, max(80.0, win_w + 16.0))
     win_h = min(screen_h * 0.4, max(24.0, win_h + 12.0))
     try:
-        imgui.SetNextWindowPos((margin, screen_h - margin), 0, (0.0, 1.0))
+        ui.SetNextWindowPos((margin, screen_h - margin), 0, (0.0, 1.0))
     except TypeError:
         try:
-            imgui.SetNextWindowPos((margin, screen_h - margin - win_h))
+            ui.SetNextWindowPos((margin, screen_h - margin - win_h))
         except Exception:
             pass
     try:
-        imgui.SetNextWindowSize((win_w, win_h))
+        ui.SetNextWindowSize((win_w, win_h))
     except Exception:
         pass
     try:
-        imgui.SetNextWindowBgAlpha(0.78)
+        ui.SetNextWindowBgAlpha(0.78)
     except Exception:
         pass
-    flags = _overlay_flags(imgui, scrollbar=win_h >= screen_h * 0.4 - 1.0)
-    opened = _begin_overlay(imgui, "##camber_sel", flags)
+    flags = _overlay_flags(ui, scrollbar=win_h >= screen_h * 0.4 - 1.0)
+    opened = _begin_overlay(ui, "##camber_sel", flags)
     top = None
     if opened:
-        _draw_wrapped_text(imgui, text, wrap_w)
-        top = _window_top(imgui)
-    _end_overlay(imgui)
+        _draw_wrapped_text(ui, text, wrap_w)
+        top = _window_top(ui)
+    _end_overlay(ui)
     return top
 
 
-def _draw_copy_toast(imgui, sel_top, text="Copied to clipboard"):
-    screen_w, screen_h = _display_wh(imgui)
+def _draw_copy_toast(ui, sel_top, text="Copied to clipboard"):
+    screen_w, screen_h = _display_wh(ui)
     margin = 14.0
     y = (sel_top - 6.0) if sel_top is not None else (screen_h - 52.0)
     try:
-        imgui.SetNextWindowPos((margin, y), 0, (0.0, 1.0))
+        ui.SetNextWindowPos((margin, y), 0, (0.0, 1.0))
     except TypeError:
         try:
-            imgui.SetNextWindowPos((margin, y - 28.0))
+            ui.SetNextWindowPos((margin, y - 28.0))
         except Exception:
             pass
     try:
-        imgui.SetNextWindowBgAlpha(0.86)
+        ui.SetNextWindowBgAlpha(0.86)
     except Exception:
         pass
-    flags = _overlay_flags(imgui, scrollbar=False)
-    opened = _begin_overlay(imgui, "##camber_copied", flags)
+    flags = _overlay_flags(ui, scrollbar=False)
+    opened = _begin_overlay(ui, "##camber_copied", flags)
     if opened:
         try:
-            imgui.TextUnformatted(text)
+            ui.TextUnformatted(text)
         except Exception:
-            imgui.Text(text)
-    _end_overlay(imgui)
+            ui.Text(text)
+    _end_overlay(ui)
 
 
-def _display_wh(imgui):
+def _display_wh(ui):
     w, h = 1920.0, 1080.0
     try:
-        size = imgui.GetIO().DisplaySize
+        size = ui.GetIO().DisplaySize
         w = float(size[0] if hasattr(size, "__len__") else size.x)
         h = float(size[1] if hasattr(size, "__len__") else size.y)
     except Exception:
@@ -1358,7 +1118,7 @@ def _display_wh(imgui):
     return w, h
 
 
-def _overlay_flags(imgui, scrollbar):
+def _overlay_flags(ui, scrollbar):
     names = [
         "ImGuiWindowFlags_NoTitleBar",
         "ImGuiWindowFlags_NoResize",
@@ -1377,56 +1137,40 @@ def _overlay_flags(imgui, scrollbar):
         names.append("ImGuiWindowFlags_NoMouseInputs")
     flags = 0
     for name in names:
-        flags |= int(getattr(imgui, name, 0) or 0)
+        flags |= int(getattr(ui, name, 0) or 0)
     return flags
 
 
-def _begin_overlay(imgui, name, flags):
+def _begin_overlay(ui, name, flags):
     try:
-        return imgui.Begin(name, flags)
+        return ui.Begin(name, flags)
     except TypeError:
-        return imgui.Begin(name)
+        return ui.Begin(name)
 
 
-def _begin_closable(imgui, name, flags, opened):
-    result = None
+def _end_overlay(ui):
     try:
-        result = imgui.Begin(name, opened, flags)
-    except TypeError:
-        try:
-            result = imgui.Begin(name, opened)
-        except TypeError:
-            result = imgui.Begin(name, flags)
-    if isinstance(result, tuple):
-        visible = bool(result[0])
-        still_open = bool(result[1]) if len(result) > 1 and result[1] is not None else opened
-        return visible, still_open
-    return bool(result), opened
-
-
-def _end_overlay(imgui):
-    try:
-        imgui.End()
+        ui.End()
     except Exception:
         pass
 
 
-def _window_top(imgui):
+def _window_top(ui):
     try:
-        p = imgui.GetWindowPos()
+        p = ui.GetWindowPos()
         return float(p[1] if hasattr(p, "__len__") else p.y)
     except Exception:
         return None
 
 
-def _wrapped_text_size(imgui, text, wrap_w):
+def _wrapped_text_size(ui, text, wrap_w):
     try:
-        sz = imgui.CalcTextSize(text, False, wrap_w)
+        sz = ui.CalcTextSize(text, False, wrap_w)
         return float(sz[0] if hasattr(sz, "__len__") else sz.x), float(sz[1] if hasattr(sz, "__len__") else sz.y)
     except Exception:
         pass
     try:
-        sz = imgui.CalcTextSize(text)
+        sz = ui.CalcTextSize(text)
         w = float(sz[0] if hasattr(sz, "__len__") else sz.x)
         h = float(sz[1] if hasattr(sz, "__len__") else sz.y)
         if w <= wrap_w:
@@ -1437,36 +1181,36 @@ def _wrapped_text_size(imgui, text, wrap_w):
         return wrap_w, 24.0
 
 
-def _draw_wrapped_text(imgui, text, wrap_w):
+def _draw_wrapped_text(ui, text, wrap_w):
     try:
-        imgui.PushTextWrapPos(imgui.GetCursorPosX() + wrap_w)
+        ui.PushTextWrapPos(ui.GetCursorPosX() + wrap_w)
     except Exception:
         try:
-            imgui.PushTextWrapPos(wrap_w)
+            ui.PushTextWrapPos(wrap_w)
         except Exception:
             pass
     try:
-        wrapped = getattr(imgui, "TextWrapped", None)
+        wrapped = getattr(ui, "TextWrapped", None)
         if wrapped is not None:
             wrapped(text)
         else:
-            imgui.TextUnformatted(text)
+            ui.TextUnformatted(text)
     except Exception:
         try:
-            imgui.Text(text)
+            ui.Text(text)
         except Exception:
             pass
     try:
-        imgui.PopTextWrapPos()
+        ui.PopTextWrapPos()
     except Exception:
         pass
 
 
-def _key_down(imgui, io, key):
+def _key_down(ui, io, key):
     try:
-        enum = getattr(imgui, "ImGuiKey_" + key, None)
+        enum = getattr(ui, "ImGuiKey_" + key, None)
         if enum is not None:
-            return bool(imgui.IsKeyDown(enum))
+            return bool(ui.IsKeyDown(enum))
     except Exception:
         pass
     try:
@@ -1500,20 +1244,21 @@ def _try_set_vertex_normals(mesh, normals):
             pass
 
 
-def tick_cad_camera(ps, imgui, io=None, want_mouse=False, orbit_pivot=None):
+def tick_cad_camera(ps, ui, io=None, want_mouse=False, orbit_pivot=None):
     """Middle-drag orbit (or L+R), Shift+middle / right-drag pan, wheel zoom at cursor.
 
     Matches GeoScriptViewer: unconstrained screen-axis orbit. Camera-orbit signs are the
     opposite of C# model-spin so the scene follows the mouse.
     """
     if io is None:
-        io = imgui.GetIO()
-    height = _display_height(io)
+        io = ui.GetIO()
+    viewport = getattr(ui, "viewport_rect", None)
+    height = float(viewport[3]) if viewport is not None else _display_height(io)
     if height < 1.0:
         height = 1.0
-    middle = _mouse_down(imgui, io, 2)
-    left = _mouse_down(imgui, io, 0)
-    right = _mouse_down(imgui, io, 1)
+    middle = _mouse_down(ui, io, 2)
+    left = _mouse_down(ui, io, 0)
+    right = _mouse_down(ui, io, 1)
     shift = _io_flag(io, "KeyShift")
     orbit = middle or (left and right)
     orbit_started = orbit and not _CAD["orbit_held"]
@@ -1540,7 +1285,7 @@ def tick_cad_camera(ps, imgui, io=None, want_mouse=False, orbit_pivot=None):
     if not orbit and not pan:
         _CAD["orbiting"] = False
     if abs(wheel) > 0.0:
-        _cad_zoom(ps, imgui, io, wheel)
+        _cad_zoom(ps, ui, io, wheel)
 
 
 def _cad_commit(ps, pos, center, up):
@@ -1616,11 +1361,11 @@ def _cad_pan(ps, ndx, ndy):
     _cad_commit(ps, _vadd(pos, offset), _vadd(look_at, offset), up)
 
 
-def _cad_zoom(ps, imgui, io, wheel):
+def _cad_zoom(ps, ui, io, wheel):
     cam = getattr(ps, "camera", None)
     if cam is not None:
         pos = _mouse_pos(io)
-        width, height = _pick_viewport(ps, imgui)
+        width, height = _pick_viewport(ps, ui)
         if pos is None or width < 2.0 or height < 2.0:
             cam.zoom_at(wheel, 0.0, 0.0)
             return
@@ -1825,7 +1570,10 @@ def _toggle_projection(ps):
         setter("orthographic")
 
 
-def _window_height(ps, imgui):
+def _window_height(ps, ui):
+    viewport = getattr(ui, "viewport_rect", None)
+    if viewport is not None:
+        return max(1.0, float(viewport[3]))
     height = 0.0
     try:
         size = ps.get_window_size()
@@ -1833,14 +1581,14 @@ def _window_height(ps, imgui):
     except Exception:
         pass
     if height < 32.0:
-        height = _display_height(imgui.GetIO())
+        height = _display_height(ui.GetIO())
     if height < 32.0:
         return _OVERLAY["height"]
     _OVERLAY["height"] = height
     return height
 
 
-def _world_per_pixel(ps, imgui):
+def _world_per_pixel(ps, ui):
     """World units spanned by one pixel at the look-at plane (perspective and ortho)."""
     prev = _OVERLAY["wpp"]
     pos, center, look, up, right = _cad_frame(ps)
@@ -1849,7 +1597,7 @@ def _world_per_pixel(ps, imgui):
     dist = _vlen(_vsub(pos, center))
     if (not math.isfinite(dist)) or dist < 1e-9:
         return prev if prev is not None else 1e-4
-    height = _window_height(ps, imgui)
+    height = _window_height(ps, ui)
     fov_deg = 45.0
     try:
         fov_deg = float(ps.get_view_camera_parameters().get_fov_vertical_deg())
@@ -1906,8 +1654,8 @@ def _rect_verts(center, right, up, half):
     ]
 
 
-def _update_screen_overlays(ps, imgui, registered, overlay):
-    wpp = _world_per_pixel(ps, imgui)
+def _update_screen_overlays(ps, ui, registered, overlay):
+    wpp = _world_per_pixel(ps, ui)
     if wpp is None or not math.isfinite(wpp) or wpp <= 0.0:
         return
     pos, center, look, up, right = _cad_frame(ps)
@@ -1983,17 +1731,17 @@ def _cad_frame(ps):
         return None, None, None, None, None
 
 
-def camera_ray(ps, imgui, screen=None):
+def camera_ray(ps, ui, screen=None):
     """World ray through a screen pixel. Shared by viewer and sketch picking."""
     if screen is None:
-        screen = _mouse_pos(imgui.GetIO())
+        screen = _mouse_pos(ui.GetIO())
     if screen is None:
         return None, None
     mx, my = float(screen[0]), float(screen[1])
     pos, center, look, up, right = _cad_frame(ps)
     if pos is None or center is None or look is None or up is None or right is None:
         return None, None
-    width, height = _pick_viewport(ps, imgui)
+    width, height = _pick_viewport(ps, ui)
     if width < 2.0 or height < 2.0:
         return None, None
     dist = max(_vlen(_vsub(pos, center)), 1e-6)
@@ -2053,7 +1801,7 @@ def _camera_fov_aspect(ps, width, height):
     return fov, aspect
 
 
-def _pick_viewport(ps, imgui):
+def _pick_viewport(ps, ui):
     """Window dimensions used by Polyscope screen coordinates."""
     try:
         size = ps.get_window_size()
@@ -2064,7 +1812,7 @@ def _pick_viewport(ps, imgui):
     except Exception:
         pass
     try:
-        size = imgui.GetIO().DisplaySize
+        size = ui.GetIO().DisplaySize
         disp_w = float(size[0] if hasattr(size, "__len__") else size.x)
         disp_h = float(size[1] if hasattr(size, "__len__") else size.y)
         if disp_w >= 2.0 and disp_h >= 2.0:
@@ -2074,16 +1822,16 @@ def _pick_viewport(ps, imgui):
     return 0.0, 0.0
 
 
-def _left_click_released(imgui, io):
+def _left_click_released(ui, io):
     """Pick only on a click that did not drag (orbit uses middle; left-drag must not select)."""
     if _CAD["orbiting"]:
         _CAD["press"] = None
         return None
     pos = _mouse_pos(io)
-    if _mouse_clicked(imgui, io, 0):
+    if _mouse_clicked(ui, io, 0):
         _CAD["press"] = pos
         return None
-    if not _mouse_released(imgui, io, 0):
+    if not _mouse_released(ui, io, 0):
         return None
     press = _CAD["press"]
     _CAD["press"] = None
@@ -2096,20 +1844,20 @@ def _left_click_released(imgui, io):
     return pos
 
 
-def _want_mouse(imgui, io):
+def _want_mouse(ui, io):
     try:
         if bool(io.WantCaptureMouse):
             return True
     except Exception:
         pass
     try:
-        flags = int(getattr(imgui, "ImGuiHoveredFlags_AnyWindow", 0) or 0)
-        if flags and imgui.IsWindowHovered(flags):
+        flags = int(getattr(ui, "ImGuiHoveredFlags_AnyWindow", 0) or 0)
+        if flags and ui.IsWindowHovered(flags):
             return True
     except Exception:
         pass
     try:
-        return bool(imgui.IsAnyItemHovered())
+        return bool(ui.IsAnyItemHovered())
     except Exception:
         return False
 
@@ -2121,9 +1869,9 @@ def _io_flag(io, name):
         return False
 
 
-def _mouse_down(imgui, io, button):
+def _mouse_down(ui, io, button):
     try:
-        return bool(imgui.IsMouseDown(button))
+        return bool(ui.IsMouseDown(button))
     except Exception:
         pass
     try:
@@ -2132,9 +1880,9 @@ def _mouse_down(imgui, io, button):
         return False
 
 
-def _mouse_clicked(imgui, io, button):
+def _mouse_clicked(ui, io, button):
     try:
-        return bool(imgui.IsMouseClicked(button))
+        return bool(ui.IsMouseClicked(button))
     except Exception:
         pass
     try:
@@ -2143,9 +1891,9 @@ def _mouse_clicked(imgui, io, button):
         return False
 
 
-def _mouse_released(imgui, io, button):
+def _mouse_released(ui, io, button):
     try:
-        return bool(imgui.IsMouseReleased(button))
+        return bool(ui.IsMouseReleased(button))
     except Exception:
         pass
     try:
@@ -2299,4 +2047,4 @@ def _unique(used, name):
 
 
 def _import_polyscope():
-    raise ImportError("Polyscope was removed. Use camber.host.Viewer (pyglet + imgui).")
+    raise ImportError("Polyscope was removed. Use camber.host.Viewer (pyglet + ui).")

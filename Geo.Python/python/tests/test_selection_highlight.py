@@ -155,19 +155,6 @@ class SelectedPlaneSketchTests(unittest.TestCase):
 
 
 class AssemblyConstraintPanelTests(unittest.TestCase):
-    def test_tab_item_uses_selected_not_truthy_struct(self):
-        class _Tab(object):
-            def __init__(self, selected):
-                self.selected = selected
-
-            def __bool__(self):
-                return True
-
-        from camber.view import _imgui_flag
-        self.assertTrue(_imgui_flag(_Tab(True), "selected"))
-        self.assertFalse(_imgui_flag(_Tab(False), "selected"))
-        self.assertTrue(_imgui_flag((True, True), "selected"))
-
     def test_dump_parses_kind_label_and_entities(self):
         dump = (
             "C\tCoincidentPlanes\tCoincident: FaceA <> FaceB\n"

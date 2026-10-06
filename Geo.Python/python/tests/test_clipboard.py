@@ -23,13 +23,12 @@ class ClipboardTests(unittest.TestCase):
         self.assertIn("clipboard unavailable", stderr.write.call_args.args[0])
 
     @unittest.skipUnless(os.environ.get("CAMBER_TEST_GL") == "1", "requires a desktop clipboard")
-    def test_imgui_text_widgets_use_the_native_clipboard(self):
+    def test_pyglet_ui_uses_the_native_clipboard(self):
         from camber.host import Viewer
         viewer = Viewer(visible=True, size=(64, 64))
         try:
-            with viewer._ui_context():
-                viewer._imgui.set_clipboard_text("Face: Bögen")
-                self.assertEqual("Face: Bögen", viewer.window.get_clipboard_text())
+            viewer._ui.SetClipboardText("Face: Bögen")
+            self.assertEqual("Face: Bögen", viewer.window.get_clipboard_text())
         finally:
             viewer.close()
 

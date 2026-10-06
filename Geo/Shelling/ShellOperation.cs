@@ -19,13 +19,14 @@ internal sealed class ShellOperation
         var selected = new HashSet<int>();
         foreach (var face in faces)
         {
-            if (!source.extendedNameToGroupId.TryGetValue(face, out var id))
+            string local = source.ResolveLocalPatchNamePublic(face);
+            if (local == null || !source.extendedNameToGroupId.TryGetValue(local, out var id))
                 throw new ArgumentException($"Shell face '{face}' does not exist on '{source.Name}'.", nameof(faces));
             if (!selected.Add(id)) throw new ArgumentException($"Shell face '{face}' was selected more than once.", nameof(faces));
         }
         var openingPatches = selected.Select(id => source.groupIdToExtendedName[id])
             .ToHashSet(StringComparer.Ordinal);
-        var builder = new ShellTopologyBuilder(api.Converter, ShellSurfaceRegistry.AnalyticV1);
+        var builder = new ShellTopologyBuilder(api.Converter, ShellSurfaceRegistry.AnalyticV1, maxDeviation);
         int ReserveGroups(int count)
         {
             int first = GeoAPI.GetBaseGroupIndex();
@@ -76,7 +77,8 @@ internal sealed class ShellOperation
         {
             string patch = outward && selected.Count == 0 ? EntityNaming.ShellInner(item.Value) : item.Value;
             names[item.Key] = patch;
-            meta[patch] = cavity.surfaceMetaData[item.Value].Clone();
+            meta[patch] = cavity.surfaceMetaData.TryGetValue(item.Value, out var data)
+                ? data.Clone() : new SurfaceMetaData(SurfaceType.Unknown);
         }
         return new AnchorMesh(name, mesh, names, meta, deferCoplanarPostProcess: false, isVolume: true);
 
@@ -113,17 +115,7 @@ internal sealed class ShellOperation
         AnchorMesh ExpandUnion(AnchorMesh solid)
         {
             var (first, second) = solid.UnionOperands.Value;
-            // Recheck historical operands: they may have been moved or edited.
-            var rebuilt = MeshNormalUV.BooleanOperation(first.Mesh, second.Mesh, BooleanOp.Union, api.Converter);
-            double unit = api.Converter.SmallestUnit();
-            double tolerance = 8 * unit * unit * unit;
-            foreach (var (left, right) in new[] { (solid.Mesh, rebuilt), (rebuilt, solid.Mesh) })
-            {
-                var difference = MeshNormalUV.BooleanOperation(left, right, BooleanOp.Subtract, api.Converter);
-                double volume = MeshAnalysis.ComputeSignedMeshVolume(difference.Positions, difference.Triangles);
-                if (!double.IsFinite(volume) || Math.Abs(volume) > tolerance)
-                    throw new InvalidOperationException("Shell union operands no longer match the source solid.");
-            }
+            VerifyOperands(solid);
             var a = ExpandExterior(first);
             var b = ExpandExterior(second);
             var united = MeshNormalUV.BooleanOperation(a.Mesh, b.Mesh, BooleanOp.Union, api.Converter);
@@ -151,6 +143,20 @@ internal sealed class ShellOperation
                 deferCoplanarPostProcess: true, isVolume: true);
         }
 
+        void VerifyOperands(AnchorMesh solid)
+        {
+            var (first, second) = solid.UnionOperands.Value;
+            // Construction history is useful only while it describes the
+            // authoritative mesh. Check exact CSG emptiness, not tiny volume.
+            var rebuilt = MeshNormalUV.BooleanOperation(first.Mesh, second.Mesh, BooleanOp.Union, api.Converter);
+            foreach (var (left, right) in new[] { (solid.Mesh, rebuilt), (rebuilt, solid.Mesh) })
+            {
+                var difference = MeshNormalUV.BooleanOperation(left, right, BooleanOp.Subtract, api.Converter);
+                if (difference.Triangles.Count != 0)
+                    throw new InvalidOperationException("Shell Boolean operands no longer match the source solid.");
+            }
+        }
+
         AnchorMesh RoundExterior(AnchorMesh original, AnchorMesh solid, HashSet<string> openPatches)
         {
             solid.EnsureCoplanarPostProcessed();
@@ -171,16 +177,16 @@ internal sealed class ShellOperation
             // its sharp (mitered) offset. Concave fillets can add material
             // outside that envelope, so reject them rather than mislabeling
             // the result as a true round offset.
-            double unit = api.Converter.SmallestUnit();
-            double tolerance = 8 * unit * unit * unit;
             foreach (var (left, right) in new[] { (original.Mesh, result.Mesh), (result.Mesh, solid.Mesh) })
             {
                 var escaped = MeshNormalUV.BooleanOperation(left, right, BooleanOp.Subtract, api.Converter);
+                double unit = api.Converter.SmallestUnit();
                 double volume = MeshAnalysis.ComputeSignedMeshVolume(escaped.Positions, escaped.Triangles);
-                if (!double.IsFinite(volume) || Math.Abs(volume) > tolerance)
+                if (!double.IsFinite(volume) || Math.Abs(volume) > 8 * unit * unit * unit)
                     throw new NotSupportedException("Round shell joins cannot be constructed for this exterior; use sharp joins.");
             }
             return result;
         }
     }
+
 }

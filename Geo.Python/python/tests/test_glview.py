@@ -28,6 +28,19 @@ class LinePointExpandTests(unittest.TestCase):
 
 
 class CameraRayTests(unittest.TestCase):
+    def test_docked_viewport_projection_matches_center_ray(self):
+        cam = glview.Camera()
+        cam.width, cam.height = 1000, 600
+        cam.viewport = (300, 50, 700, 500)
+        matrix = cam.proj_matrix()
+        self.assertAlmostEqual(0.3, matrix[0][3])
+        self.assertAlmostEqual(0.0, matrix[1][3])
+        origin, direction = cam.ray(0.3, 0.0)
+        self.assertAlmostEqual(cam.eye[0], origin[0])
+        self.assertAlmostEqual(cam.eye[1], origin[1])
+        self.assertAlmostEqual(cam.eye[2], origin[2])
+        self.assertAlmostEqual(2*cam.zoom/500, glview.world_per_pixel(cam))
+
     def test_ortho_center_ray_follows_look(self):
         cam = glview.Camera()
         cam.eye = (0.0, -4.0, 0.0)
@@ -105,26 +118,6 @@ class MeshPickTests(unittest.TestCase):
         cached_hit = glview.closest_triangle(
             (0.2, 0.2, 10.0), (0.0, 0.0, -1.0), verts, faces, cache)
         self.assertEqual(hit, cached_hit)
-
-
-class ImguiCompatTests(unittest.TestCase):
-    def test_polyscope_style_aliases_exist(self):
-        from camber.imgui_compat import import_imgui
-        imgui = import_imgui()
-        self.assertTrue(callable(imgui.BeginTabBar))
-        self.assertTrue(callable(imgui.BeginTabItem))
-        self.assertTrue(callable(imgui.Checkbox))
-
-    def test_viewer_style_keeps_window_background_translucent(self):
-        from camber.imgui_compat import apply_viewer_style, import_imgui
-        imgui = import_imgui()
-        imgui.create_context()
-        apply_viewer_style(imgui)
-        bg = tuple(imgui.get_style().colors[imgui.COLOR_WINDOW_BACKGROUND])
-        self.assertLess(bg[3], 0.7)
-        self.assertGreater(bg[3], 0.3)
-        self.assertEqual(imgui.WINDOW_NO_TITLE_BAR, imgui.ImGuiWindowFlags_NoTitleBar)
-        self.assertEqual(imgui.KEY_ENTER, imgui.ImGuiKey_Enter)
 
 
 class ScenePackTests(unittest.TestCase):

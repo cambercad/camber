@@ -1,4 +1,5 @@
 using GeoCore;
+using Geo.NurbsConstruction;
 
 namespace Geo.Shelling;
 
@@ -125,13 +126,8 @@ public sealed class PlanarShellSurfaceAdapter : IShellSurfaceAdapter
         var a = ((PlanarShellSupport)supports[0]).Plane;
         var b = ((PlanarShellSupport)supports[1]).Plane;
         var c = ((PlanarShellSupport)supports[2]).Plane;
-        var n1 = a.Normal.Normalized(); var n2 = b.Normal.Normalized(); var n3 = c.Normal.Normalized();
-        var n2n3 = Vec3DOps.Cross(n2, n3);
-        double det = Vec3DOps.Dot(n1, n2n3);
-        if (Math.Abs(det) < 1e-10) return false;
-        double d1 = Vec3DOps.Dot(n1, a.Origin), d2 = Vec3DOps.Dot(n2, b.Origin), d3 = Vec3DOps.Dot(n3, c.Origin);
-        point = (n2n3 * d1 + Vec3DOps.Cross(n3, n1) * d2 + Vec3DOps.Cross(n1, n2) * d3) / det;
-        return IsFinite(point);
+        return ShellSupportIntersection.TryIntersect((a.Origin, a.Normal),
+            (b.Origin, b.Normal), (c.Origin, c.Normal), out point);
     }
 
     internal static bool IsFinite(Vec3D p) => double.IsFinite(p.X) && double.IsFinite(p.Y) && double.IsFinite(p.Z);
@@ -311,15 +307,26 @@ public sealed class SphericalShellSurfaceAdapter : IShellSurfaceAdapter
 
 public sealed class MeshShellSupport : IShellSurfaceSupport
 {
+    private readonly UVSurface _source;
+    private readonly double _normalSense;
+    private double _distance, _deviation, _maxExtension;
+    private bool _fitAttempted;
+    private ImplicitSurfaceContinuation _continuation;
     private readonly Dictionary<int, (Vec3D Point, Vec3D Normal)> _vertices;
     private readonly Dictionary<Vec3D, (Vec3D Point, Vec3D Normal)> _positions;
     public SurfaceMetaData Metadata { get; } = new(SurfaceType.Unknown);
 
     internal MeshShellSupport(UVSurface source, UVSurface offset, double normalSense)
     {
+        _source = source; _normalSense = normalSense;
         _vertices = new Dictionary<int, (Vec3D, Vec3D)>();
         _positions = new Dictionary<Vec3D, (Vec3D, Vec3D)>();
-        foreach (int index in source.Triangles.SelectMany(t => new[] { t.A, t.B, t.C }).Distinct())
+        var referenced = new HashSet<int>();
+        foreach (var triangle in source.Triangles)
+        {
+            referenced.Add(triangle.A); referenced.Add(triangle.B); referenced.Add(triangle.C);
+        }
+        foreach (int index in referenced)
         {
             Vec3D normal = source.Normals[index] * normalSense;
             if (normal.LengthSquared() == 0)
@@ -328,6 +335,28 @@ public sealed class MeshShellSupport : IShellSurfaceSupport
             _vertices[index] = value;
             _positions[source.Points[index]] = value;
         }
+    }
+
+    internal void ConfigureContinuation(double signedNormalDistance, double deviation, double maxExtension)
+    { _distance = signedNormalDistance; _deviation = deviation; _maxExtension = maxExtension; }
+
+    internal bool TryContinuedTangent(Vec3D candidate, out (Vec3D Point, Vec3D Normal) tangent,
+        out bool available)
+    {
+        if (!_fitAttempted)
+        {
+            _fitAttempted = true;
+            if (_deviation > 0 && !_source.IsSurfacePlanar())
+            {
+                var samples = new List<(Vec3D, Vec3D)>(_vertices.Count);
+                foreach (int vertex in _vertices.Keys)
+                    samples.Add((_source.Points[vertex], _source.Normals[vertex] * _normalSense));
+                ImplicitSurfaceContinuation.TryFit(samples, _deviation, out _continuation);
+            }
+        }
+        available = _continuation != null;
+        tangent = default;
+        return available && _continuation.TryOffsetTangent(candidate, _distance, out tangent, _maxExtension);
     }
 
     internal bool TryGet(int sourceVertex, Vec3D sourcePoint, out Vec3D point, out Vec3D normal)
@@ -342,8 +371,10 @@ public sealed class MeshShellSupport : IShellSurfaceSupport
 
 /// <summary>
 /// Fallback for any consistently oriented triangle patch, including patches with
-/// no analytic or NURBS metadata. Boundaries are mitered by intersecting local
-/// tangent supports; invalid or topology-changing offsets are rejected downstream.
+/// no analytic or NURBS metadata. Boundaries use a bounded, sample-validated
+/// continuation when available, otherwise their original tangent supports.
+/// Local collapse and topology checks remain downstream; neither a fitted guide
+/// nor watertightness certifies absence of global self-intersections.
 /// </summary>
 public sealed class MeshShellSurfaceAdapter : IShellSurfaceAdapter
 {
@@ -365,12 +396,102 @@ public sealed class MeshShellSurfaceAdapter : IShellSurfaceAdapter
     public bool TryResolveVertex(int sourceVertex, Vec3D sourcePoint,
         IReadOnlyList<IShellSurfaceSupport> supports, out Vec3D point)
     {
+        // A single tangent solve is exact for planes, not for curved supports.
+        // Re-evaluate curved constraints at the candidate until their residuals
+        // vanish. Keep mesh constraints anchored to their actual source vertex:
+        // an unparameterized patch does not imply an analytic continuation.
+        Vec3D candidate = sourcePoint;
+        // Decide constraint rank from the authoritative seam tangents first.
+        // A smooth named seam must remain one constraint, even if separately
+        // fitted guides would differ slightly beyond that seam.
+        Vec3D firstNormal = default;
+        bool useContinuation = false;
+        var active = new List<IShellSurfaceSupport>();
+        var initialPlanes = new List<(Vec3D Point, Vec3D Normal)>();
+        foreach (var support in supports)
+        {
+            if (!TryTangent(support, sourceVertex, sourcePoint, sourcePoint, false, out var initial))
+            { point = default; return false; }
+            if (firstNormal.LengthSquared() == 0) firstNormal = initial.Normal;
+            else if (!Rat3Hybrid.Cross(ShellSupportIntersection.Exact(firstNormal),
+                ShellSupportIntersection.Exact(initial.Normal)).IsZero()) useContinuation = true;
+            int duplicate = -1;
+            bool retainTangent = false;
+            var exactNormal = ShellSupportIntersection.Exact(initial.Normal);
+            for (int i = 0; i < initialPlanes.Count; i++)
+            {
+                // Evaluated normals carry sin/cos roundoff even at an authored
+                // tangent join. Freeze both ORIGINAL constraints there; do not
+                // collapse their exact rank or replace them with fitted normals.
+                double roundoff = 64 * Math.ScaleB(1, -52);
+                if (Vec3DOps.Cross(initial.Normal, initialPlanes[i].Normal).LengthSquared() <= roundoff * roundoff &&
+                    Vec3DOps.Dot(initial.Normal, initialPlanes[i].Normal) > 0)
+                {
+                    active[i] = new PlanarShellSupport(new PlaneSurfaceParams {
+                        Origin = initialPlanes[i].Point, Normal = initialPlanes[i].Normal });
+                    retainTangent = true;
+                }
+                if (Rat3Hybrid.Cross(exactNormal, ShellSupportIntersection.Exact(initialPlanes[i].Normal)).IsZero() &&
+                    Rat3Hybrid.Dot(exactNormal, ShellSupportIntersection.Exact(initial.Point) -
+                        ShellSupportIntersection.Exact(initialPlanes[i].Point)).Sign() == 0)
+                { duplicate = i; break; }
+            }
+            if (duplicate < 0)
+            {
+                active.Add(retainTangent ? new PlanarShellSupport(new PlaneSurfaceParams {
+                    Origin = initial.Point, Normal = initial.Normal }) : support);
+                initialPlanes.Add(initial);
+            }
+            else
+                // Named patches meeting smoothly share this authoritative seam
+                // constraint. Do not let independent approximation errors split
+                // it into two incompatible constraints during continuation.
+                active[duplicate] = new PlanarShellSupport(new PlaneSurfaceParams {
+                    Origin = initial.Point, Normal = initial.Normal });
+        }
+        double tolerance = 1e-10 * Math.Max(1, sourcePoint.Length());
+        for (int iteration = 0; iteration < 32; iteration++)
+        {
+            if (!TryResolveTangents(sourceVertex, sourcePoint, candidate, active, useContinuation, out point)) return false;
+            bool converged = true;
+            foreach (var support in active)
+            {
+                if (!TryTangent(support, sourceVertex, sourcePoint, point, useContinuation, out var tangent)) return false;
+                if (Math.Abs(Vec3DOps.Dot(tangent.Normal, point - tangent.Point)) > tolerance)
+                { converged = false; break; }
+            }
+            if (converged) return true;
+            candidate = point;
+        }
+        point = default;
+        return false;
+    }
+
+    private static bool TryResolveTangents(int sourceVertex, Vec3D sourcePoint, Vec3D candidatePoint,
+        IReadOnlyList<IShellSurfaceSupport> supports, bool useContinuation, out Vec3D point)
+    {
         point = default;
         if (supports.Count == 0) return false;
         var planes = new List<(Vec3D Point, Vec3D Normal)>();
         foreach (var support in supports)
-            if (!TryTangent(support, sourceVertex, sourcePoint, out var tangent)) return false;
-            else planes.Add(tangent);
+        {
+            if (!TryTangent(support, sourceVertex, sourcePoint, candidatePoint, useContinuation, out var tangent)) return false;
+            if (planes.Count == 0) { planes.Add(tangent); continue; }
+            // A smooth named seam contributes the same tangent constraint
+            // twice. Patch count is not constraint rank. Only remove truly
+            // coincident planes; parallel, displaced supports must still fail.
+            bool redundant = false;
+            var normal = ShellSupportIntersection.Exact(tangent.Normal);
+            foreach (var plane in planes)
+            {
+                if (!Rat3Hybrid.Cross(normal, ShellSupportIntersection.Exact(plane.Normal)).IsZero()) continue;
+                if (Rat3Hybrid.Dot(normal, ShellSupportIntersection.Exact(tangent.Point) - ShellSupportIntersection.Exact(plane.Point)).Sign() != 0)
+                    return false;
+                redundant = true;
+                break;
+            }
+            if (!redundant) planes.Add(tangent);
+        }
 
         if (planes.Count == 1)
         {
@@ -380,21 +501,10 @@ public sealed class MeshShellSurfaceAdapter : IShellSurfaceAdapter
             return PlanarShellSurfaceAdapter.IsFinite(point);
         }
         if (planes.Count == 2)
-        {
-            var a = planes[0]; var b = planes[1];
-            double c = Vec3DOps.Dot(a.Normal, b.Normal);
-            double determinant = 1 - c * c;
-            if (determinant < 1e-12) return false;
-            double da = Vec3DOps.Dot(a.Normal, a.Point - sourcePoint);
-            double db = Vec3DOps.Dot(b.Normal, b.Point - sourcePoint);
-            double alpha = (da - c * db) / determinant;
-            double beta = (db - c * da) / determinant;
-            point = sourcePoint + a.Normal * alpha + b.Normal * beta;
-            return PlanarShellSurfaceAdapter.IsFinite(point);
-        }
+            return ShellSupportIntersection.TryNearest(planes[0], planes[1], sourcePoint, out point);
 
         if (planes.Count == 3)
-            return TryIntersect(planes[0], planes[1], planes[2], out point);
+            return ShellSupportIntersection.TryIntersect(planes[0], planes[1], planes[2], out point);
 
         // A vertex can have more than three incident patches (for example, an
         // icosahedron vertex). Solve the best-conditioned triple, then require
@@ -409,7 +519,7 @@ public sealed class MeshShellSurfaceAdapter : IShellSurfaceAdapter
                     var cross = Vec3DOps.Cross(planes[j].Normal, planes[k].Normal);
                     double determinant = Vec3DOps.Dot(planes[i].Normal, cross);
                     if (Math.Abs(determinant) <= Math.Abs(bestDeterminant) ||
-                        !TryIntersect(planes[i], planes[j], planes[k], out var intersection)) continue;
+                        !ShellSupportIntersection.TryIntersect(planes[i], planes[j], planes[k], out var intersection)) continue;
                     bestDeterminant = determinant;
                     candidate = intersection;
                 }
@@ -424,28 +534,14 @@ public sealed class MeshShellSurfaceAdapter : IShellSurfaceAdapter
         return true;
     }
 
-    private static bool TryIntersect((Vec3D Point, Vec3D Normal) a,
-        (Vec3D Point, Vec3D Normal) b, (Vec3D Point, Vec3D Normal) c,
-        out Vec3D point)
+    private static bool TryTangent(IShellSurfaceSupport support, int sourceVertex, Vec3D sourcePoint, Vec3D candidatePoint,
+        bool useContinuation, out (Vec3D Point, Vec3D Normal) tangent)
     {
-        var bCrossC = Vec3DOps.Cross(b.Normal, c.Normal);
-        double determinant = Vec3DOps.Dot(a.Normal, bCrossC);
-        if (Math.Abs(determinant) < 1e-10)
+        if (useContinuation && support is MeshShellSupport continued)
         {
-            point = default;
-            return false;
+            bool found = continued.TryContinuedTangent(candidatePoint, out tangent, out bool available);
+            if (available) return found; // Never switch guides after a failed query.
         }
-        double da = Vec3DOps.Dot(a.Normal, a.Point);
-        double db = Vec3DOps.Dot(b.Normal, b.Point);
-        double dc = Vec3DOps.Dot(c.Normal, c.Point);
-        point = (bCrossC * da + Vec3DOps.Cross(c.Normal, a.Normal) * db +
-            Vec3DOps.Cross(a.Normal, b.Normal) * dc) / determinant;
-        return PlanarShellSurfaceAdapter.IsFinite(point);
-    }
-
-    private static bool TryTangent(IShellSurfaceSupport support, int sourceVertex, Vec3D sourcePoint,
-        out (Vec3D Point, Vec3D Normal) tangent)
-    {
         if (support is MeshShellSupport mesh && mesh.TryGet(sourceVertex, sourcePoint, out var point, out var normal))
         { tangent = (point, normal); return true; }
         if (support is PlanarShellSupport plane)
@@ -453,7 +549,7 @@ public sealed class MeshShellSurfaceAdapter : IShellSurfaceAdapter
         if (support is CylindricalShellSupport cylinder)
         {
             var c = cylinder.Cylinder; var axis = c.Axis.Normalized();
-            Vec3D fromOrigin = sourcePoint - c.Origin;
+            Vec3D fromOrigin = candidatePoint - c.Origin;
             Vec3D radial = fromOrigin - axis * Vec3DOps.Dot(fromOrigin, axis);
             if (radial.LengthSquared() == 0) { tangent = default; return false; }
             normal = radial.Normalized();
@@ -462,7 +558,7 @@ public sealed class MeshShellSurfaceAdapter : IShellSurfaceAdapter
         }
         if (support is SphericalShellSupport sphere)
         {
-            Vec3D radial = sourcePoint - sphere.Sphere.Center;
+            Vec3D radial = candidatePoint - sphere.Sphere.Center;
             if (radial.LengthSquared() == 0) { tangent = default; return false; }
             normal = radial.Normalized();
             tangent = (sphere.Sphere.Center + normal * sphere.Sphere.Radius, normal);
@@ -470,4 +566,58 @@ public sealed class MeshShellSurfaceAdapter : IShellSurfaceAdapter
         }
         tangent = default; return false;
     }
+}
+
+// Shared by analytic planar and mesh tangent supports. Exact rank tests on
+// the represented coefficients avoid treating shallow angles as parallel.
+// Continuous offsets still have their own tessellation/lattice error budget.
+internal static class ShellSupportIntersection
+{
+    internal static bool TryIntersect((Vec3D Point, Vec3D Normal) a,
+        (Vec3D Point, Vec3D Normal) b, (Vec3D Point, Vec3D Normal) c,
+        out Vec3D point)
+    {
+        var na = Exact(a.Normal); var nb = Exact(b.Normal); var nc = Exact(c.Normal);
+        var bCrossC = Rat3Hybrid.Cross(nb, nc);
+        var determinant = Rat3Hybrid.Dot(na, bCrossC);
+        if (determinant.Sign() == 0)
+        {
+            point = default;
+            return false;
+        }
+        var result = (bCrossC * Rat3Hybrid.Dot(na, Exact(a.Point)) +
+            Rat3Hybrid.Cross(nc, na) * Rat3Hybrid.Dot(nb, Exact(b.Point)) +
+            Rat3Hybrid.Cross(na, nb) * Rat3Hybrid.Dot(nc, Exact(c.Point))) / determinant;
+        point = Approximate(result);
+        return PlanarShellSurfaceAdapter.IsFinite(point);
+    }
+
+    internal static bool TryNearest((Vec3D Point, Vec3D Normal) a,
+        (Vec3D Point, Vec3D Normal) b, Vec3D source, out Vec3D point)
+    {
+        point = default;
+        var na = Exact(a.Normal); var nb = Exact(b.Normal); var origin = Exact(source);
+        var determinant = Rat3Hybrid.Dot(Rat3Hybrid.Cross(na, nb), Rat3Hybrid.Cross(na, nb));
+        if (determinant.Sign() == 0) return false;
+        var aa = Rat3Hybrid.Dot(na, na); var bb = Rat3Hybrid.Dot(nb, nb); var ab = Rat3Hybrid.Dot(na, nb);
+        var da = Rat3Hybrid.Dot(na, Exact(a.Point) - origin);
+        var db = Rat3Hybrid.Dot(nb, Exact(b.Point) - origin);
+        point = Approximate(origin + na * ((bb * da - ab * db) / determinant) +
+            nb * ((aa * db - ab * da) / determinant));
+        return PlanarShellSurfaceAdapter.IsFinite(point);
+    }
+
+    private static Vec3D Approximate(Rat3Hybrid point) =>
+        new(point.X.ToDouble(), point.Y.ToDouble(), point.Z.ToDouble());
+
+    internal static Rat3Hybrid Exact(Vec3D point)
+    {
+        static BigRationalHybrid Component(double value)
+        {
+            var rational = new BigRational(value);
+            return new BigRationalHybrid(rational.Numerator, rational.Denominator);
+        }
+        return new Rat3Hybrid(Component(point.X), Component(point.Y), Component(point.Z));
+    }
+
 }

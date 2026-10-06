@@ -81,7 +81,7 @@ setup(
     packages=find_packages(),
     python_requires=">=3.10",
     install_requires=["cffi"],
-    extras_require={{"view": ["pyglet", "imgui[pyglet]", "numpy"]}},
+    extras_require={{"view": ["pyglet>=2.1.16,<3", "numpy"]}},
     author="cambercad",
     author_email="cambercad@proton.me",
     description={summary!r},

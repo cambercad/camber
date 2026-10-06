@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>camber naming</title><style>
+:root {
+  --bg: #f5f7f8;
+  --paper: #ffffff;
+  --ink: #172126;
+  --mute: #66757d;
+  --line: #dfe7e9;
+  --accent: #e5b82e;
+  --accent-dark: #3f484d;
+  --accent-soft: #fff3c4;
+  --warm: #e5b82e;
+  --shadow: 0 8px 24px rgba(31, 54, 61, .07);
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+html, body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.55 Inter, ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-dark); }
+code, h3 code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 13px; font-weight: 550; }
+.wrap { display: grid; grid-template-columns: clamp(220px, 18vw, 300px) minmax(0, 1fr); min-height: 100vh; }
+nav {
+  position: sticky; top: 0; height: 100vh; overflow: auto;
+  padding: 30px 18px 44px; border-right: 1px solid var(--line);
+  background: rgba(255, 255, 255, .72); backdrop-filter: blur(12px);
+}
+.brand { display: flex; align-items: center; gap: 10px; margin: 0 8px 24px;
+  color: var(--ink); font-size: 15px; font-weight: 750; letter-spacing: .02em; }
+.brand::before { content: ""; width: 11px; height: 11px; border-radius: 3px;
+  background: linear-gradient(135deg, var(--accent), var(--warm));
+  box-shadow: 0 0 0 4px var(--accent-soft); transform: rotate(10deg); }
+.nav-group { margin: 0 0 17px; }
+.nav-section { display: block; padding: 4px 8px; color: var(--ink);
+  font-size: 11px; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }
+.nav-symbol { display: block; margin: 1px 0; padding: 4px 8px 4px 16px;
+  border-radius: 6px; color: var(--mute); font-size: 13px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nav-symbol:hover { background: var(--accent-soft); color: var(--accent-dark); }
+main { width: 100%; min-width: 0; max-width: none;
+  padding: clamp(28px, 4vw, 64px) clamp(24px, 4vw, 72px) 96px; }
+.hero { position: relative; overflow: hidden; padding: 28px 30px 30px; margin-bottom: 30px;
+  border: 1px solid var(--line); border-radius: 18px; background: var(--paper); box-shadow: var(--shadow); }
+h1 { position: relative; z-index: 1; font-size: clamp(28px, 4vw, 38px);
+  font-weight: 750; margin: 0 0 7px; letter-spacing: -.035em; }
+.lead { position: relative; z-index: 1; color: var(--mute); margin: 0 0 22px; max-width: 900px; }
+.search-row { position: relative; z-index: 1; display: flex; align-items: center;
+  gap: 12px; max-width: min(100%, 900px); }
+.search { position: relative; flex: 1; }
+.search::before { content: "⌕"; position: absolute; left: 13px; top: 7px;
+  color: var(--accent); font-size: 21px; line-height: 1; pointer-events: none; }
+input {
+  width: 100%; border: 1px solid var(--line); background: #fbfdfd;
+  padding: 10px 38px 10px 40px; border-radius: 10px; font: inherit; color: var(--ink);
+  outline: none; transition: border-color .15s, box-shadow .15s, background .15s;
+}
+input:focus { border-color: var(--accent); background: var(--paper);
+  box-shadow: 0 0 0 4px var(--accent-soft); }
+.shortcut { position: absolute; right: 9px; top: 9px; color: var(--mute);
+  border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; font-size: 11px; }
+#result-count { min-width: 74px; color: var(--mute); font-size: 12px; text-align: right; }
+h2 { font-size: 13px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--accent-dark); margin: 38px 0 13px; font-weight: 750; }
+h2::before { content: ""; display: inline-block; width: 18px; height: 3px;
+  margin: 0 8px 3px 0; border-radius: 2px; background: var(--warm); }
+article {
+  background: var(--paper); border: 1px solid var(--line);
+  border-radius: 12px; padding: 17px 19px 12px; margin: 0 0 11px;
+  box-shadow: 0 2px 8px rgba(31, 54, 61, .035);
+  transition: border-color .15s, box-shadow .15s, transform .15s;
+}
+article:hover { border-color: #e5d399; box-shadow: var(--shadow); transform: translateY(-1px); }
+article:target { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.k { float: right; font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--accent-dark); background: var(--accent-soft); padding: 3px 8px; border-radius: 999px; }
+h3 { margin: 0 0 6px; padding-right: 72px; font-size: 15px; font-weight: 650;
+  overflow-wrap: anywhere; }
+h4 { margin: 18px 0 4px; color: var(--mute); font-size: 11px;
+  font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+article p { margin: 0 0 8px; color: var(--mute); }
+ul { list-style: none; margin: 8px 0 0; padding: 0; border-top: 1px solid var(--line); }
+li { padding: 7px 0; border-bottom: 1px solid var(--line); }
+li:last-child { border-bottom: 0; }
+li code { display: block; color: #293f48; overflow-wrap: anywhere; }
+li span { display: block; color: var(--mute); font-size: 13px; margin-top: 2px; white-space: normal; }
+.hide { display: none !important; }
+#no-results { display: none; padding: 32px; border: 1px dashed #dfce99;
+  border-radius: 12px; color: var(--mute); text-align: center; background: rgba(255,255,255,.5); }
+#no-results.show { display: block; }
+@media (max-width: 860px) {
+  .wrap { grid-template-columns: 1fr; }
+  nav { position: relative; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+  .nav-group { display: inline-block; vertical-align: top; min-width: 150px; }
+  main { padding: 30px 22px 70px; }
+}
+@media (max-width: 520px) {
+  nav { padding: 24px 14px; }
+  .hero { padding: 23px 20px; }
+  .search-row { align-items: stretch; flex-direction: column; }
+  #result-count { text-align: left; }
+}
+
+.composition { display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
+  margin: 18px 0 8px; padding-top: 10px; border-top: 1px solid var(--line); }
+.composition h4 { margin: 0 0 7px; }
+pre { margin: 0; padding: 12px; border-radius: 8px; background: var(--bg);
+  font: 13px/1.6 ui-monospace, "Cascadia Code", Consolas, monospace;
+  white-space: pre-wrap; overflow-wrap: anywhere; }
+.composition > div:last-child pre { background: var(--accent-soft); }
+article p { max-width: 100ch; }
+article h3 { padding-right: 0; }
+nav .nav-symbol { white-space: normal; }
+@media (max-width: 800px) { .composition { grid-template-columns: 1fr; gap: 10px; } }
+</style></head><body><div class="wrap"><nav><div class="brand">camber naming</div>
+<a class="nav-section" href="camber-api.html">Python API reference</a>
+<a class="nav-symbol" href="#section-0">From sketches to faces</a>
+<a class="nav-symbol" href="#section-1">From faces to edges and points</a>
+<a class="nav-symbol" href="#section-2">Offset sketch curves</a>
+<a class="nav-symbol" href="#section-3">Boolean results and split faces</a>
+<a class="nav-symbol" href="#section-4">Faces added by finishing operations</a>
+<a class="nav-symbol" href="#section-5">Copies, patterns and assemblies</a>
+<a class="nav-symbol" href="#section-6">Automatic and imported names</a></nav><main><header class="hero"><h1>How names are composed</h1>
+<p class="lead">Concrete inputs and the names they produce. Names are plain strings.
+Use <code>solid.patch_names</code>, <code>solid.curve_names</code> and <code>solid.point_names</code>
+to retrieve the current names shown in the viewer. Prefer those over guessing topology indices.</p>
+<p class="lead">Qualification chooses an owner, not an arbitrary descendant. Keep authored names
+unique and avoid naming-grammar delimiters. Duplicate sketch names are rejected; registering or
+renaming a solid can replace an existing registered solid with that name.</p></header>
+<section id="section-0"><h2>From sketches to faces</h2>
+<article><h3>Extrude an authored sketch</h3>
+<div class="composition"><div><h4>Input</h4><pre>sketch = &quot;outline&quot;
+curve = &quot;north&quot;
+extrude result = &quot;case&quot;</pre></div><div><h4>Composed name</h4><pre>case-north
+case-ExtrudeBottom
+case-ExtrudeTop</pre></div></div><p>The side uses result-curve. The sketch name is not included. The two cap labels are reserved.</p>
+<div class="composition"><div><h4>Input</h4><pre>cuboid result = &quot;box&quot;</pre></div><div><h4>Composed name</h4><pre>box-Line1
+box-Line2
+box-Line3
+box-Line4
+box-ExtrudeBottom
+box-ExtrudeTop</pre></div></div><p>A cuboid internally extrudes a four-line sketch.</p>
+<div class="composition"><div><h4>Input</h4><pre>cylinder result = &quot;pin&quot;</pre></div><div><h4>Composed name</h4><pre>pin-Circle1
+pin-ExtrudeBottom
+pin-ExtrudeTop</pre></div></div><p>An extruded cylinder internally uses Circle1.</p>
+</article>
+<article><h3>Revolve, sweep and loft</h3>
+<div class="composition"><div><h4>Input</h4><pre>profile curve = &quot;profile&quot;
+revolve result = &quot;shaft&quot;</pre></div><div><h4>Composed name</h4><pre>shaft-profile</pre></div></div><p>A partial revolution also uses shaft-StartCap and shaft-EndCap when those caps exist. A sphere named ball uses ball-Arc1.</p>
+<div class="composition"><div><h4>Input</h4><pre>contour curve = &quot;profile&quot;
+guide curve = &quot;guide&quot;
+sweep result = &quot;duct&quot;</pre></div><div><h4>Composed name</h4><pre>duct-profile-guide</pre></div></div><p>The guided side label combines result, contour curve and guide curve.</p>
+<div class="composition"><div><h4>Input</h4><pre>corresponding section curve = &quot;north&quot;
+loft result = &quot;fairing&quot;</pre></div><div><h4>Composed name</h4><pre>fairing-Side-north
+fairing-StartCap
+fairing-EndCap</pre></div></div><p>Curve-corresponding loft sides include the source curve. A loft without side correspondence may instead use fairing-Side. Caps appear only when constructed.</p>
+</article>
+</section>
+<section id="section-1"><h2>From faces to edges and points</h2>
+<article><h3>Combine two incident faces</h3>
+<div class="composition"><div><h4>Input</h4><pre>face A = &quot;case-north&quot;
+face B = &quot;case-ExtrudeTop&quot;</pre></div><div><h4>Composed name</h4><pre>[case-north,case-ExtrudeTop]</pre></div></div><p>One connected boundary between these faces. Matching also accepts the reversed face order.</p>
+<div class="composition"><div><h4>Input</h4><pre>faces = &quot;A&quot;, &quot;B&quot;
+two disconnected boundaries</pre></div><div><h4>Composed name</h4><pre>[A,B]_1
+[A,B]_2</pre></div></div><p>Every connected edge is numbered when a pair has several edges. [A,B] does not select the first one.</p>
+</article>
+<article><h3>Choose the owner, then a point</h3>
+<div class="composition"><div><h4>Input</h4><pre>solid = &quot;case&quot;
+edge = &quot;[case-north,case-ExtrudeTop]&quot;</pre></div><div><h4>Composed name</h4><pre>case:[case-north,case-ExtrudeTop]</pre></div></div><p>Colon qualification chooses the solid. This is the form returned by solid.curve_names.</p>
+<div class="composition"><div><h4>Input</h4><pre>edge = &quot;[case-north,case-ExtrudeTop]&quot;
+normalized distance = 0.5</pre></div><div><h4>Composed name</h4><pre>[case-north,case-ExtrudeTop]@0.500</pre></div></div><p>Halfway along the sampled edge. Add case: to scope it to that solid.</p>
+<div class="composition"><div><h4>Input</h4><pre>patch = &quot;case-ExtrudeTop&quot;
+UV = (0.5, 0.5)</pre></div><div><h4>Composed name</h4><pre>[case-ExtrudeTop]@0.500,0.500</pre></div></div><p>A point at the stored patch UV coordinates, if it is inside the trim. This is not necessarily the face centroid.</p>
+<div class="composition"><div><h4>Input</h4><pre>sketch = &quot;outline&quot;
+curve = &quot;north&quot;
+curve parameter = 0.5</pre></div><div><h4>Composed name</h4><pre>outline:north@0.500</pre></div></div><p>Sketch curve parameters need not be arc-length parameters. SketchCurve @ 0.5 produces the local name north@0.500.</p>
+<div class="composition"><div><h4>Input</h4><pre>sketch = &quot;holes&quot;
+curve = &quot;Circle1&quot;
+center handle</pre></div><div><h4>Composed name</h4><pre>holes:Circle1@center</pre></div></div><p>Arc and circle center. Bezier1 control vertex 2 uses Bezier1@cv2 (zero-based).</p>
+</article>
+</section>
+<section id="section-2"><h2>Offset sketch curves</h2>
+<article><h3>Keep the source curve in child names</h3>
+<div class="composition"><div><h4>Input</h4><pre>source curve = &quot;north&quot;
+outward offset</pre></div><div><h4>Composed name</h4><pre>north@out_offset</pre></div></div><p>Inward uses north@in_offset. A second fragment uses north@out_offset_2, then _3, and so on.</p>
+<div class="composition"><div><h4>Input</h4><pre>source curve = &quot;north&quot;
+outline of an open curve</pre></div><div><h4>Composed name</h4><pre>north@start_cap
+north@end_cap</pre></div></div><p>Caps closing the two ends of the offset outline.</p>
+<div class="composition"><div><h4>Input</h4><pre>offset curves = &quot;v@out_offset&quot;, &quot;h@out_offset&quot;
+join these curves</pre></div><div><h4>Composed name</h4><pre>cap[h@out_offset,v@out_offset]</pre></div></div><p>The pair is ordinal-sorted. Additional join fragments use _2, _3, ... .</p>
+<div class="composition"><div><h4>Input</h4><pre>sketch = &quot;outline&quot;
+offset curve = &quot;north@out_offset&quot;
+parameter = 0.5</pre></div><div><h4>Composed name</h4><pre>outline:north@out_offset@0.500</pre></div></div><p>The offset label is a curve name; the final @ addresses a point on it.</p>
+</article>
+</section>
+<section id="section-3"><h2>Boolean results and split faces</h2>
+<article><h3>A result name does not replace every face name</h3>
+<div class="composition"><div><h4>Input</h4><pre>source face = &quot;base-ExtrudeTop&quot;
+Boolean result = &quot;finished&quot;</pre></div><div><h4>Composed name</h4><pre>base-ExtrudeTop</pre></div></div><p>A surviving source face keeps its label. To select it specifically on the result, use finished:base-ExtrudeTop.</p>
+<div class="composition"><div><h4>Input</h4><pre>first operand = &quot;first&quot;, patch = &quot;panel&quot;
+second operand = &quot;second&quot;, distinct patch = &quot;panel&quot;</pre></div><div><h4>Composed name</h4><pre>first-panel
+second-panel</pre></div></div><p>Conflicting labels on distinct group identities are scoped to their operands; an additional numeric suffix is used if these labels are already occupied.</p>
+</article>
+<article><h3>Record separating boundaries</h3>
+<div class="composition"><div><h4>Input</h4><pre>source face = &quot;base-ExtrudeTop&quot;
+separating slot boundary = &quot;main_slot-Line2&quot;</pre></div><div><h4>Composed name</h4><pre>base-ExtrudeTop{main_slot-Line2}</pre></div></div><p>A surviving planar region next to this side of the slot. The other region has its own boundary-derived name. A nonseparating hole does not add a separator.</p>
+<div class="composition"><div><h4>Input</h4><pre>fused roots = &quot;right-ExtrudeTop&quot;, &quot;left-ExtrudeTop&quot;
+separator = &quot;main_slot-Line2&quot;</pre></div><div><h4>Composed name</h4><pre>left-ExtrudeTop&amp;right-ExtrudeTop{main_slot-Line2}</pre></div></div><p>Creation roots and separators are deduplicated and ordinal-sorted. Without a split, fused roots can use left-ExtrudeTop&amp;right-ExtrudeTop.</p>
+<div class="composition"><div><h4>Input</h4><pre>root atom = &quot;a&amp;b&quot;
+separator atom = &quot;c:d&quot;</pre></div><div><h4>Composed name</h4><pre>a%26b{c%3Ad}</pre></div></div><p>Provenance atoms are URI-percent-escaped before joining. Ordinary authored names are not universally escaped; avoid grammar delimiters in them.</p>
+</article>
+<article><h3>Disambiguate current components</h3>
+<div class="composition"><div><h4>Input</h4><pre>one patch label = &quot;panel&quot;
+three disconnected components</pre></div><div><h4>Composed name</h4><pre>panel
+panel_1
+panel_2</pre></div></div><p>Component suffixes keep current labels unique. Supported unique provenance may replace a component label; additional collisions can require other suffixes.</p>
+<div class="composition"><div><h4>Input</h4><pre>old face = &quot;base-ExtrudeTop&quot;
+now split into separate regions</pre></div><div><h4>Composed name</h4><pre>use result.patch_names</pre></div></div><p>The old ancestor can be ambiguous or obsolete. Select a current region, not an arbitrary descendant. There is no universal persistent-topology guarantee, especially for curved split ancestry.</p>
+</article>
+</section>
+<section id="section-4"><h2>Faces added by finishing operations</h2>
+<article><h3>Fillet and chamfer</h3>
+<div class="composition"><div><h4>Input</h4><pre>source edge = &quot;[case-north,case-ExtrudeTop]&quot;
+fillet</pre></div><div><h4>Composed name</h4><pre>BlendEdge_[case-north,case-ExtrudeTop]</pre></div></div><p>The source edge label follows BlendEdge_. Corner patches, when needed, use BlendCorner_0, BlendCorner_1, ... .</p>
+<div class="composition"><div><h4>Input</h4><pre>source edge = &quot;[case-north,case-ExtrudeTop]&quot;
+chamfer</pre></div><div><h4>Composed name</h4><pre>ChamferEdge_[case-north,case-ExtrudeTop]</pre></div></div><p>The same rule with ChamferEdge_. Generated corner patches use ChamferCorner_0, ChamferCorner_1, ... .</p>
+</article>
+<article><h3>Shell, thicken and cap</h3>
+<div class="composition"><div><h4>Input</h4><pre>source patch = &quot;case-north&quot;
+shell</pre></div><div><h4>Composed name</h4><pre>ShellInner_case-north</pre></div></div><p>Cavity face descended from the source patch. Retained exterior patches generally keep their source labels.</p>
+<div class="composition"><div><h4>Input</h4><pre>opening source edge = &quot;[case-north,case-ExtrudeTop]&quot;</pre></div><div><h4>Composed name</h4><pre>ShellRim_[case-north,case-ExtrudeTop]</pre></div></div><p>A sharp opening rim descended from that edge.</p>
+<div class="composition"><div><h4>Input</h4><pre>source surface patch = &quot;panel&quot;
+thicken</pre></div><div><h4>Composed name</h4><pre>ThickenNegative_panel
+ThickenPositive_panel
+ThickenRim_1</pre></div></div><p>Negative/positive offset faces and the first boundary rim. Rim indices start at 1.</p>
+<div class="composition"><div><h4>Input</h4><pre>surface = &quot;panel&quot;
+first generated planar cap</pre></div><div><h4>Composed name</h4><pre>SurfaceCap_panel_1</pre></div></div><p>Surface-cap indices start at 1.</p>
+</article>
+</section>
+<section id="section-5"><h2>Copies, patterns and assemblies</h2>
+<article><h3>Rewrite matching source tokens</h3>
+<div class="composition"><div><h4>Input</h4><pre>mesh renamed from &quot;pipe1&quot; to &quot;pipe2&quot;
+patch = &quot;pipe1-Line1&quot;</pre></div><div><h4>Composed name</h4><pre>pipe2-Line1</pre></div></div><p>Only matching mesh prefixes change: pipe10-Line1 is not rewritten. Earlier Boolean source labels need not match the result mesh prefix.</p>
+<div class="composition"><div><h4>Input</h4><pre>same rename
+patch = &quot;BlendEdge_[pipe1-a,pipe1-b]&quot;</pre></div><div><h4>Composed name</h4><pre>BlendEdge_[pipe2-a,pipe2-b]</pre></div></div><p>Matching mesh tokens inside bracketed edge/blend labels change too. Instance copies use this rewrite; CopyMesh can instead add a chosen prefix or suffix affix.</p>
+<div class="composition"><div><h4>Input</h4><pre>pattern seed = &quot;seed&quot;
+pattern name = &quot;row&quot;
+count = 3</pre></div><div><h4>Composed name</h4><pre>seed
+row_1
+row_2</pre></div></div><p>Index zero is the unchanged seed. Later entries are independently named solids. Mirrors and patterns remap current names and ancestry; query each result for its actual patches.</p>
+</article>
+<article><h3>Distinguish assembly occurrences</h3>
+<div class="composition"><div><h4>Input</h4><pre>assembly = &quot;machine&quot;
+first occurrence = &quot;module&quot;
+first leaf solid = &quot;shaft&quot;</pre></div><div><h4>Composed name</h4><pre>machine/module[1]/shaft[1]</pre></div></div><p>One-based occurrence and part positions. A second module occurrence has machine/module[2]/shaft[1]. Paths are diagnostic occurrence identities, not mesh selection addresses.</p>
+<div class="composition"><div><h4>Input</h4><pre>component solid = &quot;shaft&quot;
+cylindrical face = &quot;shaft-profile&quot;
+create an axis datum</pre></div><div><h4>Composed name</h4><pre>shaft-profile</pre></div></div><p>The datum selects a current component-local face. Where supported, shaft:shaft-profile scopes it to the mesh; an assembly leaf path is not substituted for the face label.</p>
+</article>
+</section>
+<section id="section-6"><h2>Automatic and imported names</h2>
+<article><h3>Defaults and counters</h3>
+<div class="composition"><div><h4>Input</h4><pre>unnamed extrudes
+auto-name counter starts empty</pre></div><div><h4>Composed name</h4><pre>Extrude1
+Extrude2</pre></div></div><p>Counters are process-global per prefix, not permanent IDs. Sketch curves have separate per-sketch counters: Line1, Arc1, Circle1, Ellipse1, Bezier1, Hermite1, Curve1.</p>
+<div class="composition"><div><h4>Input</h4><pre>default kernel references</pre></div><div><h4>Composed name</h4><pre>Origin
+OriginXY
+OriginYZ
+OriginZX</pre></div></div><p>Python also accepts origin and sketch axes x/y (plus recognized axis aliases). Built-in origin/center aliases normalize casing; authored labels otherwise match case-sensitively.</p>
+<div class="composition"><div><h4>Input</h4><pre>importer assigns automatic group index 3</pre></div><div><h4>Composed name</h4><pre>ObjAutoGroup_3
+OffAutoGroup_3
+StlAutoGroup_3</pre></div></div><p>Each importer uses its own prefix. OBJ can retain file group labels. Grouping depends on file content and import options. CreateFromTriangles initially labels its single group with the supplied mesh name.</p>
+</article>
+</section></main></div></body></html>

@@ -41,4 +41,23 @@ public class ExactMeshVolumeTests
         var reversed = triangles.Select(t => new Tri(t.A, t.C, t.B)).ToList();
         Assert.True((MeshAnalysis.ComputeSignedMeshVolume(points, reversed) + expected).Sign() == 0);
     }
+
+    [Fact]
+    public void FloatingVolumeRemainsStableForFarTranslatedMesh()
+    {
+        const double offset = 1e12;
+        List<Vec3D> points =
+        [
+            new(offset, -offset, offset),
+            new(offset + 1, -offset, offset),
+            new(offset, -offset + 1, offset),
+            new(offset, -offset, offset + 1)
+        ];
+        List<Tri> tetrahedron =
+        [
+            new(0, 2, 1), new(0, 1, 3), new(0, 3, 2), new(1, 2, 3)
+        ];
+
+        Assert.InRange(MeshAnalysis.ComputeSignedMeshVolume(points, tetrahedron), .1666666, .1666667);
+    }
 }

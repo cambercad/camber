@@ -984,26 +984,37 @@ namespace GeoSolver
         public CLine2D Line { get; private set; }
         public ICircular2D Circular { get; private set; }
         public Vec2D LabelAnchorWrtCenter { get; set; }
+        private readonly double _sideSign;
 
         public TangentLineCircular2d(CLine2D line, ICircular2D circular, Vec2D labelAnchorWrtCenter = default)
         {
             Line = line;
             Circular = circular;
             LabelAnchorWrtCenter = labelAnchorWrtCenter;
+            Vec2D start = line.CStart.Evaluate();
+            Vec2D direction = line.CEnd.Evaluate() - start;
+            Vec2D center = circular.CCenter.Evaluate() - start;
+            double cross = center.X * direction.Y - center.Y * direction.X;
+            if (cross == 0 && circular is CArc2D arc)
+            {
+                Vec2D midpoint = arc.Evaluate(0.5).Evaluate() - start;
+                cross = midpoint.Y * direction.X - midpoint.X * direction.Y;
+            }
+            _sideSign = cross < 0 ? -1 : 1;
         }
 
         public void GenerateEquations(List<Expr> equations, double scaling)
         {
-            // Tangent: distance from circular center to line = radius
-            // Using: |cross(P-S, E-S)| / |E-S| = r
-            // Normalized: cross² / lengthSq = r² (length² units)
+            // Keep the initial side of the line. The squared distance equation
+            // has zero gradient when the line crosses the circle center and can
+            // converge by collapsing a free arc instead of moving the line.
             var dx = Line.CEnd.Ex - Line.CStart.Ex;
             var dy = Line.CEnd.Ey - Line.CStart.Ey;
             var px = Circular.CCenter.Ex - Line.CStart.Ex;
             var py = Circular.CCenter.Ey - Line.CStart.Ey;
             var cross = px * dy - py * dx;
             var lengthSquared = dx * dx + dy * dy;
-            equations.Add(cross * cross / lengthSquared - Circular.CRadius * Circular.CRadius);
+            equations.Add(_sideSign * cross / Expr.Sqrt(lengthSquared) - Circular.CRadius);
         }
 
         public IEnumerator<Param> GetEnumerator()

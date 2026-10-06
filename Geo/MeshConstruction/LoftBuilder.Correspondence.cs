@@ -396,9 +396,8 @@ namespace Geo
             double L = Math.Max(dx, Math.Max(dy, dz));
             if (L < 1e-30)
                 L = 1.0;
-            // Must be at least as loose as EmitSideQuads' collapsed-edge skip (L*1e-14 floor was far too
-            // tight for metre-scale lofts: near-duplicate merged-u anchors near NACA TE stayed as
-            // separate columns, quads were skipped, and the solid was non-watertight).
+            // Sampling simplification is separate from topology: protected authored
+            // corners must survive. Emission only removes exact zero-area triangles.
             double epsWorld = Math.Max(1e-12, Math.Max(L * 1e-9, loftTessellationTolerance));
             double epsSq = epsWorld * epsWorld;
 

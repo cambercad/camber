@@ -1,4 +1,4 @@
-"""Real pyglet events, ImGui frames, kernel picks and GL annotations.
+"""Real pyglet events, GUI frames, kernel picks and GL annotations.
 
 Only the blocking app.run loop is replaced by a deterministic event driver.
 No measurement, ray-cast, release-detection or drawing handler is mocked.
@@ -25,6 +25,57 @@ class AnnotationLayoutTests(unittest.TestCase):
                 self.assertLessEqual(y+h, 600)
                 for bx, by, bw, bh in boxes[:i]:
                     self.assertTrue(x+w <= bx or bx+bw <= x or y+h <= by or by+bh <= y)
+
+    def test_measurement_label_is_vertically_centered_in_its_background(self):
+        from types import SimpleNamespace
+        from camber.inspection import Measurement, _draw_annotations
+
+        class Drawable:
+            def draw(self):
+                pass
+
+            def delete(self):
+                pass
+
+        drawn_lines = []
+
+        class Shapes:
+            Circle = Rectangle = lambda *args, **kwargs: Drawable()
+
+            @staticmethod
+            def Line(*args, **kwargs):
+                drawn_lines.append(args)
+                return Drawable()
+
+        labels = []
+
+        class Label(Drawable):
+            def __init__(self, text, **kwargs):
+                self.content_width, self.content_height = 160, 12
+                self.anchor_y = kwargs.get("anchor_y", "baseline")
+                self.x, self.y = kwargs["x"], kwargs["y"]
+                labels.append(self)
+
+        viewer = SimpleNamespace(
+            inspection=SimpleNamespace(measurements=[Measurement((-.5, 0, 0), (.5, 0, 0), 1,
+                                                                 "Minimum distance")]),
+            camera=SimpleNamespace(eye=(0, 0, -5), ortho=False, fov=1.0, aspect=1.0,
+                                   frame=lambda: ((0, 0, 1), (0, 1, 0), (1, 0, 0))),
+            window=SimpleNamespace(width=640, height=480),
+            _ui=SimpleNamespace(viewport_rect=(0, 0, 640, 480)),
+            _pyglet=SimpleNamespace(shapes=Shapes, text=SimpleNamespace(Label=Label)),
+            _np=__import__("numpy"),
+            _gl=SimpleNamespace(GL_DEPTH_TEST=1, glDisable=lambda _flag: None))
+        _draw_annotations(viewer)
+        self.assertEqual(1, len(labels))
+        self.assertEqual("center", labels[0].anchor_y)
+        drawn_lines.clear()
+        viewer.camera.ortho = True
+        viewer.camera.zoom = 1.0
+        viewer.inspection.measurements = []
+        _draw_annotations(viewer)
+        self.assertTrue(drawn_lines)
+        self.assertGreater(min(args[0] for args in drawn_lines), viewer.window.width/2)
 
 
 @unittest.skipUnless(os.environ.get("CAMBER_TEST_GL") == "1", "requires GL integration tests")

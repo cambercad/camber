@@ -6,7 +6,6 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from camber.sketch_constraints_viz import (
-    LABEL_SCALE,
     build_constraint_overlay,
     format_angle_deg,
     format_length,
@@ -270,9 +269,6 @@ class DimensionGlyphTests(unittest.TestCase):
 
 
 class ConstraintPickAndEditTests(unittest.TestCase):
-    def test_label_scale_is_four_and_a_half(self):
-        self.assertEqual(4.5, LABEL_SCALE)
-
     def test_length_label_picks_the_dimension_action(self):
         curves = [{"kind": "line", "p0": (0.0, 0.0), "p1": (10.0, 0.0)}]
         actions = [
@@ -331,17 +327,17 @@ class ConstraintPickAndEditTests(unittest.TestCase):
         pair = sketch_icons.dimension_button_width() * 2 + sketch_icons.ITEM_GAP
         self.assertAlmostEqual(sketch_icons.CONTENT_W, pair)
         self.assertLessEqual(sketch_icons.CONTENT_W, sketch_icons.PANEL_W)
-        imgui = _DimensionEditorSpy()
+        ui = _DimensionEditorSpy()
         changed, value, apply_clicked, cancel_clicked = sketch_icons.dimension_editor(
-            imgui, "radius", 12.5, focus=True)
+            ui, "radius", 12.5, focus=True)
         self.assertFalse(changed)
         self.assertAlmostEqual(12.5, value)
         self.assertFalse(apply_clicked)
         self.assertFalse(cancel_clicked)
-        self.assertEqual([sketch_icons.CONTENT_W], imgui.item_widths)
-        self.assertEqual(1, imgui.focus_count)
-        self.assertTrue(imgui.labels[0].startswith("##"))
-        self.assertLessEqual(max(imgui.button_widths), sketch_icons.CONTENT_W)
+        self.assertEqual([sketch_icons.CONTENT_W], ui.item_widths)
+        self.assertEqual(1, ui.focus_count)
+        self.assertTrue(ui.labels[0].startswith("##"))
+        self.assertLessEqual(max(ui.button_widths), sketch_icons.CONTENT_W)
 
     def test_commit_edit_updates_the_existing_action(self):
         live = _DimensionSpy()
@@ -371,14 +367,6 @@ class ConstraintPickAndEditTests(unittest.TestCase):
         self.assertIn(("remove_constraint",), live.calls)
         self.assertIn(("length", 0, 7.5), live.calls)
         self.assertNotIn(("length", 0, 10.0), live.calls)
-
-
-class _FakeDrawList(object):
-    def AddRectFilled(self, *args, **kwargs):
-        pass
-
-    def AddText(self, *args, **kwargs):
-        pass
 
 
 class _DimensionEditorSpy(object):
@@ -425,19 +413,9 @@ class _DimensionEditorSpy(object):
         self.labels.append(label)
         return False, value
 
-    def InvisibleButton(self, button_id, size, *args):
-        width = size[0] if hasattr(size, "__len__") else size.x
+    def Button(self, label, width, height, *, primary=False):
         self.button_widths.append(float(width))
         return False
-
-    def IsItemHovered(self):
-        return False
-
-    def GetWindowDrawList(self):
-        return _FakeDrawList()
-
-    def GetColorU32(self, color):
-        return 0
 
     def SameLine(self):
         pass

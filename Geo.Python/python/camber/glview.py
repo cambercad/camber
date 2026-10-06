@@ -1,7 +1,7 @@
-"""Lightweight OpenGL viewer (pyglet + imgui).
+"""Lightweight OpenGL viewer (pyglet).
 
 Phong meshes, joined screen-space curves, point sprites, and depth-peeled
-transparency. Install: pip install pyglet imgui[pyglet] numpy
+transparency. Install: pip install pyglet numpy
 """
 
 import json
@@ -193,177 +193,13 @@ def _polyline_clean(pts, closed):
 
 
 def build_triangle_cache(verts, faces):
-    """Precompute immutable NumPy triangle data used by repeated ray picks."""
-    if not verts or not faces:
-        return None
-    try:
-        import numpy as np
-    except ImportError:
-        return None
-    points = np.asarray(verts, dtype=np.float64)
-    indices = np.asarray(faces, dtype=np.int64)
-    if (points.ndim != 2 or indices.ndim != 2 or indices.shape[1] != 3
-            or points.shape[0] < 3):
-        return None
-    v0 = points[indices[:, 0]]
-    v1 = points[indices[:, 1]]
-    v2 = points[indices[:, 2]]
-    bounds_lo = np.minimum(np.minimum(v0, v1), v2)
-    bounds_hi = np.maximum(np.maximum(v0, v1), v2)
-    nodes = []
+    """Pack CPU geometry once; acceleration and intersection run in C#."""
+    from .measure import Geometry
+    return Geometry(tuple(tuple(verts[i]) for i in face) for face in faces)
 
-    def build(item_indices):
-        lo = np.min(bounds_lo[item_indices], axis=0)
-        hi = np.max(bounds_hi[item_indices], axis=0)
-        node_index = len(nodes)
-        nodes.append(None)
-        if len(item_indices) <= 32:
-            nodes[node_index] = (
-                tuple(lo), tuple(hi), -1, -1, item_indices)
-            return node_index
-        axis = int(np.argmax(hi - lo))
-        centers = bounds_lo[item_indices, axis] + bounds_hi[item_indices, axis]
-        order = np.argsort(centers, kind="stable")
-        middle = len(item_indices) // 2
-        left = build(item_indices[order[:middle]])
-        right = build(item_indices[order[middle:]])
-        nodes[node_index] = (tuple(lo), tuple(hi), left, right, None)
-        return node_index
-
-    build(np.arange(len(indices), dtype=np.int64))
-    return {
-        "v0": v0,
-        "e1": v1 - v0,
-        "e2": v2 - v0,
-        "nodes": nodes,
-    }
-
-
-def closest_triangle(origin, direction, verts, faces, cache=None):
-    """Closest front-or-back triangle index along the ray, or -1."""
-    if not verts or not faces:
-        return -1
-    d = _norm3(direction)
-    if d is None:
-        return -1
-    try:
-        import numpy as np
-    except ImportError:
-        return _closest_triangle_py(origin, d, verts, faces)
-    if cache is None:
-        cache = build_triangle_cache(verts, faces)
-    if cache is None:
-        return _closest_triangle_py(origin, d, verts, faces)
-    o = np.asarray(origin, dtype=np.float64)
-    dirv = np.asarray(d, dtype=np.float64)
-    candidates = _triangle_bvh_candidates(cache, origin, d)
-    if not candidates:
-        return -1
-    candidate_indices = np.asarray(candidates, dtype=np.int64)
-    v0 = cache["v0"][candidate_indices]
-    e1 = cache["e1"][candidate_indices]
-    e2 = cache["e2"][candidate_indices]
-    pvec = np.cross(dirv, e2)
-    det = np.einsum("ij,ij->i", e1, pvec)
-    valid = np.abs(det) > 1e-12
-    inv = np.zeros_like(det)
-    inv[valid] = 1.0 / det[valid]
-    tvec = o - v0
-    u = np.einsum("ij,ij->i", tvec, pvec) * inv
-    qvec = np.cross(tvec, e1)
-    vv = np.einsum("j,ij->i", dirv, qvec) * inv
-    t = np.einsum("ij,ij->i", e2, qvec) * inv
-    hit = valid & (u >= 0.0) & (vv >= 0.0) & ((u + vv) <= 1.0) & (t > 1e-8)
-    if not np.any(hit):
-        return -1
-    ts = np.where(hit, t, np.inf)
-    return int(candidate_indices[int(np.argmin(ts))])
-
-
-def _triangle_bvh_candidates(cache, origin, direction):
-    nodes = cache.get("nodes")
-    if not nodes:
-        return range(len(cache["v0"]))
-    result = []
-    stack = [0]
-    while stack:
-        lo, hi, left, right, indices = nodes[stack.pop()]
-        if not _ray_box_hit(origin, direction, lo, hi):
-            continue
-        if left < 0:
-            result.extend(indices.tolist())
-        else:
-            stack.append(right)
-            stack.append(left)
-    return result
-
-
-def _ray_box_hit(origin, direction, lo, hi):
-    near = 0.0
-    far = float("inf")
-    for axis in range(3):
-        component = direction[axis]
-        if abs(component) < 1e-15:
-            if origin[axis] < lo[axis] or origin[axis] > hi[axis]:
-                return False
-            continue
-        first = (lo[axis] - origin[axis]) / component
-        second = (hi[axis] - origin[axis]) / component
-        if first > second:
-            first, second = second, first
-        near = max(near, first)
-        far = min(far, second)
-        if near > far:
-            return False
-    return far >= 0.0
-
-
-def _closest_triangle_py(origin, d, verts, faces):
-    best = -1
-    best_t = 1e300
-    ox, oy, oz = origin
-    for i, (ia, ib, ic) in enumerate(faces):
-        v0 = verts[ia]
-        v1 = verts[ib]
-        v2 = verts[ic]
-        e1 = _sub(v1, v0)
-        e2 = _sub(v2, v0)
-        pvec = _cross(d, e2)
-        det = _dot(e1, pvec)
-        if abs(det) < 1e-12:
-            continue
-        inv = 1.0 / det
-        tvec = _sub((ox, oy, oz), v0)
-        u = _dot(tvec, pvec) * inv
-        if u < 0.0 or u > 1.0:
-            continue
-        qvec = _cross(tvec, e1)
-        v = _dot(d, qvec) * inv
-        if v < 0.0 or u + v > 1.0:
-            continue
-        t = _dot(e2, qvec) * inv
-        if 1e-8 < t < best_t:
-            best_t = t
-            best = i
-    return best
-
-
-def triangle_hit_distance(origin, direction, verts, face):
-    """Ray depth of a known triangle hit, or infinity."""
-    d = _norm3(direction)
-    if d is None:
-        return float("inf")
-    v0 = verts[int(face[0])]
-    normal = _cross(
-        _sub(verts[int(face[1])], v0),
-        _sub(verts[int(face[2])], v0),
-    )
-    denominator = _dot(normal, d)
-    if abs(denominator) < 1e-12:
-        return float("inf")
-    depth = _dot(normal, _sub(v0, origin)) / denominator
-    return depth if depth > 1e-8 else float("inf")
-
+def closest_triangle(origin, direction, verts, faces, cache=None, clip_plane=None):
+    query = cache if cache is not None else build_triangle_cache(verts, faces)
+    return query.ray(origin, direction, clip_plane=clip_plane)[0]
 
 def _grow_bounds(lo, hi, p):
     if lo is None:
@@ -748,10 +584,12 @@ class Camera:
         self.far = 200.0
         self.width = _WINDOW_W
         self.height = _WINDOW_H
+        self.viewport = None  # top-left framebuffer rectangle, or the full window
 
     @property
     def aspect(self):
-        return float(self.width) / float(max(self.height, 1))
+        w, h = (self.viewport[2:] if self.viewport else (self.width, self.height))
+        return float(w) / float(max(h, 1))
 
     @property
     def view_scale(self):
@@ -830,6 +668,10 @@ class Camera:
         self.center = _add(hit, _mul(_sub(self.center, hit), factor))
 
     def ray(self, ndc_x, ndc_y):
+        if self.viewport:
+            x, y, w, h = self.viewport
+            ndc_x = (ndc_x + 1) * self.width / max(w, 1) - 2*x/max(w, 1) - 1
+            ndc_y = (ndc_y + 1) * self.height / max(h, 1) - 2*(self.height-y-h)/max(h, 1) - 1
         look, up, right = self.frame()
         if self.ortho:
             origin = _add(
@@ -861,20 +703,30 @@ class Camera:
         if self.ortho:
             z = self.zoom
             l, r, b, t = -asp * z, asp * z, -z, z
-            return (
+            matrix = (
                 (2.0 / (r - l), 0.0, 0.0, -(r + l) / (r - l)),
                 (0.0, 2.0 / (t - b), 0.0, -(t + b) / (t - b)),
                 (0.0, 0.0, -2.0 / (f - n), -(f + n) / (f - n)),
                 (0.0, 0.0, 0.0, 1.0),
             )
-        y_max = n * math.tan(0.5 * self.fov)
-        x_max = y_max * asp
-        return (
-            (n / x_max, 0.0, 0.0, 0.0),
-            (0.0, n / y_max, 0.0, 0.0),
-            (0.0, 0.0, -(f + n) / (f - n), -(2.0 * f * n) / (f - n)),
-            (0.0, 0.0, -1.0, 0.0),
-        )
+        else:
+            y_max = n * math.tan(0.5 * self.fov)
+            x_max = y_max * asp
+            matrix = (
+                (n / x_max, 0.0, 0.0, 0.0),
+                (0.0, n / y_max, 0.0, 0.0),
+                (0.0, 0.0, -(f + n) / (f - n), -(2.0 * f * n) / (f - n)),
+                (0.0, 0.0, -1.0, 0.0),
+            )
+        if not self.viewport:
+            return matrix
+        x, y, w, h = self.viewport
+        sx, sy = w/max(self.width, 1), h/max(self.height, 1)
+        tx = (2*x+w)/max(self.width, 1)-1
+        ty = 1-(2*y+h)/max(self.height, 1)
+        return (tuple(sx*a+tx*b for a,b in zip(matrix[0],matrix[3])),
+                tuple(sy*a+ty*b for a,b in zip(matrix[1],matrix[3])),
+                matrix[2], matrix[3])
 
 
 _PEEL_GLSL = """
@@ -904,11 +756,13 @@ in vec3 in_color;
 in vec2 in_uv;
 out vec3 v_n;
 out vec3 v_view;
+out vec3 v_world;
 out vec3 v_color;
 out vec2 v_uv;
 void main() {
     vec4 view = u_view * vec4(in_pos, 1.0);
     v_view = view.xyz;
+    v_world = in_pos;
     v_n = mat3(u_view) * in_n;
     v_color = in_color;
     v_uv = in_uv;
@@ -922,13 +776,19 @@ uniform vec3 u_light_dir;
 uniform bool u_checker;
 uniform bool u_wireframe;
 uniform float u_alpha;
+uniform bool u_section_enabled;
+uniform vec3 u_section_normal;
+uniform float u_section_offset;
 """ + _PEEL_GLSL + """
 in vec3 v_n;
 in vec3 v_view;
+in vec3 v_world;
 in vec3 v_color;
 in vec2 v_uv;
 out vec4 frag;
 void main() {
+    if (u_section_enabled && dot(v_world, u_section_normal) > u_section_offset)
+        discard;
     peel_discard(gl_FragCoord.z);
     if (u_wireframe) {
         frag = vec4(0.02, 0.02, 0.03, 1.0);
@@ -998,6 +858,7 @@ in vec3 in_color;
 flat out vec3 v_color;
 noperspective out float v_edge_px;
 noperspective out float v_axis_depth;
+out vec3 v_world;
 
 vec2 clipToPixel(vec4 clip, vec2 viewport) {
     vec2 ndc = clip.xy / max(abs(clip.w), 1e-12);
@@ -1036,6 +897,7 @@ void main() {
     v_color = in_color;
     v_edge_px = side * extent;
     v_axis_depth = 0.5 * (current_clip.z / max(abs(current_clip.w), 1e-12)) + 0.5;
+    v_world = current;
     gl_Position = clip;
 }
 """
@@ -1083,13 +945,19 @@ _LINE_FRAG = """
 #version 330
 uniform float u_radius_px;
 uniform float u_aa_px;
+uniform bool u_section_enabled;
+uniform vec3 u_section_normal;
+uniform float u_section_offset;
 """ + _SCREEN_DEPTH_GLSL + """
 flat in vec3 v_color;
 noperspective in float v_edge_px;
 noperspective in float v_axis_depth;
+in vec3 v_world;
 out vec4 frag;
 
 void main() {
+    if (u_section_enabled && dot(v_world, u_section_normal) > u_section_offset)
+        discard;
     float radius_px = max(u_radius_px, 0.55);
     float aa_px = max(u_aa_px, 0.75);
     float alpha = clamp((radius_px - abs(v_edge_px)) / aa_px + 0.5, 0.0, 1.0);
@@ -1114,6 +982,7 @@ in vec3 in_color;
 flat out vec2 v_center_xy;
 flat out float v_axis_depth;
 flat out vec3 v_color;
+flat out vec3 v_world;
 void main() {
     vec2 viewport = max(u_viewport, vec2(1.0));
     vec4 clip = u_proj * u_view * vec4(in_pos, 1.0);
@@ -1121,6 +990,7 @@ void main() {
     v_center_xy = (ndc * 0.5 + 0.5) * viewport;
     v_axis_depth = 0.5 * (clip.z / max(abs(clip.w), 1e-12)) + 0.5;
     v_color = in_color;
+    v_world = in_pos;
     float extent = max(u_radius_px, 0.55) + 0.5 * max(u_aa_px, 0.75);
     clip.xy += (2.0 * in_corner * extent / viewport) * clip.w;
     gl_Position = clip;
@@ -1131,12 +1001,18 @@ _POINT_FRAG = """
 #version 330
 uniform float u_radius_px;
 uniform float u_aa_px;
+uniform bool u_section_enabled;
+uniform vec3 u_section_normal;
+uniform float u_section_offset;
 """ + _SCREEN_DEPTH_GLSL + """
 flat in vec2 v_center_xy;
 flat in float v_axis_depth;
 flat in vec3 v_color;
+flat in vec3 v_world;
 out vec4 frag;
 void main() {
+    if (u_section_enabled && dot(v_world, u_section_normal) > u_section_offset)
+        discard;
     float dist = length(gl_FragCoord.xy - v_center_xy);
     float r = max(u_radius_px, 0.55);
     float aa = max(u_aa_px, 0.75);
@@ -1244,19 +1120,14 @@ def _import_gl(ui=True):
         import pyglet
 
         if not ui:
-            return pyglet, np, None, None
-        from .imgui_compat import import_imgui, create_pyglet_renderer
-        imgui = import_imgui()
-        # pyimgui's pyglet adapter dispatches input against whichever ImGui
-        # context happens to be current. Camber owns one context per viewer,
-        # so input must be routed through the context-aware adapter below.
-        create_renderer = create_pyglet_renderer
+            return pyglet, np, None
+        from .gui import UI
     except ImportError:
         raise ImportError(
-            "The OpenGL viewer needs pyglet, imgui, and numpy. Install with:\n"
-            "  pip install pyglet imgui[pyglet] numpy"
+            "The OpenGL viewer needs pyglet and numpy. Install with:\n"
+            "  pip install pyglet numpy"
         )
-    return pyglet, np, imgui, create_renderer
+    return pyglet, np, UI
 
 
 def _selection_python(names):
@@ -1303,7 +1174,8 @@ def _mat4(m, np):
 
 def world_per_pixel(camera, height=None):
     """World size of one pixel at the look-at plane (same as the Polyscope overlays)."""
-    h = float(height if height is not None else camera.height)
+    h = float(height if height is not None else
+              camera.viewport[3] if camera.viewport else camera.height)
     return 2.0 * float(camera.view_scale) / float(max(int(h), 1))
 
 
@@ -1342,7 +1214,7 @@ def _curve_adjacent_patches(name):
     return tuple(_naming.qualify(owner, patch) for patch in patches)
 
 
-def pick_name(packed, origin, direction, point_r, curve_r, packeds=None):
+def pick_name(packed, origin, direction, point_r, curve_r, packeds=None, clip_plane=None):
     """Return the nearest visible named point, curve, or surface patch."""
     scenes = list(packeds) if packeds is not None else (packed,)
     cat_name = None
@@ -1356,18 +1228,17 @@ def pick_name(packed, origin, direction, point_r, curve_r, packeds=None):
             continue
         name, kind, depth = _pick.nearest_hit(
             scene["catalog"], origin, direction, point_r, curve_r,
-            scene.get("catalog_index"))
+            scene.get("catalog_index"), clip_plane)
         if name:
             pri = 0 if kind == _pick.KIND_POINT else 1
             best_pri = 0 if cat_kind == _pick.KIND_POINT else 1
             if cat_name is None or (pri, depth) < (best_pri, cat_depth):
                 cat_name, cat_kind, cat_depth, cat_scene = name, kind, depth, scene
-        fi = closest_triangle(
-            origin, direction, scene["mesh_pos"], scene["mesh_idx"],
-            scene.get("triangle_cache"))
+        query = scene.get("triangle_cache")
+        if query is None:
+            query = scene["triangle_cache"] = build_triangle_cache(scene["mesh_pos"], scene["mesh_idx"])
+        fi, dist, _ = query.ray(origin, direction, clip_plane=clip_plane)
         if fi >= 0:
-            dist = triangle_hit_distance(
-                origin, direction, scene["mesh_pos"], scene["mesh_idx"][fi])
             if dist < surf_depth:
                 surf_depth = dist
                 surf_name = scene["face_names"][fi]

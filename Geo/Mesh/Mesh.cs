@@ -92,58 +92,54 @@ namespace Geo
                 out result.PrecisionPositions, out result.Triangles, out List<SourceTriangle> sources, null,
                 intersectionStrips, classifiedFragments, retainExteriorTrimCaps);
 
-            result.TrianglesEx = new List<MeshTriangle<T>>();
+            result.TrianglesEx = new List<MeshTriangle<T>>(result.Triangles.Count);
 
             result.Positions = converter.Convert(result.PrecisionPositions);
 
-            // We already have efficient lookup dictionaries created above
+            // Reuse corners only within a run of fragments from one source
+            // triangle. Reset at seams; isolated triangles need no cache work.
+            var corners = typeof(T) == typeof(TriangleVertexNormalUV)
+                ? new Dictionary<int, T>() : null;
+            MeshOrigin cachedOrigin = default;
+            int cachedTriangle = -1;
 
-            // Process result triangles
-            int numTriangles = result.Triangles.Count; // resultFacets.Length / 3;
+            int numTriangles = result.Triangles.Count;
             for (int i = 0; i < numTriangles; i++)
             {
                 Tri triangle = result.Triangles[i];
 
-                // Determine source of this triangle and create extended triangle data
-                MeshTriangle<T> sourceExtTriangle;
-                Tri sourceTriangle;
-                List<Rat3Hybrid> sourcePositions;
-
                 SourceTriangle s = sources[i];
-                //int sourceTriangleId = -1;
-                //if (resultTriangleIds != null && i < resultTriangleIds.Length)
+                bool sameSource = s.MeshOrigin == cachedOrigin && s.SourceTriangleIndex == cachedTriangle;
+                bool reuseCorners = corners != null && (sameSource || (i + 1 < numTriangles &&
+                    sources[i + 1].MeshOrigin == s.MeshOrigin && sources[i + 1].SourceTriangleIndex == s.SourceTriangleIndex));
+                if (!sameSource)
                 {
-                    if (s.MeshOrigin == MeshOrigin.MeshA)
-                    {
-                        // Triangle comes from mesh A
-                        sourceExtTriangle = a.TrianglesEx[s.SourceTriangleIndex];
-                        sourceTriangle = a.Triangles[s.SourceTriangleIndex];
-                        sourcePositions = a.PrecisionPositions;
-                    }
-                    else if (s.MeshOrigin == MeshOrigin.MeshB)
-                    {
-                        // Triangle comes from mesh B
-                        sourceExtTriangle = b.TrianglesEx[s.SourceTriangleIndex];
-                        sourceTriangle = b.Triangles[s.SourceTriangleIndex];
-                        sourcePositions = b.PrecisionPositions;
-                    }
-                    else
-                    {
-                        throw new InvalidOperationException(
-                            $"Boolean result triangle has unknown source mesh origin '{s.MeshOrigin}'.");
-                    }
+                    corners?.Clear();
+                    cachedOrigin = s.MeshOrigin;
+                    cachedTriangle = s.SourceTriangleIndex;
                 }
-                //else
-                //{
-                //    throw new Exception("Tracking info should always be available");
-                //}
+                var source = s.MeshOrigin switch
+                {
+                    MeshOrigin.MeshA => a,
+                    MeshOrigin.MeshB => b,
+                    _ => throw new InvalidOperationException(
+                        $"Boolean result triangle has unknown source mesh origin '{s.MeshOrigin}'.")
+                };
+                var sourceExtTriangle = source.TrianglesEx[s.SourceTriangleIndex];
+
+                T Corner(int point)
+                {
+                    if (reuseCorners && corners.TryGetValue(point, out var cached)) return cached;
+                    var vertex = sourceExtTriangle.InterpolateExact(InterpolationHelpers.GetExactBarycentricWeights(
+                        result.PrecisionPositions[point], source.Triangles[s.SourceTriangleIndex], source.PrecisionPositions));
+                    if (reuseCorners) corners.Add(point, vertex);
+                    return vertex;
+                }
 
                 MeshTriangle<T> resultExtTriangle;
-                resultExtTriangle.V0 = sourceExtTriangle.InterpolateExact(InterpolationHelpers.GetExactBarycentricWeights(result.PrecisionPositions[triangle.A], sourceTriangle, sourcePositions));
-                resultExtTriangle.V1 = sourceExtTriangle.InterpolateExact(InterpolationHelpers.GetExactBarycentricWeights(result.PrecisionPositions[triangle.B], sourceTriangle, sourcePositions));
-                resultExtTriangle.V2 = sourceExtTriangle.InterpolateExact(InterpolationHelpers.GetExactBarycentricWeights(result.PrecisionPositions[triangle.C], sourceTriangle, sourcePositions));
-                var debug = sourceExtTriangle.GroupId;
-                //resultExtTriangle.GroupId = sourceTriangleId;// sourceExtTriangle.GroupId;
+                resultExtTriangle.V0 = Corner(triangle.A);
+                resultExtTriangle.V1 = Corner(triangle.B);
+                resultExtTriangle.V2 = Corner(triangle.C);
                 resultExtTriangle.GroupId = sourceExtTriangle.GroupId;
 
                 result.TrianglesEx.Add(resultExtTriangle);

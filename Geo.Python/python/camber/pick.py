@@ -29,50 +29,13 @@ SOURCE_MODEL = "model"
 
 
 def closest(origin, direction, targets, point_radius, curve_radius):
-    """Return the winning target name, or None. Points win over curves."""
-    if not targets:
-        return None
-    ox, oy, oz = origin
-    dx, dy, dz = _unit(direction)
-    if dx is None:
-        return None
-    if point_radius <= 0.0:
-        point_radius = 1e-9
-    if curve_radius <= 0.0:
-        curve_radius = 1e-9
-
-    best_point = None
-    best_point_d = point_radius
-    best_curve = None
-    best_curve_d = curve_radius
-
-    for target in targets:
-        name = target.get("name")
-        if not name:
-            continue
-        kind = target.get("kind")
-        if kind == KIND_POINT:
-            world = target.get("world")
-            if world is None:
-                continue
-            distance = ray_point_distance((ox, oy, oz), (dx, dy, dz), world)
-            if distance < best_point_d:
-                best_point_d = distance
-                best_point = name
-            continue
-        if kind != KIND_CURVE:
-            continue
-        poly = target.get("points") or ()
-        if len(poly) < 2:
-            continue
-        distance = _ray_polyline_distance((ox, oy, oz), (dx, dy, dz), poly, bool(target.get("closed")))
-        if distance < best_curve_d:
-            best_curve_d = distance
-            best_curve = name
-
-    if best_point is not None:
-        return best_point
-    return best_curve
+    """Native catalog picking for sketch handles and model anchors."""
+    query = build_spatial_index(targets)
+    point = query.query.ray(origin, direction, 1, max(point_radius, 1e-9))
+    if point[0] >= 0:
+        return query.targets[point[0]].get("name")
+    curve = query.query.ray(origin, direction, 2, max(curve_radius, 1e-9))
+    return query.targets[curve[0]].get("name") if curve[0] >= 0 else None
 
 
 def prefer_selection(catalog_name, catalog_kind, mesh_name, mesh_kind):
@@ -104,143 +67,45 @@ def hit(catalog, origin, direction, point_radius, curve_radius, mode=MODE_ANY, e
     )
 
 
-def nearest_hit(
-        catalog, origin, direction, point_radius, curve_radius,
-        spatial_index=None):
-    """Return the nearest catalog target inside its pick radius.
+class _NativeCatalog:
+    def __init__(self, catalog):
+        from .measure import Geometry
+        primitives, self.targets = [], []
+        for target in catalog or ():
+            kind = target.get("kind")
+            if kind == KIND_POINT and target.get("world") is not None:
+                primitives.append((tuple(target["world"]),))
+                self.targets.append(target)
+            elif kind == KIND_CURVE:
+                points = target.get("points") or ()
+                pairs = list(zip(points, points[1:]))
+                if target.get("closed") and len(points) > 2:
+                    pairs.append((points[-1], points[0]))
+                for a, b in pairs:
+                    primitives.append((tuple(a), tuple(b)))
+                    self.targets.append(target)
+        self.query = Geometry(primitives)
 
-    The result is ``(name, kind, ray_depth)``. Depth is measured to the
-    closest point on the target, not to the front of its tolerance volume.
-    """
-    d = _unit(direction)
-    if d[0] is None:
-        return None, None, float("inf")
-    candidates = []
-    targets = _spatial_candidates(
-        spatial_index, catalog, origin, d, max(point_radius, curve_radius))
-    for target in targets:
-        name = target.get("name")
-        kind = target.get("kind")
-        if not name:
-            continue
-        if kind == KIND_POINT:
-            world = target.get("world")
-            if world is None:
-                continue
-            radius = max(float(point_radius), 1e-9)
-            distance, depth = _ray_point_hit(origin, d, world)
-            priority = 0
-        elif kind == KIND_CURVE:
-            polyline = target.get("points") or ()
-            if len(polyline) < 2:
-                continue
-            radius = max(float(curve_radius), 1e-9)
-            distance, depth = _ray_polyline_hit(
-                origin, d, polyline, bool(target.get("closed")), radius)
-            priority = 1
+    def hit(self, origin, direction, point_radius, curve_radius, clip_plane=None):
+        point = self.query.ray(origin, direction, 1, max(point_radius, 1e-9), clip_plane)
+        curve = self.query.ray(origin, direction, 2, max(curve_radius, 1e-9), clip_plane)
+        if point[0] >= 0 and (curve[0] < 0 or point[1] <= curve[1]+max(point_radius, 1e-9)):
+            index, depth, _ = point
         else:
-            continue
-        if distance >= radius:
-            continue
-        candidates.append((depth, priority, distance, name, kind, radius))
-    if not candidates:
-        return None, None, float("inf")
-    front_depth = min(candidate[0] for candidate in candidates)
-    same_depth_layer = [
-        candidate for candidate in candidates
-        if candidate[0] <= front_depth + candidate[5]
-    ]
-    best = min(
-        same_depth_layer,
-        key=lambda candidate: (
-            candidate[1], candidate[2], candidate[0], candidate[3]))
-    return best[3], best[4], best[0]
+            index, depth, _ = curve
+        if index < 0:
+            return None, None, float("inf")
+        target = self.targets[index]
+        return target.get("name"), target.get("kind"), depth
 
+def nearest_hit(catalog, origin, direction, point_radius, curve_radius,
+                spatial_index=None, clip_plane=None):
+    query = spatial_index if spatial_index is not None else build_spatial_index(catalog)
+    return query.hit(origin, direction, point_radius, curve_radius, clip_plane)
 
-def build_spatial_index(catalog, leaf_size=12):
-    """Build an immutable BVH over point and curve bounds."""
-    items = []
-    for target in catalog or ():
-        kind = target.get("kind")
-        if kind == KIND_POINT:
-            points = (target.get("world"),)
-        elif kind == KIND_CURVE:
-            points = target.get("points") or ()
-        else:
-            continue
-        points = [point for point in points if point is not None]
-        if not points:
-            continue
-        lo = tuple(min(point[axis] for point in points) for axis in range(3))
-        hi = tuple(max(point[axis] for point in points) for axis in range(3))
-        items.append((target, lo, hi))
-    if not items:
-        return None
-
-    nodes = []
-
-    def build(indices):
-        lo = tuple(min(items[index][1][axis] for index in indices) for axis in range(3))
-        hi = tuple(max(items[index][2][axis] for index in indices) for axis in range(3))
-        node_index = len(nodes)
-        nodes.append(None)
-        if len(indices) <= leaf_size:
-            nodes[node_index] = (lo, hi, -1, -1, tuple(indices))
-            return node_index
-        extents = tuple(hi[axis] - lo[axis] for axis in range(3))
-        axis = max(range(3), key=lambda value: extents[value])
-        indices.sort(
-            key=lambda index: items[index][1][axis] + items[index][2][axis])
-        middle = len(indices) // 2
-        left = build(indices[:middle])
-        right = build(indices[middle:])
-        nodes[node_index] = (lo, hi, left, right, ())
-        return node_index
-
-    build(list(range(len(items))))
-    return {"items": items, "nodes": nodes}
-
-
-def _spatial_candidates(index, catalog, origin, direction, radius):
-    if not index:
-        return catalog or ()
-    result = []
-    stack = [0]
-    items = index["items"]
-    nodes = index["nodes"]
-    while stack:
-        lo, hi, left, right, indices = nodes[stack.pop()]
-        if not _ray_box_hit(origin, direction, lo, hi, radius):
-            continue
-        if left < 0:
-            result.extend(items[item_index][0] for item_index in indices)
-        else:
-            stack.append(right)
-            stack.append(left)
-    return result
-
-
-def _ray_box_hit(origin, direction, lo, hi, radius):
-    near = 0.0
-    far = float("inf")
-    radius = max(float(radius), 0.0)
-    for axis in range(3):
-        lower = lo[axis] - radius
-        upper = hi[axis] + radius
-        component = direction[axis]
-        if abs(component) < 1e-15:
-            if origin[axis] < lower or origin[axis] > upper:
-                return False
-            continue
-        first = (lower - origin[axis]) / component
-        second = (upper - origin[axis]) / component
-        if first > second:
-            first, second = second, first
-        near = max(near, first)
-        far = min(far, second)
-        if near > far:
-            return False
-    return far >= 0.0
+def build_spatial_index(catalog):
+    """Create a C# query snapshot; no Python spatial tree is built."""
+    return _NativeCatalog(catalog)
 
 
 def filter_catalog(catalog, mode=MODE_ANY, exclude=None):
@@ -547,18 +412,6 @@ def arc_polyline(start, mid, end, frame, lift=0.0, n=32):
     return out
 
 
-def ray_point_distance(origin, direction, point):
-    return _ray_point_hit(origin, direction, point)[0]
-
-
-def _ray_point_hit(origin, direction, point):
-    ox, oy, oz = origin
-    dx, dy, dz = direction
-    px, py, pz = point
-    t = (px - ox) * dx + (py - oy) * dy + (pz - oz) * dz
-    if t < 0.0:
-        return float("inf"), float("inf")
-    return _dist(point, (ox + t * dx, oy + t * dy, oz + t * dz)), t
 
 
 def _sketch_end_uvs(action):
@@ -608,71 +461,6 @@ def _arc_sweep(a0, a1, a2):
     return end
 
 
-def _ray_polyline_distance(origin, direction, polyline, closed):
-    return _ray_polyline_hit(origin, direction, polyline, closed)[0]
-
-
-def _ray_polyline_hit(origin, direction, polyline, closed, radius=None):
-    best = float("inf")
-    best_depth = float("inf")
-    last = len(polyline) - 1
-    for i in range(last):
-        distance, depth = _ray_segment_hit(origin, direction, polyline[i], polyline[i + 1])
-        if ((radius is not None and distance < radius and depth < best_depth)
-                or (radius is None and distance < best)):
-            best = distance
-            best_depth = depth
-    if closed and len(polyline) > 2:
-        distance, depth = _ray_segment_hit(origin, direction, polyline[last], polyline[0])
-        if ((radius is not None and distance < radius and depth < best_depth)
-                or (radius is None and distance < best)):
-            best = distance
-            best_depth = depth
-    return best, best_depth
-
-
-def _ray_segment_distance(origin, direction, a, b):
-    return _ray_segment_hit(origin, direction, a, b)[0]
-
-
-def _ray_segment_hit(origin, direction, a, b):
-    ox, oy, oz = origin
-    dx, dy, dz = direction
-    ax, ay, az = a
-    ex, ey, ez = b[0] - ax, b[1] - ay, b[2] - az
-    wx, wy, wz = ox - ax, oy - ay, oz - az
-    aa = ex * ex + ey * ey + ez * ez
-    ad = ex * dx + ey * dy + ez * dz
-    aw = ex * wx + ey * wy + ez * wz
-    dw = dx * wx + dy * wy + dz * wz
-    if aa < 1e-18:
-        return _ray_point_hit(origin, direction, a)
-    denom = aa - ad * ad
-    if abs(denom) < 1e-18:
-        return min(
-            _ray_point_hit(origin, direction, a),
-            _ray_point_hit(origin, direction, b),
-        )
-    s = (aw - ad * dw) / denom
-    if s < 0.0:
-        s = 0.0
-    elif s > 1.0:
-        s = 1.0
-    t = s * ad - dw
-    if t < 0.0:
-        return float("inf"), float("inf")
-    distance = _dist(
-        (ax + s * ex, ay + s * ey, az + s * ez),
-        (ox + t * dx, oy + t * dy, oz + t * dz))
-    return distance, t
-
-
-def _unit(direction):
-    dx, dy, dz = direction
-    length = math.sqrt(dx * dx + dy * dy + dz * dz)
-    if length < 1e-15:
-        return None, None, None
-    return dx / length, dy / length, dz / length
 
 
 def _as_xyz(v):
@@ -691,7 +479,3 @@ def _as_xyz(v):
 
 def _dot(a, b):
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-
-
-def _dist(a, b):
-    return math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2)

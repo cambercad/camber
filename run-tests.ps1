@@ -1,5 +1,10 @@
 # Run all unit tests (C# + Python). From the repo root:
 #   .\run-tests.ps1
+param(
+    [ValidateSet("Debug", "Release")]
+    [string]$Configuration = "Release"
+)
+
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $root
@@ -20,7 +25,7 @@ function Find-Python {
 }
 
 Write-Host "== C# (dotnet test) ==" -ForegroundColor Cyan
-dotnet test (Join-Path $root "camber.sln") --nologo
+dotnet test (Join-Path $root "camber.sln") --configuration $Configuration --nologo
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host ""
@@ -30,6 +35,7 @@ $pythonDir = Join-Path $root "Geo.Python\python"
 $env:CAMBER_PROGRESS = "0"
 $env:PYTHONPATH = $pythonDir
 $testModules = @(& git -C $root ls-files --cached --others --exclude-standard -- "Geo.Python/python/tests/test_*.py" |
+    Where-Object { Test-Path (Join-Path $root $_) } |
     ForEach-Object { $_ -replace '^Geo\.Python/python/', '' -replace '/', '.' -replace '\.py$', '' })
 if ($LASTEXITCODE -ne 0) { throw "Could not enumerate Python tests from the Git worktree." }
 if ($testModules.Count -eq 0) { throw "No non-ignored Python tests found." }

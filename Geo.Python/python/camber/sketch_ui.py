@@ -15,11 +15,11 @@ _TOOLS = ("line", "polyline", "circle", "arc", "rectangle")
 _PLANE_NAMES = {"xy": "xy", "yz": "yz", "zx": "zx", "xz": "zx"}
 _PLANE_COLOR = (0.52, 0.54, 0.60)
 _PLANE_ALPHA = 0.36
-_CURVE_BLUE = (0.02, 0.28, 1.0)
+_CURVE_BLUE = _cons_viz.SKETCH_BLUE
 _CONSTRUCTION_GRAY = (0.52, 0.52, 0.54)
 _PREVIEW_BLUE = (0.22, 0.55, 1.0)
 _SELECT_ORANGE = (1.0, 0.48, 0.06)
-_CONSTRAINT_PURPLE = _cons_viz.CONSTRAINT_COLOR
+_CONSTRAINT_BLUE = _cons_viz.CONSTRAINT_COLOR
 _DIMENSION_ORANGE = _cons_viz.DIMENSION_COLOR
 _ARROW_PX_LEN = 8.0
 _ARROW_PX_WIDTH = 5.0
@@ -144,15 +144,13 @@ def sketch_interactive(
 ):
     """Draw on a plane, then Finish copies a sketch code block and returns (Sketch, code).
 
-    Cancel returns (None, None). Requires pyglet + imgui.
+    Cancel returns (None, None). Requires pyglet and numpy.
     """
     from .host import Viewer
-    from .imgui_compat import import_imgui
-
-    imgui = import_imgui()
     ps = Viewer(title)
+    ui = ps._ui
     session = begin_sketch_session(
-        ps, imgui, part, plane=plane, name=name, frame=frame, emit_frame=emit_frame,
+        ps, ui, part, plane=plane, name=name, frame=frame, emit_frame=emit_frame,
         register_context=True, look_at=True,
     )
 
@@ -172,12 +170,10 @@ def show_sketch(sketch, title="Camber", plane="xy"):
     if part is None:
         raise TypeError("show() expects a Sketch created by Part.sketch(..., constrained=True)")
     from .host import Viewer
-    from .imgui_compat import import_imgui
-
-    imgui = import_imgui()
     ps = Viewer(title)
+    ui = ps._ui
     session = begin_sketch_session(
-        ps, imgui, part,
+        ps, ui, part,
         plane=plane or "xy",
         name=getattr(sketch, "name", None) or "",
         register_context=True,
@@ -197,7 +193,7 @@ def show_sketch(sketch, title="Camber", plane="xy"):
 
 
 def begin_sketch_session(
-        ps, imgui, part, plane="xy", name="", frame=None, emit_frame=False,
+        ps, ui, part, plane="xy", name="", frame=None, emit_frame=False,
         register_context=True, look_at=True, on_selection=None, existing_sketch=None):
     """Attach sketch overlays to the current viewer. Does not show() or unshow()."""
     from .view import (
@@ -320,7 +316,7 @@ def begin_sketch_session(
     _emit_selection(state)
 
     def tick():
-        _draw_ui(imgui, state, plane, lambda: _look_at_plane(ps, frame, extent))
+        _draw_ui(ui, state, plane, lambda: _look_at_plane(ps, frame, extent))
         if state["selection_dirty"]:
             _rebuild_pick_catalog(state, viz)
             _refresh_overlays(ps, state, frame, viz)
@@ -330,12 +326,12 @@ def begin_sketch_session(
             _rebuild_pick_catalog(state, viz)
             _refresh_overlays(ps, state, frame, viz)
             state["needs_rebuild"] = False
-        _handle_keys(imgui, state)
+        _handle_keys(ui, state)
         try:
-            _tick_sketch_input(ps, imgui, state, frame, viz)
+            _tick_sketch_input(ps, ui, state, frame, viz)
         finally:
             _tick_sketch_draw(
-                ps, imgui, viz, _cad_frame, _is_ortho, _world_per_pixel,
+                ps, ui, viz, _cad_frame, _is_ortho, _world_per_pixel,
                 _curve_pick_verts, _diamond_batch_verts, _rect_batch_verts, _quad_batch_faces,
             )
 
@@ -481,18 +477,18 @@ def teardown_sketch_graphics(ps, viz):
         viz.clear()
 
 
-def _tick_sketch_input(ps, imgui, state, frame, viz):
+def _tick_sketch_input(ps, ui, state, frame, viz):
     from .view import _CAD, _left_click_released, tick_cad_camera
 
     if state["done"] is not None:
         return
-    io = imgui.GetIO()
-    want_ui = _want_mouse(imgui)
-    tick_cad_camera(ps, imgui, io, want_ui)
+    io = ui.GetIO()
+    want_ui = _want_mouse(ui)
+    tick_cad_camera(ps, ui, io, want_ui)
     ray = None
     hover = None
     if not want_ui:
-        ray, hover = _pick_ray_and_uv(ps, imgui, frame, viz["lift"])
+        ray, hover = _pick_ray_and_uv(ps, ui, frame, viz["lift"])
     selecting = (
         state["tool"] == "select"
         or bool(state.get("pending_constraint"))
@@ -504,47 +500,47 @@ def _tick_sketch_input(ps, imgui, state, frame, viz):
     if ray is not None:
         if selecting:
             state["hover_hit"] = _hit_at(
-                state, ray, _pick_tolerance(ps, imgui, state), _pick_mode(state),
+                state, ray, _pick_tolerance(ps, ui, state), _pick_mode(state),
                 exclude=slot_exclude)
         elif state["tool"] in _TOOLS:
             state["hover_hit"] = _hit_at(
-                state, ray, _pick_tolerance(ps, imgui, state), _PICK_POINTS)
+                state, ray, _pick_tolerance(ps, ui, state), _PICK_POINTS)
         else:
             state["hover_hit"] = None
     else:
         state["hover_hit"] = None
     if (
-            _mouse_double_clicked(imgui, 0)
+            _mouse_double_clicked(ui, 0)
             and ray is not None
             and not want_ui
             and not _CAD.get("orbiting")):
         drag = state.get("drag")
         if drag is not None and not drag.get("moved"):
             state["drag"] = None
-        if state.get("drag") is None and _try_edit_constraint(ps, imgui, state, viz, ray, hover):
+        if state.get("drag") is None and _try_edit_constraint(ps, ui, state, viz, ray, hover):
             state["consume_click"] = True
             _refresh_overlays(ps, state, frame, viz)
             _refresh_preview(ps, state, frame, viz, hover=hover)
             return
     if state.get("drag") is not None:
-        left = _mouse_down(imgui, 0)
+        left = _mouse_down(ui, 0)
         if want_ui or _CAD.get("orbiting") or not left:
             _finish_handle_drag(
                 state, ray,
                 select_if_click=(not want_ui and not _CAD.get("orbiting")),
-                tolerance=_pick_tolerance(ps, imgui, state))
+                tolerance=_pick_tolerance(ps, ui, state))
             _refresh_overlays(ps, state, frame, viz)
             _refresh_preview(ps, state, frame, viz, hover=hover)
             return
         if hover is not None:
-            _update_handle_drag(state, hover, _pick_tolerance(ps, imgui, state))
+            _update_handle_drag(state, hover, _pick_tolerance(ps, ui, state))
             _refresh_overlays(ps, state, frame, viz)
         return
     if want_ui:
         return
-    if _mouse_down(imgui, 2):
+    if _mouse_down(ui, 2):
         return
-    if _right_click_released(imgui, io, state):
+    if _right_click_released(ui, io, state):
         _undo_pending_or_action(state)
         _refresh_preview(ps, state, frame, viz, hover=hover)
         return
@@ -554,9 +550,9 @@ def _tick_sketch_input(ps, imgui, state, frame, viz):
         and not state.get("pending_dimension")
         and state.get("dimension") is None
     )
-    if can_drag and _mouse_clicked(imgui, 0) and ray is not None and not _mouse_double_clicked(imgui, 0):
-        if _hit_dimension_action(ps, imgui, viz, ray, hover) < 0:
-            handle = _hit_drag_handle(state, ray, _pick_tolerance(ps, imgui, state))
+    if can_drag and _mouse_clicked(ui, 0) and ray is not None and not _mouse_double_clicked(ui, 0):
+        if _hit_dimension_action(ps, ui, viz, ray, hover) < 0:
+            handle = _hit_drag_handle(state, ray, _pick_tolerance(ps, ui, state))
             if handle is not None:
                 state["drag"] = {
                     "curve": handle[0],
@@ -566,7 +562,7 @@ def _tick_sketch_input(ps, imgui, state, frame, viz):
                     "start": hover,
                 }
                 return
-    released = _left_click_released(imgui, io)
+    released = _left_click_released(ui, io)
     if released is None:
         _refresh_preview(ps, state, frame, viz, hover=hover)
         return
@@ -574,7 +570,7 @@ def _tick_sketch_input(ps, imgui, state, frame, viz):
         _refresh_preview(ps, state, frame, viz, hover=hover)
         return
     if ray is None:
-        ray, hover = _pick_ray_and_uv(ps, imgui, frame, viz["lift"])
+        ray, hover = _pick_ray_and_uv(ps, ui, frame, viz["lift"])
     uv = hover
     if uv is None and ray is None:
         return
@@ -586,14 +582,14 @@ def _tick_sketch_input(ps, imgui, state, frame, viz):
             pass
         if state.get("pending_constraint") or state.get("pending_dimension"):
             hit = _hit_at(
-                state, ray, _pick_tolerance(ps, imgui, state), _pick_mode(state),
+                state, ray, _pick_tolerance(ps, ui, state), _pick_mode(state),
                 exclude=state.get("slots") or [])
             if hit is not None:
                 _accept_slot(state, hit)
         else:
             _select_at(
                 state,
-                _hit_at(state, ray, _pick_tolerance(ps, imgui, state), _pick_mode(state)),
+                _hit_at(state, ray, _pick_tolerance(ps, ui, state), _pick_mode(state)),
                 ctrl)
 
         _refresh_overlays(ps, state, frame, viz)
@@ -607,23 +603,12 @@ def _tick_sketch_input(ps, imgui, state, frame, viz):
     _refresh_preview(ps, state, frame, viz)
 
 
-def _draw_ui(imgui, state, plane, look_at_plane):
-    from .view import _pop_style_color, _push_constraint_window_colors
-
-    pushed = _push_constraint_window_colors(imgui)
-    opened = _icons.begin_palette(imgui, "Sketch")
-    if isinstance(opened, tuple):
-        visible = bool(opened[0])
-        if not visible:
-            _icons.end_palette(imgui)
-            _pop_style_color(imgui, pushed)
-            return
-    elif not opened:
-        _icons.end_palette(imgui)
-        _pop_style_color(imgui, pushed)
+def _draw_ui(ui, state, plane, look_at_plane):
+    if not _icons.begin_palette(ui, "Sketch"):
+        _icons.end_palette(ui)
         return
     try:
-        imgui.TextUnformatted("Sketch")
+        ui.TextUnformatted("Sketch")
     except Exception:
         pass
     name = (state.get("sketch_name") or "").strip()
@@ -632,17 +617,17 @@ def _draw_ui(imgui, state, plane, look_at_plane):
         head = (head + "  —  " + name) if head else name
     status = (state.get("status") or "").strip()
     line = (head + "  —  " + status) if head and status else (head or status)
-    _icons.wrapped_text(imgui, line)
-    imgui.Separator()
+    _icons.wrapped_text(ui, line)
+    ui.Separator()
     try:
-        imgui.TextUnformatted("Curves")
+        ui.TextUnformatted("Curves")
     except Exception:
         pass
 
     for i, (tool, label, drawer) in enumerate(_icons.CURVE_TOOLS):
         if i % _icons.COLS != 0:
-            imgui.SameLine()
-        if _icons.icon_button(imgui, tool, label, drawer, state["tool"] == tool):
+            ui.SameLine()
+        if _icons.icon_button(ui, tool, label, drawer, state["tool"] == tool):
             state["tool"] = tool
             state["pending"] = []
             state["pending_refs"] = []
@@ -657,31 +642,31 @@ def _draw_ui(imgui, state, plane, look_at_plane):
                 state["status"] = "tool: " + tool
             state["escape_armed"] = False
 
-    imgui.Separator()
+    ui.Separator()
     try:
-        imgui.TextUnformatted("Constraints")
+        ui.TextUnformatted("Constraints")
     except Exception:
         pass
     for i, (tool, label, drawer) in enumerate(_icons.CONSTRAINT_TOOLS):
         if i % _icons.COLS != 0:
-            imgui.SameLine()
+            ui.SameLine()
         if _icons.icon_button(
-                imgui, "con_" + tool, label, drawer,
+                ui, "con_" + tool, label, drawer,
                 state.get("pending_constraint") == tool):
             _request_constraint(state, tool)
     if state.get("pending_constraint") or state.get("pending_dimension"):
-        _icons.wrapped_text(imgui, state.get("status") or "")
+        _icons.wrapped_text(ui, state.get("status") or "")
 
-    imgui.Separator()
+    ui.Separator()
     try:
-        imgui.TextUnformatted("Dimensions")
+        ui.TextUnformatted("Dimensions")
     except Exception:
         pass
     for i, (tool, label, drawer) in enumerate(_icons.DIMENSION_TOOLS):
         if i % _icons.COLS != 0:
-            imgui.SameLine()
+            ui.SameLine()
         if _icons.icon_button(
-                imgui, "dim_" + tool, label, drawer,
+                ui, "dim_" + tool, label, drawer,
                 state.get("pending_dimension") == tool):
             _request_dimension(state, tool)
 
@@ -689,7 +674,7 @@ def _draw_ui(imgui, state, plane, look_at_plane):
         request = state["dimension"]
         focus = bool(state.pop("dimension_focus", False))
         changed, value, apply_clicked, cancel_clicked = _icons.dimension_editor(
-            imgui, request.get("kind"), request["value"], focus=focus)
+            ui, request.get("kind"), request["value"], focus=focus)
         if changed:
             request["value"] = float(value)
         if apply_clicked:
@@ -697,42 +682,41 @@ def _draw_ui(imgui, state, plane, look_at_plane):
         if cancel_clicked:
             state["dimension"] = None
 
-    imgui.Separator()
+    ui.Separator()
     try:
-        imgui.TextUnformatted("View")
+        ui.TextUnformatted("View")
     except Exception:
         pass
-    if _icons.icon_button(imgui, "fit", "Fit", _icons.draw_normal, False):
+    if _icons.icon_button(ui, "fit", "Fit", _icons.draw_normal, False):
         if look_at_plane is not None:
             look_at_plane()
-    imgui.SameLine()
-    if _icons.icon_button(imgui, "undo", "Undo", _icons.draw_undo, False):
+    ui.SameLine()
+    if _icons.icon_button(ui, "undo", "Undo", _icons.draw_undo, False):
         _undo_pending_or_action(state)
 
-    _draw_construction_toggle(imgui, state)
+    _draw_construction_toggle(ui, state)
 
-    imgui.Separator()
+    ui.Separator()
     try:
-        changed, grid_on = imgui.Checkbox("Snap to grid", state["snap_grid"])
+        changed, grid_on = ui.Checkbox("Snap to grid", state["snap_grid"])
         if changed:
             state["snap_grid"] = bool(grid_on)
     except Exception:
-        if imgui.Button("Snap grid: " + ("on" if state["snap_grid"] else "off")):
+        if ui.Button("Snap grid: " + ("on" if state["snap_grid"] else "off")):
             state["snap_grid"] = not state["snap_grid"]
 
-    imgui.Separator()
-    if _icons.action_button(imgui, "Finish", button_id="sketch_finish"):
+    ui.Separator()
+    if _icons.action_button(ui, "Finish", button_id="sketch_finish", primary=True):
         state["done"] = "finish"
-    imgui.SameLine()
-    if _icons.action_button(imgui, "Cancel", button_id="sketch_cancel"):
+    ui.SameLine()
+    if _icons.action_button(ui, "Cancel", button_id="sketch_cancel"):
         state["done"] = "cancel"
 
-    _icons.end_palette(imgui)
-    _pop_style_color(imgui, pushed)
+    _icons.end_palette(ui)
 
 
-def _handle_keys(imgui, state):
-    io = imgui.GetIO()
+def _handle_keys(ui, state):
+    io = ui.GetIO()
     want = False
     try:
         want = bool(io.WantCaptureKeyboard)
@@ -744,7 +728,7 @@ def _handle_keys(imgui, state):
     def down(name, *alts):
         pressed = False
         for alt in alts:
-            if _key_down(imgui, io, alt):
+            if _key_down(ui, io, alt):
                 pressed = True
                 break
         prev = state["keys"].get(name, False)
@@ -810,18 +794,18 @@ def _handle_keys(imgui, state):
         _undo_pending_or_action(state)
 
 
-def _key_down(imgui, io, key):
+def _key_down(ui, io, key):
     try:
         if key == "Enter":
-            return bool(imgui.IsKeyDown(imgui.ImGuiKey_Enter))
+            return bool(ui.IsKeyDown(ui.ImGuiKey_Enter))
         if key == "Escape":
-            return bool(imgui.IsKeyDown(imgui.ImGuiKey_Escape))
+            return bool(ui.IsKeyDown(ui.ImGuiKey_Escape))
         if key == "Backspace":
-            return bool(imgui.IsKeyDown(imgui.ImGuiKey_Backspace))
+            return bool(ui.IsKeyDown(ui.ImGuiKey_Backspace))
     except Exception:
         pass
     if len(key) == 1:
-        letters = getattr(imgui, "_camber_letters", None)
+        letters = getattr(ui, "shortcut_letters", None)
         if letters and key.upper() in letters:
             return True
         try:
@@ -831,61 +815,61 @@ def _key_down(imgui, io, key):
     return False
 
 
-def _want_mouse(imgui):
+def _want_mouse(ui):
     try:
-        return bool(imgui.GetIO().WantCaptureMouse)
+        return bool(ui.GetIO().WantCaptureMouse)
     except Exception:
         return False
 
 
-def _mouse_down(imgui, button):
+def _mouse_down(ui, button):
     try:
-        return bool(imgui.IsMouseDown(button))
+        return bool(ui.IsMouseDown(button))
     except Exception:
         try:
-            return bool(imgui.GetIO().MouseDown[button])
+            return bool(ui.GetIO().MouseDown[button])
         except Exception:
             return False
 
 
-def _mouse_double_clicked(imgui, button):
+def _mouse_double_clicked(ui, button):
     try:
-        return bool(imgui.IsMouseDoubleClicked(button))
+        return bool(ui.IsMouseDoubleClicked(button))
     except Exception:
         pass
     try:
-        return bool(imgui.GetIO().MouseDoubleClicked[button])
+        return bool(ui.GetIO().MouseDoubleClicked[button])
     except Exception:
         return False
 
 
-def _mouse_clicked(imgui, button):
+def _mouse_clicked(ui, button):
     try:
-        return bool(imgui.IsMouseClicked(button))
+        return bool(ui.IsMouseClicked(button))
     except Exception:
         try:
-            return bool(imgui.GetIO().MouseClicked[button])
+            return bool(ui.GetIO().MouseClicked[button])
         except Exception:
             return False
 
 
-def _mouse_released(imgui, button):
+def _mouse_released(ui, button):
     try:
-        return bool(imgui.IsMouseReleased(button))
+        return bool(ui.IsMouseReleased(button))
     except Exception:
         try:
-            return bool(imgui.GetIO().MouseReleased[button])
+            return bool(ui.GetIO().MouseReleased[button])
         except Exception:
             return False
 
 
-def _right_click_released(imgui, io, state):
+def _right_click_released(ui, io, state):
     from .view import _mouse_pos, _PICK_DRAG_PX
     pos = _mouse_pos(io)
-    if _mouse_clicked(imgui, 1):
+    if _mouse_clicked(ui, 1):
         state["right_press"] = pos
         return False
-    if not _mouse_released(imgui, 1):
+    if not _mouse_released(ui, 1):
         return False
     press = state.get("right_press")
     state["right_press"] = None
@@ -1607,33 +1591,33 @@ def _begin_dimension_edit(state, action_index):
     return True
 
 
-def _try_edit_constraint(ps, imgui, state, viz, ray, hover):
+def _try_edit_constraint(ps, ui, state, viz, ray, hover):
     if state.get("pending_constraint") or state.get("pending_dimension") or state.get("slots"):
         return False
-    action_index = _hit_dimension_action(ps, imgui, viz, ray, hover)
+    action_index = _hit_dimension_action(ps, ui, viz, ray, hover)
     if action_index < 0:
         return False
     return _begin_dimension_edit(state, action_index)
 
 
-def _hit_constraint_action(ps, imgui, viz, ray, hover):
-    return _hit_dimension_action(ps, imgui, viz, ray, hover)
+def _hit_constraint_action(ps, ui, viz, ray, hover):
+    return _hit_dimension_action(ps, ui, viz, ray, hover)
 
 
-def _hit_dimension_action(ps, imgui, viz, ray, hover):
+def _hit_dimension_action(ps, ui, viz, ray, hover):
     labels = viz.get("cons_labels") or []
     from .view import _mouse_pos
-    screen = _mouse_pos(imgui.GetIO())
+    screen = _mouse_pos(ui.GetIO())
     if screen is not None and labels:
         best = -1
         best_d = None
         for text, world, kind, action_index in labels:
             if kind != _cons_viz.KIND_DIM:
                 continue
-            projected = _world_to_screen(ps, imgui, world)
+            projected = _world_to_screen(ps, ui, world)
             if projected is None:
                 continue
-            tw, th = _label_text_size(imgui, text)
+            tw, th = _label_text_size(ui, text)
             dx = abs(screen[0] - projected[0])
             dy = abs(screen[1] - projected[1])
             if dx <= tw * 0.5 + 10.0 and dy <= th * 0.5 + 10.0:
@@ -1967,16 +1951,16 @@ def _snap(uv, state):
     return (x, y)
 
 
-def _pick_tolerance(ps, imgui, state):
+def _pick_tolerance(ps, ui, state):
     from .view import _world_per_pixel
-    wpp = _world_per_pixel(ps, imgui)
+    wpp = _world_per_pixel(ps, ui)
     pixel = _pick.PICK_PX * wpp if wpp is not None and wpp > 0.0 else 0.0
     return max(pixel, state["grid"] * 0.2, 1e-6)
 
 
-def _pick_ray_and_uv(ps, imgui, frame, lift=0.0):
+def _pick_ray_and_uv(ps, ui, frame, lift=0.0):
     from .view import camera_ray
-    origin, direction = camera_ray(ps, imgui)
+    origin, direction = camera_ray(ps, ui)
     if origin is None or direction is None:
         return None, None
     plane_origin = _uv_to_world((0.0, 0.0), frame, lift)
@@ -2228,22 +2212,22 @@ def _preview_polylines_from(pending, tool, frame, lift):
     return pts, [(i, i + 1) for i in range(len(pts) - 1)]
 
 
-def _draw_construction_toggle(imgui, state):
+def _draw_construction_toggle(ui, state):
     indices = _selected_curve_indices(state)
     if not indices:
         return
-    imgui.Separator()
+    ui.Separator()
     try:
-        imgui.TextUnformatted("Selection")
+        ui.TextUnformatted("Selection")
     except Exception:
         pass
     on = _curves_are_construction(state, indices)
     try:
-        changed, value = imgui.Checkbox("Construction", on)
+        changed, value = ui.Checkbox("Construction", on)
     except Exception:
         changed = False
         value = on
-        if imgui.Button("Construction: " + ("on" if on else "off")):
+        if ui.Button("Construction: " + ("on" if on else "off")):
             changed = True
             value = not on
     if changed and bool(value) != on:
@@ -2405,9 +2389,9 @@ def _arc_pts(start, mid, end, frame, lift=0.0, n=32):
 
 
 def _tick_sketch_draw(
-        ps, imgui, viz, cad_frame, is_ortho, world_per_pixel,
+        ps, ui, viz, cad_frame, is_ortho, world_per_pixel,
         curve_pick_verts, diamond_batch_verts, rect_batch_verts, quad_batch_faces):
-    wpp = world_per_pixel(ps, imgui)
+    wpp = world_per_pixel(ps, ui)
     if wpp is None or wpp <= 0.0:
         return
     pos, center, look, up, right = cad_frame(ps)
@@ -2441,7 +2425,7 @@ def _tick_sketch_draw(
             ("geom", viz.get("geom_nodes") or [], viz.get("geom_edges") or [], _CURVE_BLUE, edge_r, geom_pull),
             ("build", viz.get("build_nodes") or [], viz.get("build_edges") or [], _CONSTRUCTION_GRAY, edge_r, geom_pull),
             ("preview", viz.get("preview_nodes") or [], viz.get("preview_edges") or [], _PREVIEW_BLUE, edge_r, preview_pull),
-            ("cons", viz.get("cons_nodes") or [], viz.get("cons_edges") or [], _CONSTRAINT_PURPLE, cons_edge, cons_pull),
+            ("cons", viz.get("cons_nodes") or [], viz.get("cons_edges") or [], _CONSTRAINT_BLUE, cons_edge, cons_pull),
             ("dim", viz.get("dim_nodes") or [], viz.get("dim_edges") or [], _DIMENSION_ORANGE, dim_edge, cons_pull),
             ("sel", viz.get("sel_nodes") or [], viz.get("sel_edges") or [], _SELECT_ORANGE, sel_edge, sel_pull),
         )
@@ -2471,7 +2455,7 @@ def _tick_sketch_draw(
             wpp * _ARROW_PX_WIDTH, cons_pull,
         )
         viz["meshes_ready"] = True
-    _draw_constraint_labels(ps, imgui, viz)
+    _draw_constraint_labels(ps, ui, viz)
 
 
 def _sync_arrow_mesh(ps, viz, arrows, look, length, width, pull):
@@ -2525,9 +2509,9 @@ def _arrow_batch_verts(arrows, look, length, width, pull):
     return verts, faces
 
 
-def _label_font_size(imgui):
+def _label_font_size(ui):
     size = 13.0
-    getter = getattr(imgui, "GetFontSize", None) or getattr(imgui, "get_font_size", None)
+    getter = getattr(ui, "GetFontSize", None) or getattr(ui, "get_font_size", None)
     if getter is not None:
         try:
             size = float(getter())
@@ -2536,9 +2520,9 @@ def _label_font_size(imgui):
     return size * _LABEL_SCALE
 
 
-def _label_text_size(imgui, text):
-    font_size = _label_font_size(imgui)
-    font = getattr(imgui, "GetFont", None) or getattr(imgui, "get_font", None)
+def _label_text_size(ui, text):
+    font_size = _label_font_size(ui)
+    font = getattr(ui, "GetFont", None) or getattr(ui, "get_font", None)
     font = font() if font is not None else None
     if font is not None:
         try:
@@ -2548,51 +2532,50 @@ def _label_text_size(imgui, text):
             return float(measured.x), float(measured.y)
         except Exception:
             pass
-    tw, th = _icons._text_size(imgui, text)
+    tw, th = _icons._text_size(ui, text)
     return tw * _LABEL_SCALE, th * _LABEL_SCALE
 
 
-def _draw_constraint_labels(ps, imgui, viz):
+def _draw_constraint_labels(ps, ui, viz):
     labels = viz.get("cons_labels") or []
     if not labels:
         return
     colors = {
-        _cons_viz.KIND_CONS: _CONSTRAINT_PURPLE,
+        _cons_viz.KIND_CONS: _CONSTRAINT_BLUE,
         _cons_viz.KIND_DIM: _DIMENSION_ORANGE,
     }
-    dl = _foreground_draw_list(imgui)
+    dl = _foreground_draw_list(ui)
     font = None
-    getter = getattr(imgui, "GetFont", None) or getattr(imgui, "get_font", None)
+    getter = getattr(ui, "GetFont", None) or getattr(ui, "get_font", None)
     if getter is not None:
         try:
             font = getter()
         except Exception:
             font = None
-    font_size = _label_font_size(imgui)
+    font_size = _label_font_size(ui)
     for i, (text, world, kind, _action_index) in enumerate(labels):
-        screen = _world_to_screen(ps, imgui, world)
+        screen = _world_to_screen(ps, ui, world)
         if screen is None:
             continue
-        tw, th = _label_text_size(imgui, text)
+        tw, th = _label_text_size(ui, text)
         pos = (screen[0] - tw * 0.5, screen[1] - th * 0.5)
-        rgb = colors.get(kind, _CONSTRAINT_PURPLE)
-        col = _icons._u32(imgui, rgb)
+        rgb = colors.get(kind, _CONSTRAINT_BLUE)
+        col = _icons._rgba(rgb)
         if _draw_scaled_label(dl, font, font_size, pos, col, text):
             continue
-        _draw_constraint_label_window(imgui, i, text, pos, rgb)
+        _draw_constraint_label_window(ui, i, text, pos, rgb)
 
 
 def _draw_scaled_label(dl, font, font_size, pos, col, text):
     if dl is None:
         return False
-    if font is not None:
-        try:
-            dl.AddText(font, float(font_size), pos, col, text)
-            return True
-        except TypeError:
-            pass
-        except Exception:
-            pass
+    try:
+        dl.AddText(font, float(font_size), pos, col, text)
+        return True
+    except TypeError:
+        pass
+    except Exception:
+        pass
     try:
         dl.AddText(pos, col, text)
         return True
@@ -2600,22 +2583,22 @@ def _draw_scaled_label(dl, font, font_size, pos, col, text):
         return False
 
 
-def _draw_constraint_label_window(imgui, index, text, pos, rgb):
-    flags = _constraint_label_flags(imgui)
+def _draw_constraint_label_window(ui, index, text, pos, rgb):
+    flags = _constraint_label_flags(ui)
     try:
-        imgui.SetNextWindowPos(pos)
+        ui.SetNextWindowPos(pos)
     except Exception:
         return
     try:
-        imgui.SetNextWindowBgAlpha(0.0)
+        ui.SetNextWindowBgAlpha(0.0)
     except Exception:
         pass
     opened = False
     try:
-        opened = imgui.Begin("##sk_clbl_{0}".format(index), flags)
+        opened = ui.Begin("##sk_clbl_{0}".format(index), flags)
     except TypeError:
         try:
-            opened = imgui.Begin("##sk_clbl_{0}".format(index))
+            opened = ui.Begin("##sk_clbl_{0}".format(index))
         except Exception:
             return
     if isinstance(opened, tuple):
@@ -2624,40 +2607,40 @@ def _draw_constraint_label_window(imgui, index, text, pos, rgb):
         if not opened:
             return
         try:
-            imgui.SetWindowFontScale(_LABEL_SCALE)
+            ui.SetWindowFontScale(_LABEL_SCALE)
         except Exception:
             pass
         pushed = 0
         try:
-            imgui.PushStyleColor(imgui.ImGuiCol_Text, (rgb[0], rgb[1], rgb[2], 1.0))
+            ui.PushStyleColor(ui.ImGuiCol_Text, (rgb[0], rgb[1], rgb[2], 1.0))
             pushed = 1
         except Exception:
             try:
-                imgui.PushStyleColor(0, (rgb[0], rgb[1], rgb[2], 1.0))
+                ui.PushStyleColor(0, (rgb[0], rgb[1], rgb[2], 1.0))
                 pushed = 1
             except Exception:
                 pass
         try:
-            imgui.TextUnformatted(text)
+            ui.TextUnformatted(text)
         except Exception:
-            imgui.Text(text)
+            ui.Text(text)
         if pushed:
             try:
-                imgui.PopStyleColor()
+                ui.PopStyleColor()
             except Exception:
                 pass
         try:
-            imgui.SetWindowFontScale(1.0)
+            ui.SetWindowFontScale(1.0)
         except Exception:
             pass
     finally:
         try:
-            imgui.End()
+            ui.End()
         except Exception:
             pass
 
 
-def _constraint_label_flags(imgui):
+def _constraint_label_flags(ui):
     names = (
         "ImGuiWindowFlags_NoTitleBar",
         "ImGuiWindowFlags_NoResize",
@@ -2674,16 +2657,16 @@ def _constraint_label_flags(imgui):
     )
     flags = 0
     for name in names:
-        flags |= int(getattr(imgui, name, 0) or 0)
+        flags |= int(getattr(ui, name, 0) or 0)
     return flags
 
 
-def _foreground_draw_list(imgui):
+def _foreground_draw_list(ui):
     getter = (
-        getattr(imgui, "GetForegroundDrawList", None)
-        or getattr(imgui, "get_foreground_draw_list", None)
-        or getattr(imgui, "GetBackgroundDrawList", None)
-        or getattr(imgui, "get_background_draw_list", None)
+        getattr(ui, "GetForegroundDrawList", None)
+        or getattr(ui, "get_foreground_draw_list", None)
+        or getattr(ui, "GetBackgroundDrawList", None)
+        or getattr(ui, "get_background_draw_list", None)
     )
     if getter is None:
         return None
@@ -2693,7 +2676,7 @@ def _foreground_draw_list(imgui):
         return None
 
 
-def _world_to_screen(ps, imgui, world):
+def _world_to_screen(ps, ui, world):
     from .view import (
         _cad_frame, _is_ortho, _pick_viewport, _camera_fov_aspect,
         _vsub, _vlen, _dot,
@@ -2701,7 +2684,7 @@ def _world_to_screen(ps, imgui, world):
     pos, center, look, up, right = _cad_frame(ps)
     if pos is None or center is None or look is None or up is None or right is None:
         return None
-    width, height = _pick_viewport(ps, imgui)
+    width, height = _pick_viewport(ps, ui)
     if width < 2.0 or height < 2.0:
         return None
     fov, aspect = _camera_fov_aspect(ps, width, height)

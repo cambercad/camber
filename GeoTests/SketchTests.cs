@@ -561,6 +561,26 @@ public class SketchTests : IDisposable
         AssertNear(c.Radius, Math.Abs(lineY - centreY), "TangentLine dist");
     }
 
+    [Fact]
+    public void Constraint_TangentLineArc_ThroughCenterDoesNotCollapseArc()
+    {
+        var s = MakeSketch();
+        var line = s.AddCLine(new Vec2D(-5, 0), new Vec2D(5, 0));
+        var arc = s.AddCArc(new Vec2D(-1, 0), new Vec2D(0, 1), new Vec2D(1, 0));
+        s.SetTangent(line, arc);
+
+        AssertSolved(s.SolveConstraints());
+        Assert.True(arc.Radius > 0.5, $"Arc radius collapsed to {arc.Radius}");
+        var start = line.CStart.Evaluate();
+        var end = line.CEnd.Evaluate();
+        var center = arc.CCenter.Evaluate();
+        double distance = Math.Abs((center.X - start.X) * (end.Y - start.Y) -
+                                   (center.Y - start.Y) * (end.X - start.X)) /
+                          (end - start).Length();
+        AssertNear(arc.Radius, distance, "TangentLineArc dist");
+    }
+
+
     // ════════════════════════════════════════════════════════════════════════
     // Symmetric
     // ════════════════════════════════════════════════════════════════════════

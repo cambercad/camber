@@ -43,7 +43,7 @@ namespace Geo
         /// Deep-copies an <see cref="AnchorMesh"/> by the rigid map
         /// <see cref="CoordinateSystem.GetTransform"/> (<paramref name="fromPose"/> → <paramref name="toPose"/>).
         /// Translation-only copies offset precision lattice coordinates by a snapped world translation.
-        /// Rotations apply the double matrix to world positions.
+        /// Rotations apply one exact rational affine map, preserving planes and shared vertices.
         /// Surface metadata is cloned and transformed. Triangulation is preserved.
         /// </summary>
         [APIDescription(@"CopyMesh(source: AnchorMesh, fromPose: CoordinateSystem, toPose: CoordinateSystem, surfaceNameAffix: str, affixKind: SurfacePatchNameAffix, newMeshName: str = None) -> AnchorMesh
@@ -54,7 +54,7 @@ Deep-copies a mesh, transforms it by the rigid map fromPose -> toPose, and regis
   surfaceNameAffix: string added to every surface patch name (and surface metadata key) to avoid collisions with the source.
   affixKind: SurfacePatchNameAffix.Prefix or SurfacePatchNameAffix.Suffix.
   newMeshName: auto-generated if null/empty.
-Translation-only transforms snap to the integer lattice (exact). Rotations apply the rigid matrix to world positions.")]
+Translation-only transforms snap to the integer lattice (exact). Rotations preserve rational geometry through one affine map without per-vertex rounding.")]
         public AnchorMesh CopyMesh(
             AnchorMesh source,
             CoordinateSystem fromPose,
@@ -94,12 +94,11 @@ Translation-only transforms snap to the integer lattice (exact). Rotations apply
             }
             else
             {
+                var exact = new PreciseRigidTransform(converter, in t);
                 for (int vi = 0; vi < srcMesh.Positions.Count; vi++)
                 {
-                    Vec3D pw = t.TransformPoint(srcMesh.Positions[vi]);
-                    transformedPos[vi] = pw;
-                    Int3 ip = converter.Convert(pw);
-                    transformedPrec[vi] = new Rat3Hybrid(ip.X, ip.Y, ip.Z);
+                    transformedPrec[vi] = exact.Apply(srcMesh.PrecisionPositions[vi]);
+                    transformedPos[vi] = converter.Convert(transformedPrec[vi]);
                 }
             }
 

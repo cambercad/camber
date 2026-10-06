@@ -1,6 +1,7 @@
 """Capped section snapshots and point-to-point inspection in model units."""
 
 from dataclasses import dataclass
+from itertools import product
 import math
 
 from .api import Assembly, Frame, Part, Solid, _require
@@ -160,6 +161,124 @@ def _place_label(desired, size, occupied, viewport):
     return x, y
 
 
+class _ViewerInspection:
+    """Viewer-owned measurement state and section controls."""
+
+    def __init__(self, viewer, source=None):
+        self.viewer = viewer
+        self.measurements = source._measurements if isinstance(source, Section) else []
+        self.open = not isinstance(source, Section)
+        self.axis = "Off"
+        self.normal = (0.0, 0.0, 1.0)
+        self.offset = 0.0
+        self.reverse = False
+        self.error = ""
+        self._geometry = {}
+        self._visible = ()
+
+    def measure_selected(self, names):
+        from .measure import Geometry, closest_entities, named_geometry
+        if len(names) != 2:
+            raise ValueError("select exactly two points, edges or faces")
+        scenes = self.viewer.visible_part_packeds()
+        visible = tuple(id(scene) for scene in scenes)
+        if visible != self._visible:
+            self._geometry.clear()
+            self._visible = visible
+        for name in names:
+            if name not in self._geometry:
+                self._geometry[name] = Geometry(named_geometry(scenes, name))
+        result = closest_entities(*(self._geometry[name] for name in names), *names)
+        measurement = Measurement(result.first, result.second, result.length, "Minimum distance")
+        self.measurements.append(measurement)
+        return measurement
+
+    def set_section(self, normal, offset, *, reverse=False):
+        normal = _point(normal)
+        length = math.hypot(*normal)
+        if length == 0 or not math.isfinite(offset):
+            raise ValueError("section needs a nonzero normal and finite offset")
+        self.normal = tuple(c/length for c in normal)
+        self.offset, self.reverse = float(offset)/length, bool(reverse)
+        self._update_plane()
+
+    def _update_plane(self):
+        sign = -1 if self.reverse else 1
+        self.viewer.section_plane = (tuple(c*sign for c in self.normal), self.offset*sign)
+
+    def _limits(self):
+        lo, hi = self.viewer.get_bounding_box()
+        values = [sum(self.normal[i]*p[i] for i in range(3))
+                  for p in product(*zip(lo, hi))]
+        return min(values), max(values)
+
+    def draw(self, ui, selected, selected_plane):
+        if not self.open:
+            return
+        width, height = self.viewer.window.get_size()
+        ui.SetNextWindowPos((max(12, width-338), 45), 4)
+        ui.SetNextWindowSize((326, min(470, height-65)), 4)
+        expanded, self.open = ui.Begin("Inspect (I)", self.open)
+        if expanded:
+            ui.TextUnformatted("Ctrl-click two points, edges or faces")
+            if ui.Button("Measure minimum distance", enabled=len(selected) == 2):
+                try:
+                    self.measure_selected(selected)
+                    self.error = ""
+                except ValueError as error:
+                    self.error = str(error)
+            if self.error:
+                ui.TextWrapped(self.error)
+            if self.measurements:
+                measurement = self.measurements[-1]
+                ui.TextUnformatted(f"Distance: {measurement.length:.8g} model units")
+                delta = tuple(b-a for a, b in zip(measurement.start, measurement.end))
+                ui.TextUnformatted("ΔX / ΔY / ΔZ: " + " / ".join(f"{d:.6g}" for d in delta))
+                if ui.Button("Clear measurements"):
+                    self.measurements.clear()
+            ui.TextWrapped("Curved geometry follows the model tessellation tolerance.")
+            ui.Separator()
+            changed, axis = ui.ComboBox("Section", self.axis,
+                                       ("Off", "X", "Y", "Z", "View", "Selected face"))
+            if changed:
+                normal, origin = None, None
+                if axis in ("X", "Y", "Z"):
+                    normal = tuple(float(i == "XYZ".index(axis)) for i in range(3))
+                elif axis == "View":
+                    normal = self.viewer.camera.frame()[0]
+                elif axis == "Selected face":
+                    context = selected_plane()
+                    if context is None:
+                        self.error = "Select one planar face for the section plane"
+                    else:
+                        normal, origin = tuple(context["frame"].z), tuple(context["frame"].origin)
+                if axis == "Off":
+                    self.axis, self.viewer.section_plane = axis, None
+                elif normal is not None:
+                    self.axis = axis
+                    self.set_section(normal, 0, reverse=self.reverse)
+                    lo, hi = self._limits()
+                    self.offset = sum(a*b for a, b in zip(normal, origin)) if origin else (lo+hi)*.5
+                    self._update_plane()
+                    self.error = ""
+            if self.axis != "Off":
+                lo, hi = self._limits()
+                if hi > lo:
+                    changed, value = ui.SliderFloat("Position", self.offset, lo, hi, width=200)
+                    if changed:
+                        self.offset = value
+                        self._update_plane()
+                changed, value = ui.InputDouble("Offset", self.offset)
+                if changed:
+                    self.offset = value
+                    self._update_plane()
+                changed, self.reverse = ui.Checkbox("Reverse kept side", self.reverse)
+                if changed:
+                    self._update_plane()
+                _, self.viewer.section_fill = ui.Checkbox("Fill section (closed solids)", self.viewer.section_fill)
+        ui.End()
+
+
 def _draw_annotations(viewer):
     """Shared live/capture overlay; coordinates use logical window pixels."""
     inspection = getattr(viewer, "inspection", None)
@@ -167,13 +286,22 @@ def _draw_annotations(viewer):
         return
     cam, g = viewer.camera, viewer._pyglet
     width, height = viewer.window.width, viewer.window.height
+    vx, vy, vw, vh = getattr(viewer._ui, "viewport_rect", (0, 0, width, height))
     look, up, right = cam.frame()
     np = viewer._np
     look, up, right = map(np.asarray, (look, up, right))
     eye = np.asarray(cam.eye)
     shapes = []
     color = (35, 60, 95, 255)
-    occupied = [(0, height-42, width, 42), (0, 0, 200, 60)]
+    occupied = [(0, height-42, width, 42)]
+    scale_bar = None
+    if cam.ortho:
+        length = _scale_bar(2 * cam.zoom * cam.aspect)
+        pixels = vw * length / (2 * cam.zoom * cam.aspect)
+        x = max(vx + 4, vx + vw - 24 - max(pixels, 140))
+        y = height-vy-vh+28
+        scale_bar = (length, pixels, x, y)
+        occupied.append((x-8, y-8, max(pixels, 140)+16, 45))
 
     def project(point):
         delta = np.asarray(point) - eye
@@ -181,15 +309,16 @@ def _draw_annotations(viewer):
         if depth <= 0:
             return None
         scale = cam.zoom if cam.ortho else depth * math.tan(cam.fov / 2)
-        return (width * (.5 + float(delta @ right) / (2 * scale * cam.aspect)),
-                height * (.5 + float(delta @ up) / (2 * scale)))
+        return (vx + vw * (.5 + float(delta @ right) / (2 * scale * cam.aspect)),
+                height-vy-vh + vh * (.5 + float(delta @ up) / (2 * scale)))
 
     def line(a, b):
         shapes.append(g.shapes.Line(*a, *b, thickness=3.5, color=(255, 255, 255, 230)))
         shapes.append(g.shapes.Line(*a, *b, thickness=1.5, color=color))
 
     def label(text, x, y, anchor=None):
-        caption = g.text.Label(text, x=x, y=y, font_size=11, color=color)
+        caption = g.text.Label(text, x=x, y=y, font_size=11, color=color,
+                               anchor_y="center")
         w, h = caption.content_width+6, caption.content_height+4
         bx, by = x-3, y-3
         if anchor is not None:
@@ -197,7 +326,9 @@ def _draw_annotations(viewer):
             if abs(bx-(x-3)) + abs(by-(y-3)) > 1:
                 line(anchor, (max(bx, min(anchor[0], bx+w)),
                               max(by, min(anchor[1], by+h))))
-            caption.x, caption.y = bx+3, by+3
+            caption.x, caption.y = bx+3, by+h/2
+        else:
+            caption.y = by+h/2
         shapes.append(g.shapes.Rectangle(bx, by, w, h, color=(255, 255, 255, 230)))
         shapes.append(caption)
 
@@ -212,13 +343,12 @@ def _draw_annotations(viewer):
         label(f"{measurement.label}: {measurement.length:.6g} model units",
               (a[0]+b[0])/2+7, (a[1]+b[1])/2+8,
               anchor=((a[0]+b[0])/2, (a[1]+b[1])/2))
-    if cam.ortho:
-        length = _scale_bar(2 * cam.zoom * cam.aspect)
-        pixels = width * length / (2 * cam.zoom * cam.aspect)
-        line((24, 28), (24+pixels, 28))
-        line((24, 24), (24, 32))
-        line((24+pixels, 24), (24+pixels, 32))
-        label(f"{length:.6g} model units", 24, 40)
+    if scale_bar is not None:
+        length, pixels, x, y = scale_bar
+        line((x, y), (x+pixels, y))
+        line((x, y-4), (x, y+4))
+        line((x+pixels, y-4), (x+pixels, y+4))
+        label(f"{length:.6g} model units", x, y+12)
     try:
         for drawable in shapes:
             drawable.draw()

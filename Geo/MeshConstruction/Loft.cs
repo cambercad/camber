@@ -67,7 +67,7 @@ namespace Geo
         /// <summary>Optional first edge name per section for matched-vertex correspondence.</summary>
         public IReadOnlyList<string> FirstCurves { get; set; }
         /// <summary>
-        /// Planar end-cap preflight strictness; caps triangulate the sanitized rim via integer-scaled sketch coordinates (ear clip + Delaunay post-process).
+        /// Planar end-cap preflight strictness; caps triangulate the authoritative rational rim (ear clip + Delaunay post-process).
         /// Default <see cref="LoftCapTriangulationMode.Robust"/> tolerates borderline winding on NACA / near-degenerate trailing-edge rims.
         /// Use <see cref="LoftCapTriangulationMode.EarClipping"/> only when strict winding preflight is required.
         /// </summary>
@@ -437,8 +437,6 @@ namespace Geo
 
             SnapCreaseDuplicateColumnsInGrid(grid, vRows, uColumns, colKinds, tolU);
 
-            ComputeLoftMeshTolerancesFromGrid(grid, vRows, m, out double minSqCross, out double minSqEdge);
-
             int sideGroup = baseGroupIndex;
             bool matchedBoundaries = matchingVertices || preparedMatchedCurves;
             int sideCount = matchedBoundaries ? matchedCount : 1;
@@ -488,7 +486,7 @@ namespace Geo
                 profileTu2D, seamU0, closedForCaps, options.Style, rowVUniform, vRows, baseVert, normals,
                 matchingVertices || matchedCurves ? output.LoftSideSupportFactory() : null);
 
-            EmitSideQuads(grid, m, vRows, baseVert, closedForCaps, vertices, minSqCross, minSqEdge, triangles, triangleGroups, sideGroup, sideColumns);
+            EmitSideQuads(m, vRows, baseVert, closedForCaps, precisePositions, triangles, triangleGroups, sideGroup, sideColumns);
 
             if (options.CapEnds && closedForCaps)
             {
@@ -498,12 +496,12 @@ namespace Geo
                 Vec3D nStart = -systems[0].Z.Normalized() * (Polygon.IsPolygonCCW(polys[0]) ? 1 : -1);
                 Vec3D nEnd = systems[pCount - 1].Z.Normalized() * (Polygon.IsPolygonCCW(polys[^1]) ? 1 : -1);
                 EmitPlanarCapFromSketch2D(
-                    profileSketch2D[0], grid[0], startRim, nStart, flipWinding: false, startCapGroup,
-                    options.CapTriangulation, minSqCross,
+                    profileSketch2D[0], startRim, nStart, flipWinding: false, startCapGroup,
+                    options.CapTriangulation,
                     converter, vertices, normals, uv, precisePositions, triangles, triangleGroups);
                 EmitPlanarCapFromSketch2D(
-                    profileSketch2D[pCount - 1], grid[vRows - 1], endRim, nEnd, flipWinding: true, endCapGroup,
-                    options.CapTriangulation, minSqCross,
+                    profileSketch2D[pCount - 1], endRim, nEnd, flipWinding: true, endCapGroup,
+                    options.CapTriangulation,
                     converter, vertices, normals, uv, precisePositions, triangles, triangleGroups);
 
                 triangleGroupToName[startCapGroup] = EntityNaming.LoftStartCap(loftName);

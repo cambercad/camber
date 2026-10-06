@@ -43,6 +43,14 @@ namespace Geo
             return SquaredTriangleCrossNorm(a, b, c) < minSquaredCrossNorm;
         }
 
+        /// <summary>Topology uses authoritative positions, not a display-space area tolerance.
+        /// A nonzero sliver is still necessary to close its neighboring triangles.</summary>
+        internal static bool IsCollapsedTriangle(Tri tri, IReadOnlyList<Rat3Hybrid> precise)
+        {
+            if (IsDegenerateTriangle(tri)) return true;
+            return Rat3Hybrid.Cross(precise[tri.B] - precise[tri.A], precise[tri.C] - precise[tri.A]).IsZero();
+        }
+
         /// <summary>Maximum side length of the axis-aligned bounding box of <paramref name="positions"/>.</summary>
         public static double MeshAxisAlignedMaxExtent(IReadOnlyList<Vec3D> positions)
         {
@@ -69,7 +77,8 @@ namespace Geo
         }
 
         /// <summary>
-        /// Minimum ‖(b−a)×(c−a)‖² used when emitting loft side/cap triangles; matches <c>L⁴·1e-22</c> with floor 1e-30.
+        /// Display-space triangle quality threshold (<c>L⁴·1e-22</c>, floor 1e-30).
+        /// This is diagnostic only; it must not decide which triangles close a solid.
         /// </summary>
         public static double LoftMinSquaredCrossNormFromMaxExtent(double maxExtentL) =>
             Math.Max(1e-30, maxExtentL * maxExtentL * maxExtentL * maxExtentL * 1e-22);

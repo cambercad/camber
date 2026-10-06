@@ -17,7 +17,6 @@ namespace Geo
         public int StartCornerId { get; set; }
         public int EndCornerId { get; set; }
 
-        public int Id { get; private set; }
         public GraphEdge SourceEdge { get; set; }
         public int SurfaceIndexA { get; set; }
         public int SurfaceIndexB { get; set; }
@@ -31,9 +30,6 @@ namespace Geo
         public List<Vec3D> ProjectedBoundaryCurveAVec3D { get; set; }
         public List<Rat3Hybrid> ProjectedBoundaryCurveB { get; set; } // On surface B (for visualization/generation)
         public List<Vec3D> ProjectedBoundaryCurveBVec3D { get; set; }
-
-        //public List<Rat3Hybrid> FinalBoundaryCurveA;
-        //public List<Rat3Hybrid> FinalBoundaryCurveB;
 
         // Intersection segments with barycentric coordinates (for exact trimming)
         public List<LineSegmentOnTriangleEx> BoundarySegmentsA { get; set; }
@@ -66,13 +62,12 @@ namespace Geo
             if (surfaceIndexA == surfaceIndexB)
                 throw new ArgumentException("Surface indices must be different");
                 
-            Id = GetHashCode(); // Use hash code as a simple unique identifier
             SourceEdge = sourceEdge;
             SurfaceIndexA = surfaceIndexA;
             SurfaceIndexB = surfaceIndexB;
             BlendRadius = blendRadius;
             BlendType = EdgeBlendType.Concave; // Default
-            
+
             // Initialize to default values (will be set later during computation)
             CenterCurve = new List<Rat3Hybrid>();
             ProjectedBoundaryCurveA = new List<Rat3Hybrid>();
@@ -345,16 +340,16 @@ namespace Geo
             this.cc = cc;
 
             double maxArcAngle = 0;
+            var arcAngles = new double[CenterCurve.Count];
             for (int i = 0; i < CenterCurve.Count; ++i)
             {
-                var startD = ProjectedBoundaryCurveAVec3D[i];
-                var endD = ProjectedBoundaryCurveBVec3D[i];
-                var centerD = CenterCurveVec3[i];
-
-                Vec3D dirStart = startD - centerD;
-                Vec3D dirEnd = endD - centerD;
-                Vec3D axis = Vec3DOps.Cross(dirStart, dirEnd);
-                double angle = Vec3DOps.Angle(dirStart, dirEnd, axis);
+                Vec3D dirStart = RailDirection(ProjectedBoundaryCurveA[i], CenterCurve[i]).Normalized();
+                Vec3D dirEnd = RailDirection(ProjectedBoundaryCurveB[i], CenterCurve[i]).Normalized();
+                // atan2 retains shallow arcs that acos(dot) rounds to zero.
+                double angle = Math.Atan2(Vec3DOps.Cross(dirStart, dirEnd).Length(), Vec3DOps.Dot(dirStart, dirEnd));
+                if (!(angle > 0 && angle < Math.PI))
+                    throw new InvalidOperationException("Fillet contact radii must define a nondegenerate arc shorter than a semicircle.");
+                arcAngles[i] = angle;
                 maxArcAngle = Math.Max(angle, maxArcAngle);
             }
             // Calculate number of arc points based on deviation tolerance
@@ -365,69 +360,29 @@ namespace Geo
             List<Vec3D> concatenatedArcPoints = new List<Vec3D>();
             List<Vec3D> normals = new List<Vec3D>();
             List<Vec2D> uv = new List<Vec2D>();
-            LineStrip3D centerCurveStrip = new LineStrip3D(CenterCurveVec3); //Use for arc length when computing uv
+            var distances = new double[CenterCurve.Count];
+            for (int i = 1; i < distances.Length; ++i)
+                distances[i] = distances[i - 1] + RailDirection(CenterCurve[i], CenterCurve[i - 1]).Length();
+            double totalLength = distances[^1];
+            if (!(totalLength > 0) || !double.IsFinite(totalLength))
+                throw new InvalidOperationException("Fillet spine must have a finite positive length.");
             for (int i = 0; i < CenterCurve.Count; ++i)
             {
                 var start = ProjectedBoundaryCurveA[i];
                 var end = ProjectedBoundaryCurveB[i];
 
-                var startD = ProjectedBoundaryCurveAVec3D[i];
-                var endD = ProjectedBoundaryCurveBVec3D[i];
-                var centerD = CenterCurveVec3[i];
-
-                // Generate the shorter arc from start to end around center
-                Vec3D dirStart = startD - centerD;
-                Vec3D dirEnd = endD - centerD;
-                Vec3D axis = Vec3DOps.Cross(dirStart, dirEnd);
-                double arcAngle = Vec3DOps.Angle(dirStart, dirEnd, axis);
+                double arcAngle = arcAngles[i];
                 
-                // Ensure we use the shorter arc (should always be < 180 degrees for edge blending)
-                if (arcAngle > Math.PI)
-                {
-                    arcAngle = 2.0 * Math.PI - arcAngle;
-                    axis = -axis;
-                }
-                
-                double radius = dirStart.Length();
-                Vec3D dirStartNorm = dirStart.Normalized();
-                Vec3D right = Vec3DOps.Cross(axis.Normalized(), dirStartNorm).Normalized();
-                
-                List<Vec3D> arc = new List<Vec3D>();
-                List<Vec3D> arcNormals = new List<Vec3D>();
-                List<Vec2D> arcUv = new List<Vec2D>();
-                
-                double uCoord = centerCurveStrip.GetDistanceFromBuffer(i);
-                double uMax = centerCurveStrip.TotalLength;
-
-                // Skip the first and last band
-                //for (int j = 1; j < numArcPoints-1; ++j)
-                for (int j = 0; j < numArcPoints; ++j)
-                {
-                    double t = j / (double)(numArcPoints - 1);
-                    double a = t * arcAngle;
-                    
-                    Vec3D point = centerD + radius * (Math.Cos(a) * dirStartNorm + Math.Sin(a) * right);
-                    Vec3D normal = (point - centerD).Normalized();
-                    
-                    // For convex edges, normals point inward (toward center)
-                    if (BlendType == EdgeBlendType.Concave)
-                        normal = -normal;
-                    
-                    arc.Add(point);
-                    arcNormals.Add(normal);
-                    arcUv.Add(new Vec2D(uCoord / uMax, t));
-                }
-
                 // Use the same binary direction precision as construction frames.
                 // Interpolating shared exact boundaries avoids independently snapping
                 // nearby strip rows into folded slivers in world lattice coordinates.
                 const long coefficientScale = 1L << 40;
                 BigRationalHybrid Coefficient(double value) =>
                     new BigRationalHybrid(checked((long)Math.Round(value * coefficientScale)), coefficientScale);
-                var arcPrecise = new List<Rat3Hybrid>(arc.Count);
-                for (int j = 0; j < arc.Count; ++j)
+                var arcPrecise = new List<Rat3Hybrid>(numArcPoints);
+                for (int j = 0; j < numArcPoints; ++j)
                 {
-                    double t = j / (double)(arc.Count - 1);
+                    double t = j / (double)(numArcPoints - 1);
                     double weightA = Math.Sin((1-t)*arcAngle) / Math.Sin(arcAngle);
                     double weightB = Math.Sin(t*arcAngle) / Math.Sin(arcAngle);
                     var exact = CenterCurve[i] + (start-CenterCurve[i])*Coefficient(weightA) +
@@ -439,31 +394,23 @@ namespace Geo
                 arcPrecise[0] = start;
                 arcPrecise[arcPrecise.Count - 1] = end;
 
-                concatenatedArcPoints.AddRange(arc);
-                normals.AddRange(arcNormals);
-                uv.AddRange(arcUv);
+                // Positions and shading must describe the same authoritative
+                // rational strip. Subtract before conversion, as for chamfers.
+                for (int j = 0; j < numArcPoints; ++j)
+                {
+                    var normal = RailDirection(arcPrecise[j], CenterCurve[i]).Normalized();
+                    normals.Add(BlendType == EdgeBlendType.Concave ? -normal : normal);
+                    uv.Add(new Vec2D(distances[i] / totalLength, j / (double)(numArcPoints - 1)));
+                }
+                concatenatedArcPoints.AddRange(cc.Convert(arcPrecise));
                 concatenatedArcPointsPrecise.AddRange(arcPrecise);
             }
 
 
-            // Build triangles and ensure correct winding
-            // -2 because we skip the first and last band
-            List<Tri> triangles = BuildRectangularTriangleBuffer(CenterCurve.Count, numArcPoints/*-2*/, out List<int> startRowIndices, out List<int> endRowIndices);
+            List<Tri> triangles = BuildRectangularTriangleBuffer(CenterCurve.Count, numArcPoints, out _, out _);
 
             if(!MeshAnalysis.AreTrianglesConsistentlyOriented(triangles))
                 throw new Exception();
-
-            // TriangulateBand also inserts the vertices coming from the boundary curves
-            //int triCount = triangles.Count;
-            //TriangulateBand(triangles, startRowIndices, concatenatedArcPointsPrecise, concatenatedArcPoints, 
-            //    normals, uv, FinalBoundaryCurveA, originalSurfaceA, centerCurveStrip, 0.0);
-            //if (!MeshAnalysis.AreTrianglesConsistentlyOriented(triangles))
-            //    ReverseTriOri(triangles, triCount, triangles.Count);
-            //triCount = triangles.Count;
-            //TriangulateBand(triangles, endRowIndices, concatenatedArcPointsPrecise, concatenatedArcPoints, 
-            //    normals, uv, FinalBoundaryCurveB, originalSurfaceB, centerCurveStrip, 1.0);
-            //if (!MeshAnalysis.AreTrianglesConsistentlyOriented(triangles))
-            //    ReverseTriOri(triangles, triCount, triangles.Count);
 
             EnsureExactStripWinding(triangles, concatenatedArcPointsPrecise, CenterCurve, numArcPoints, BlendType);
 
@@ -689,13 +636,13 @@ namespace Geo
         /// </summary>
         /// <param name="trimmedMesh">The trimmed mesh to rebuild from</param>
         /// <returns>A new UVSurface containing only the cluster connected to boundary curves</returns>
-        private UVSurface RebuildSurfaceFromTrimmedMesh(MeshNormalUV trimmedMesh)
+        private UVSurface RebuildSurfaceFromTrimmedMesh(MeshNormalUV trimmedMesh, Rat3Hybrid? preferredAnchor = null)
         {
             // Find all connected clusters of triangles
             List<List<int>> trianglePatches = FindClusters(trimmedMesh);
 
             // Keep only the cluster that's connected to the boundary curves
-            int keepClusterIndex = SelectClusterConnectedToBoundary(trianglePatches, trimmedMesh);
+            int keepClusterIndex = SelectClusterConnectedToBoundary(trianglePatches, trimmedMesh, preferredAnchor);
             
             // Extract the triangles from the selected cluster
             List<int> keepTriangles = trianglePatches[keepClusterIndex];
@@ -966,9 +913,9 @@ namespace Geo
             if (hasStart)
             {
                 currentSurface = TrimSurfaceBySurface(currentSurface, startTrimSurface,
-                    openCornerTrimSurfacesExtensionOnly[StartCornerId], sharedEndFace ? .5 : 1, out var closures);
+                    openCornerTrimSurfacesExtensionOnly[StartCornerId], out var closures);
                 int expectedMaximum = sharedEndFace ? 2 : 1;
-                if (closures.Count > expectedMaximum)
+                if (closures.Count == 0 || closures.Count > expectedMaximum)
                     throw new InvalidOperationException($"Fillet edge '{SourceEdge.Name}' has {closures.Count} endpoint closures; expected at most {expectedMaximum}.");
                 EdgeStartGapFillSurface = closures[0];
                 if (closures.Count == 2)
@@ -977,7 +924,7 @@ namespace Geo
             if (hasEnd && !sharedEndFace)
             {
                 currentSurface = TrimSurfaceBySurface(currentSurface, endTrimSurface,
-                    openCornerTrimSurfacesExtensionOnly[EndCornerId], 0, out var closures);
+                    openCornerTrimSurfacesExtensionOnly[EndCornerId], out var closures);
                 if (closures.Count != 1)
                     throw new InvalidOperationException($"Fillet edge '{SourceEdge.Name}' has {closures.Count} closures at its end; expected one.");
                 EdgeEndGapFillSurface = closures[0];
@@ -1000,7 +947,7 @@ namespace Geo
             var used  =  RawSurface.Triangles.SelectMany(t => new[] { t.A, t.B, t.C }).Distinct();
             if (!used.Any(index => Rat3Hybrid.Dot(RawSurface.PointsPrecise[index] - origin, normal).Sign() > 0))
                 return false;
-            RawSurface = TrimSurfaceBySurface(RawSurface, cap, extension, .5, out closures);
+            RawSurface = TrimSurfaceBySurface(RawSurface, cap, extension, out closures);
             BlendSurface = RawSurface;
             return true;
         }
@@ -1025,15 +972,12 @@ namespace Geo
         /// <param name="trimSurface">The surface to trim with</param>
         /// <returns>The trimmed surface</returns>
         private UVSurface TrimSurfaceBySurface(UVSurface surfaceToTrim, UVSurface trimSurface, 
-            UVSurface trimSurfaceExtensionOnly, double retainedLongitudinalParameter,
+            UVSurface trimSurfaceExtensionOnly,
             out List<UVSurface> finalGapFillSurfaces)
         {
             // Convert surfaces to meshes
             MeshNormalUV surfaceToTrimMesh = ToMesh(surfaceToTrim, cc, groupId: 0);
-            
-            // A pocket wall points into the cavity, while an outer end cap
-            // points away from the edge. Retain the half-space containing the
-            // source edge, not an assumed negative side of every trim plane.
+            // Cap orientation follows the source edge's side of the plane.
             bool keepNormalSide = false;
             if (trimSurface.IsSurfacePlanar())
             {
@@ -1047,6 +991,7 @@ namespace Geo
                     .Where(sign => sign != 0).Distinct().ToArray();
                 keepNormalSide = sides.Length == 1 && sides[0] > 0;
             }
+
             var intersectionStrips = new List<List<IntersectionSegmentEx>>();
             MeshNormalUV trimmed = null;
             bool useLocalContours = false;
@@ -1061,26 +1006,35 @@ namespace Geo
             catch (Exception error) when (error.Message.Contains("Partial cut detected"))
             { useLocalContours = true; }
             catch (AggregateException) when (intersectionStrips.Count > 0)
-            {
-                // Resolver clustering can reject a multi-contour intermediate
-                // before side classification. The exact contours are already
-                // complete, so the same local topological path applies.
-                useLocalContours = true;
-            }
+            { useLocalContours = true; }
 
+            int middle = (SourceEdge.LineStripExact.Count - 1) / 2;
+            var sourceAnchor = (SourceEdge.LineStripExact[middle] + SourceEdge.LineStripExact[middle + 1]) / new BigRationalHybrid(2);
+            var retainAnchor = ClosestPointOnSurface(surfaceToTrim, sourceAnchor);
             Surface retainedRegion = null;
-            if (useLocalContours)
             {
+                // Use exact local contours for cap construction even when the
+                // CSG trim succeeded. The volume result is authoritative for
+                // the retained strip, while these contours identify only the
+                // endpoint loops that must be sewn to neighboring patches.
+                intersectionStrips.Clear();
+                Resolver.Resolve(BooleanOp.NoOpIntersectionContourOnly,
+                    surfaceToTrim.PointsPrecise, surfaceToTrim.Triangles,
+                    trimSurface.PointsPrecise, trimSurface.Triangles,
+                    out _, out _, out _, intersectionStrips: intersectionStrips);
                 for (int i = intersectionStrips.Count - 1; i >= 0; --i)
                 {
                     var strip = intersectionStrips[i];
                     var first = strip[0].StartPoint;
                     var last = strip[^1].EndPoint;
+                    // A cap can cut a lobe of a closed junction, entering and
+                    // leaving the same contact rail. Completeness requires two
+                    // boundary endpoints, not two different rails.
                     bool connectsRails =
-                        (PointOnBoundaryPolyline(ProjectedBoundaryCurveA, first) &&
-                         PointOnBoundaryPolyline(ProjectedBoundaryCurveB, last)) ||
-                        (PointOnBoundaryPolyline(ProjectedBoundaryCurveB, first) &&
-                         PointOnBoundaryPolyline(ProjectedBoundaryCurveA, last));
+                        (PointOnBoundaryPolyline(ProjectedBoundaryCurveA, first) ||
+                         PointOnBoundaryPolyline(ProjectedBoundaryCurveB, first)) &&
+                        (PointOnBoundaryPolyline(ProjectedBoundaryCurveA, last) ||
+                         PointOnBoundaryPolyline(ProjectedBoundaryCurveB, last));
                     if (!connectsRails) intersectionStrips.RemoveAt(i);
                 }
                 if (intersectionStrips.Count == 0)
@@ -1101,18 +1055,9 @@ namespace Geo
                 }
                 var regions = Splitter.SplitUsingLineStrip(source, trimCurves,
                     throwOnInvalidTriangleIndex: true, validateTrimCurves: true);
-                int anchorIndex = 0;
-                double anchorScore = double.PositiveInfinity;
-                for (int i = 0; i < surfaceToTrim.Uv.Count; ++i)
-                {
-                    double score = Math.Abs(surfaceToTrim.Uv[i].X - retainedLongitudinalParameter) +
-                        .01 * Math.Abs(surfaceToTrim.Uv[i].Y - .5);
-                    if (score < anchorScore) { anchorScore = score; anchorIndex = i; }
-                }
-                Rat3Hybrid retainAnchor = surfaceToTrim.PointsPrecise[anchorIndex];
                 foreach (var region in regions)
                 {
-                    if (!region.PointsPrecise.Contains(retainAnchor)) continue;
+                    if (!ContainsExactPoint(region, retainAnchor)) continue;
                     if (retainedRegion != null)
                         throw new InvalidOperationException(
                             $"Fillet edge '{SourceEdge.Name}' retained endpoint anchor lies on a trim contour.");
@@ -1120,7 +1065,24 @@ namespace Geo
                 }
                 if (retainedRegion == null)
                     throw new InvalidOperationException(
-                        $"Fillet edge '{SourceEdge.Name}' endpoint trim removed its retained longitudinal anchor.");
+                        $"Fillet edge '{SourceEdge.Name}' endpoint trim removed its retained source-edge anchor.");
+
+                // Extended supports can cross a pocket on both sides. Only
+                // cuts bounding the source-edge component need endpoint caps.
+                var boundary = Adjacency.BuildEdgeList(retainedRegion.Triangles);
+                for (int i = intersectionStrips.Count - 1; i >= 0; --i)
+                {
+                    bool boundsRegion = false;
+                    foreach (var segment in intersectionStrips[i])
+                    {
+                        foreach (var edge in boundary)
+                            if (edge.IsOnBorder && OverlapsBoundarySegment(segment.StartPoint, segment.EndPoint,
+                                retainedRegion.PointsPrecise[edge.Start], retainedRegion.PointsPrecise[edge.End]))
+                            { boundsRegion = true; break; }
+                        if (boundsRegion) break;
+                    }
+                    if (!boundsRegion) intersectionStrips.RemoveAt(i);
+                }
             }
 
             int idOffset = trimSurface.Triangles.Count - trimSurfaceExtensionOnly.Triangles.Count;
@@ -1180,9 +1142,97 @@ namespace Geo
             }
             UVSurface result = useLocalContours
                 ? InterpolateClosureAttributes(retainedRegion, surfaceToTrim, cc)
-                : RebuildSurfaceFromTrimmedMesh(trimmed);
+                : RebuildSurfaceFromTrimmedMesh(trimmed, retainAnchor);
+            if (useLocalContours)
+            {
+                // Support cuts can subdivide the cap's shared contour further.
+                // Propagate those exact vertices to both sides before sewing.
+                foreach (var closure in finalGapFillSurfaces)
+                    result = ConformBoundary(result, closure, cc);
+                for (int i = 0; i < finalGapFillSurfaces.Count; ++i)
+                    finalGapFillSurfaces[i] = ConformBoundary(finalGapFillSurfaces[i], result, cc);
+            }
 
             return result;
+        }
+
+        private static UVSurface ConformBoundary(UVSurface surface, UVSurface neighbour, CoordinateConverter converter)
+        {
+            var candidates = new HashSet<Rat3Hybrid>();
+            foreach (var edge in Adjacency.BuildEdgeList(neighbour.Triangles))
+                if (edge.IsOnBorder)
+                { candidates.Add(neighbour.PointsPrecise[edge.Start]); candidates.Add(neighbour.PointsPrecise[edge.End]); }
+            var cuts = new List<List<LineSegmentOnTriangle>>();
+            foreach (var edge in Adjacency.BuildEdgeList(surface.Triangles))
+            {
+                if (!edge.IsOnBorder) continue;
+                var a = surface.PointsPrecise[edge.Start];
+                var b = surface.PointsPrecise[edge.End];
+                var points = new List<Rat3Hybrid> { a, b };
+                foreach (var point in candidates)
+                    if (point != a && point != b && PointOnBoundarySegment(a, b, point)) points.Add(point);
+                if (points.Count == 2) continue;
+                var direction = b - a;
+                points.Sort((x, y) => Rat3Hybrid.Dot(x - a, direction).CompareTo(Rat3Hybrid.Dot(y - a, direction)));
+                int triangle = edge.NeighbourIndex1 >= 0 ? edge.NeighbourIndex1 : edge.NeighbourIndex2;
+                var cut = new List<LineSegmentOnTriangle>();
+                for (int i = 1; i < points.Count; ++i)
+                    cut.Add(new LineSegmentOnTriangle(points[i - 1], points[i], triangle));
+                cuts.Add(cut);
+            }
+            if (cuts.Count == 0) return surface;
+            var groups = new List<int>(surface.Triangles.Count);
+            for (int i = 0; i < surface.Triangles.Count; ++i) groups.Add(i);
+            var refined = Splitter.SplitUsingLineStrip(new Surface(surface.Triangles, surface.PointsPrecise, groups),
+                cuts, throwOnInvalidTriangleIndex: true, validateTrimCurves: true);
+            if (refined.Count != 1) throw new InvalidOperationException("Shared endpoint boundary refinement disconnected a patch.");
+            return InterpolateClosureAttributes(refined[0], surface, converter);
+        }
+
+        private static bool ContainsExactPoint(Surface surface, Rat3Hybrid point)
+        {
+            foreach (var triangle in surface.Triangles)
+            {
+                var a = surface.PointsPrecise[triangle.A];
+                var b = surface.PointsPrecise[triangle.B];
+                var c = surface.PointsPrecise[triangle.C];
+                var normal = Rat3Hybrid.Cross(b - a, c - a);
+                if (!normal.IsZero() && Rat3Hybrid.Dot(normal, point - a).Sign() == 0 &&
+                    new PlaneConvexPolygon(a, b, c).PointIsInsideOrOnBoundary(point, out _)) return true;
+            }
+            return false;
+        }
+
+        private static Rat3Hybrid ClosestPointOnSurface(UVSurface surface, Rat3Hybrid point)
+        {
+            Rat3Hybrid nearest = default;
+            BigRationalHybrid? bestDistance = null;
+            void Consider(Rat3Hybrid candidate)
+            {
+                var delta = candidate - point;
+                var distance = Rat3Hybrid.Dot(delta, delta);
+                if (!bestDistance.HasValue || distance < bestDistance.Value)
+                { bestDistance = distance; nearest = candidate; }
+            }
+            foreach (var triangle in surface.Triangles)
+            {
+                var a = surface.PointsPrecise[triangle.A];
+                var b = surface.PointsPrecise[triangle.B];
+                var c = surface.PointsPrecise[triangle.C];
+                var normal = Rat3Hybrid.Cross(b - a, c - a);
+                if (normal.IsZero()) continue;
+                var projected = point - normal * (Rat3Hybrid.Dot(point - a, normal) / Rat3Hybrid.Dot(normal, normal));
+                if (new PlaneConvexPolygon(a, b, c).PointIsInsideOrOnBoundary(projected, out _)) Consider(projected);
+                foreach (var edge in new[] { (a, b), (b, c), (c, a) })
+                {
+                    var direction = edge.Item2 - edge.Item1;
+                    var t = Rat3Hybrid.Dot(point - edge.Item1, direction) / Rat3Hybrid.Dot(direction, direction);
+                    t = BigRationalHybrid.Max(BigRationalHybrid.Zero, BigRationalHybrid.Min(BigRationalHybrid.One, t));
+                    Consider(edge.Item1 + direction * t);
+                }
+            }
+            if (!bestDistance.HasValue) throw new InvalidOperationException("Endpoint strip has no nondegenerate triangles.");
+            return nearest;
         }
 
         private void VerifyArc(List<Rat3Hybrid> arc)
@@ -1357,7 +1407,8 @@ namespace Geo
                 TrimArcs = RetainBoundaryArcs(RawSurface, TrimArcs);
         }
 
-        private int SelectClusterConnectedToBoundary(List<List<int>> clusters, MeshNormalUV mesh)
+        private int SelectClusterConnectedToBoundary(List<List<int>> clusters, MeshNormalUV mesh,
+            Rat3Hybrid? preferredAnchor = null)
         {
             // Create a HashSet of boundary curve points for fast lookup
             HashSet<Rat3Hybrid> boundaryPoints = new HashSet<Rat3Hybrid>();
@@ -1432,10 +1483,38 @@ namespace Geo
             
             if (nonZeroCount > 1)
             {
+                if (preferredAnchor.HasValue)
+                {
+                    int anchoredCluster = -1;
+                    for (int clusterIdx = 0; clusterIdx < clusters.Count; clusterIdx++)
+                    {
+                        if (clusterBoundaryCounts[clusterIdx] == 0 ||
+                            !ClusterContainsPoint(clusters[clusterIdx], mesh, preferredAnchor.Value)) continue;
+                        if (anchoredCluster >= 0)
+                            throw new InvalidOperationException($"Fillet edge '{SourceEdge.Name}' retained anchor lies on multiple trimmed clusters.");
+                        anchoredCluster = clusterIdx;
+                    }
+                    if (anchoredCluster >= 0) return anchoredCluster;
+                }
                 throw new Exception($"Multiple clusters ({nonZeroCount}) are connected to boundary curves - ambiguous result");
             }
             
             return clusterWithBoundary;
+        }
+
+        private static bool ClusterContainsPoint(List<int> cluster, MeshNormalUV mesh, Rat3Hybrid point)
+        {
+            foreach (int index in cluster)
+            {
+                var triangle = mesh.Triangles[index];
+                var a = mesh.PrecisionPositions[triangle.A];
+                var b = mesh.PrecisionPositions[triangle.B];
+                var c = mesh.PrecisionPositions[triangle.C];
+                var normal = Rat3Hybrid.Cross(b - a, c - a);
+                if (!normal.IsZero() && Rat3Hybrid.Dot(normal, point - a).Sign() == 0 &&
+                    new PlaneConvexPolygon(a, b, c).PointIsInsideOrOnBoundary(point, out _)) return true;
+            }
+            return false;
         }
 
         private List<List<int>> FindClusters(MeshNormalUV mesh)
@@ -1612,7 +1691,7 @@ namespace Geo
         /// <param name="radius">Arc radius</param>
         /// <param name="maxDeviation">Maximum allowed deviation from the true arc</param>
         /// <returns>Number of arc points (minimum 2)</returns>
-        private static int CalculateArcSegments(double angle, double radius, double maxDeviation)
+        internal static int CalculateArcSegments(double angle, double radius, double maxDeviation)
         {
             if (angle <= 0 || maxDeviation <= 0)
                 return 2;
@@ -1621,11 +1700,11 @@ namespace Geo
             if (ratio >= 1.0)
                 return 2;
             
-            // For a circular arc: deviation = radius * (1 - cos(angle/(2*segments)))
-            // Solving for segments: segments >= angle / (2 * acos(1 - deviation/radius))
-            double halfAnglePerSegment = Math.Acos(1.0 - ratio);
-            int numSegments = (int)Math.Ceiling(angle / (2.0 * halfAnglePerSegment));
-            return Math.Max(2, numSegments + 1);
+            // Same sagitta inversion as acos(1-ratio), without cancellation
+            // when the deviation is small compared with the radius.
+            double halfAnglePerSegment = 2 * Math.Asin(Math.Sqrt(ratio / 2));
+            int numSegments = checked((int)Math.Ceiling(angle / (2.0 * halfAnglePerSegment)));
+            return Math.Max(2, checked(numSegments + 1));
         }
 
         /// <summary>
@@ -1827,7 +1906,7 @@ namespace Geo
         /// <param name="normals">Reference normals along the cut line</param>
         /// <param name="normalAnchors">Anchor points where the normals are defined</param>
         /// <returns>The surface facing against the normal direction</returns>
-        private Surface SelectSurfaceAgainstNormalDirection(List<Surface> surfaces, 
+        internal Surface SelectSurfaceAgainstNormalDirection(List<Surface> surfaces,
             List<LineSegmentOnTriangle> splitCurve, List<Rat3Hybrid> normals, List<Rat3Hybrid> normalAnchors)
         {
             if (surfaces == null || surfaces.Count == 0)
@@ -1841,92 +1920,38 @@ namespace Geo
 
             if (normalAnchors == null || normalAnchors.Count != normals.Count)
                 throw new ArgumentException("Normal anchors must match normals count", nameof(normalAnchors));
+            if (normals.Count != splitCurve.Count)
+                throw new ArgumentException("Normals must match trim segments", nameof(normals));
 
             Surface selectedSurface = null;
 
-            // Build a set of triangle IDs from the split curve
-            HashSet<int> cutTriangleIds = new HashSet<int>();
-            foreach (var seg in splitCurve)
-            {
-                cutTriangleIds.Add(seg.TriangleId);
-            }
-
             foreach (var surface in surfaces)
             {
-                var bounds=surface.Triangles.Select(triangle=> {
-                    var a=surface.PointsPrecise[triangle.A];var b=surface.PointsPrecise[triangle.B];var c=surface.PointsPrecise[triangle.C];
-                    BigRationalHybrid Min(BigRationalHybrid x,BigRationalHybrid y,BigRationalHybrid z)=>x<y?(x<z?x:z):(y<z?y:z);
-                    BigRationalHybrid Max(BigRationalHybrid x,BigRationalHybrid y,BigRationalHybrid z)=>x>y?(x>z?x:z):(y>z?y:z);
-                    return (min:new Rat3Hybrid(Min(a.X,b.X,c.X),Min(a.Y,b.Y,c.Y),Min(a.Z,b.Z,c.Z)),
-                        max:new Rat3Hybrid(Max(a.X,b.X,c.X),Max(a.Y,b.Y,c.Y),Max(a.Z,b.Z,c.Z)));
-                }).ToArray();
-
-                // Find which triangles in this surface correspond to the cut triangles
-                // We need to check which triangles from the split curve ended up in this surface
-                List<int> adjacentTriangles = new List<int>();
-                Dictionary<int, int> segmentToTriangleMap = new Dictionary<int, int>();
-                
-                for (int segIdx = 0; segIdx < splitCurve.Count; segIdx++)
+                int againstCount = 0, withCount = 0;
+                // Classify actual cut-edge fragments, not triangle interiors or
+                // a single midpoint that may be a vertex after another cut.
+                // Splitter retains source triangle IDs in the transient groups.
+                foreach (var edge in Adjacency.BuildEdgeList(surface.Triangles))
                 {
-                    var seg = splitCurve[segIdx];
-                    
-                    var midpoint = (seg.PointStart + seg.PointEnd) * new BigRationalHybrid(1, 2);
-                    midpoint.Simplify();
-                    // Find triangles in this surface that contain both segment endpoints
-                    for (int triIdx = 0; triIdx < surface.Triangles.Count; triIdx++)
+                    if (!edge.IsOnBorder) continue;
+                    int triIdx = edge.NeighbourIndex1 >= 0 ? edge.NeighbourIndex1 : edge.NeighbourIndex2;
+                    var triangle = surface.Triangles[triIdx];
+                    var a = surface.PointsPrecise[edge.Start];
+                    var b = surface.PointsPrecise[edge.End];
+                    for (int segIdx = 0; segIdx < splitCurve.Count; segIdx++)
                     {
-                        var bound=bounds[triIdx];
-                        if(midpoint.X<bound.min.X || midpoint.X>bound.max.X || midpoint.Y<bound.min.Y || midpoint.Y>bound.max.Y ||
-                            midpoint.Z<bound.min.Z || midpoint.Z>bound.max.Z)continue;
-                        Tri tri = surface.Triangles[triIdx];
-                        var p0 = surface.PointsPrecise[tri.A];
-                        var p1 = surface.PointsPrecise[tri.B];
-                        var p2 = surface.PointsPrecise[tri.C];
-                        // A projected barycentric test also accepts triangles on other
-                        // planes. The cut belongs to the precise surface mesh: use its
-                        // exact plane and polygon predicates to identify adjacency.
-                        var planeNormal = Rat3Hybrid.Cross(p1 - p0, p2 - p0);
-                        if (Rat3Hybrid.Dot(planeNormal, midpoint - p0) == BigRationalHybrid.Zero &&
-                            new PlaneConvexPolygon(p0, p1, p2)
-                                .PointIsInsideOrOnBoundary(midpoint, out _))
-                        {
-                            adjacentTriangles.Add(triIdx);
-                            segmentToTriangleMap[segIdx] = triIdx;
-                            break;
-                        }
+                        var seg = splitCurve[segIdx];
+                        if (surface.GroupIdPerTriangle[triIdx] != seg.TriangleId) continue;
+                        if (!OverlapsBoundarySegment(seg.PointStart, seg.PointEnd, a, b)) continue;
+                        var opposite = surface.PointsPrecise[triangle.GetRemaining(edge.Start, edge.End)];
+                        int side = Rat3Hybrid.Dot(opposite - normalAnchors[segIdx], normals[segIdx]).Sign();
+                        if (side == 0)
+                            throw new InvalidOperationException($"Fillet edge '{SourceEdge.Name}' has a coplanar endpoint contact; the closure side is ambiguous.");
+                        if (side < 0) againstCount++; else withCount++;
+                        break;
                     }
                 }
-
-                if (adjacentTriangles.Count == 0)
-                    continue;
-
-                // For each adjacent triangle paired with its corresponding segment's normal and anchor,
-                // check if the triangle center is against the normal direction
-                int againstCount = 0;  // Count of triangles against the normal
-                int withCount = 0;     // Count of triangles with the normal
-                
-                foreach (var kvp in segmentToTriangleMap)
-                {
-                    int segIdx = kvp.Key;
-                    int triIdx = kvp.Value;
-                    
-                    Tri tri = surface.Triangles[triIdx];
-                    
-                    var triCenter = (surface.PointsPrecise[tri.A] + surface.PointsPrecise[tri.B] +
-                        surface.PointsPrecise[tri.C]) * new BigRationalHybrid(1,3);
-                    var alignment = Rat3Hybrid.Dot(triCenter-normalAnchors[segIdx],normals[segIdx]);
-
-                    if (alignment < new BigRationalHybrid(0))
-                        againstCount++;
-                    else
-                        withCount++;
-                }
-
-                // Check consistency: all triangles should agree on the direction
-                int totalChecked = againstCount + withCount;
-                bool isConsistent = (againstCount == totalChecked) || (withCount == totalChecked);
-                
-                if (!isConsistent)
+                if (againstCount > 0 && withCount > 0)
                 {
                     throw new InvalidOperationException($"Fillet edge '{SourceEdge.Name}' cap region crosses its trim contour: {againstCount} adjacent triangles against and {withCount} with the blend normal.");
                 }
@@ -1945,6 +1970,19 @@ namespace Geo
                 throw new InvalidOperationException($"Fillet edge '{SourceEdge.Name}' cap contour does not bound a region against the blend normal.");
 
             return selectedSurface;
+        }
+
+        private static bool OverlapsBoundarySegment(Rat3Hybrid start, Rat3Hybrid end,
+            Rat3Hybrid a, Rat3Hybrid b)
+        {
+            var direction = end - start;
+            if (direction.IsZero() || a == b ||
+                !Rat3Hybrid.Cross(direction, a - start).IsZero() ||
+                !Rat3Hybrid.Cross(direction, b - start).IsZero()) return false;
+            var first = Rat3Hybrid.Dot(a - start, direction);
+            var last = Rat3Hybrid.Dot(b - start, direction);
+            return BigRationalHybrid.Min(first, last) < Rat3Hybrid.Dot(direction, direction) &&
+                BigRationalHybrid.Max(first, last).Sign() > 0;
         }
 
 
@@ -1977,7 +2015,7 @@ namespace Geo
 
         public override string ToString()
         {
-            return $"BlendEdge {Id}: {SourceEdge?.Name ?? "unknown"} (radius={BlendRadius})";
+            return $"BlendEdge: {SourceEdge?.Name ?? "unknown"} (radius={BlendRadius})";
         }
     }
 
@@ -1986,7 +2024,7 @@ namespace Geo
     /// </summary>
     public enum EdgeBlendType
     {
-        Concave,    // Rounds a convex edge (removes material)
-        Convex    // Rounds a concave edge (adds material)
+        Concave,   // Reentrant edge: adds material.
+        Convex     // Exterior edge: removes material.
     }
 }

@@ -8,6 +8,72 @@ public class SupportSurfaceExtensionTests : IDisposable
     public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
 
     [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public void CurvedDomainRestorationHasOneFaithfulParameterChart(bool swapUv, bool transformed)
+    {
+        var converter = new CoordinateConverter(new Box3D(new Vec3D(-20), new Vec3D(20)));
+        var support = new NURBS.BSplineSurface(2, 1,
+            new[] { new[] { new Vec3D(0, 0, 0), new Vec3D(0, 2, 0) },
+                new[] { new Vec3D(1, 0, 0), new Vec3D(1, 2, 0) },
+                new[] { new Vec3D(2, 0, 2), new Vec3D(2, 2, 2) } },
+            new double[] { 0, 0, 0, 1, 1, 1 }, new double[] { 0, 0, 1, 1 });
+        var mapped = new Geo.NurbsConstruction.MeshUvMappedSurface(support, swapMeshUv: swapUv);
+        var transform = CoordinateSystem.GetTransform(CoordinateSystem.Default,
+            new CoordinateSystem(new Vec3D(3, -2, 1), new Vec3D(.6, .8, 0),
+                new Vec3D(-.8, .6, 0), new Vec3D(0, 0, 1)));
+        INurbsSurface source = transformed ? new TransformedNurbsSurface(mapped, transform) : mapped;
+        var uv = new List<Vec2D>(); var positions = new List<Vec3D>(); var normals = new List<Vec3D>();
+        for (int u = 0; u <= 8; u++)
+            for (int v = 0; v <= 8; v++)
+            {
+                var parameter = new Vec2D(u / 16.0, v / 8.0);
+                uv.Add(parameter); positions.Add(source.Evaluate(parameter.X, parameter.Y));
+                normals.Add(source.EvaluateNormal(parameter.X, parameter.Y) * (swapUv ? -1 : 1));
+            }
+        var triangles = new List<Tri>();
+        for (int u = 0; u < 8; u++)
+            for (int v = 0; v < 8; v++)
+            {
+                int a = u * 9 + v;
+                triangles.Add(new Tri(a, a + 9, a + 10)); triangles.Add(new Tri(a, a + 10, a + 1));
+            }
+        var mesh = new MeshNormalUV(converter, positions, normals, uv, triangles,
+            Enumerable.Repeat(0, triangles.Count).ToList(), skipWatertightCheck: true);
+        var original = new UVSurface(mesh.Positions, normals, uv, triangles, mesh.PrecisionPositions)
+            { NurbsSurface = source };
+        original.NurbsSurface = null;
+        Assert.Same(original, SupportSurfaceExtension.RestoreDomain(original, mesh, 0, .04, converter));
+        INurbsSurface incorrect = new Geo.NurbsConstruction.MeshUvMappedSurface(support,
+            range: new ParametricRange(.25, .75, 0, 1), swapMeshUv: swapUv);
+        original.NurbsSurface = transformed ? new TransformedNurbsSurface(incorrect, transform) : incorrect;
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            SupportSurfaceExtension.RestoreDomain(original, mesh, 0, .04, converter));
+        Assert.Contains("Support fidelity failed", error.Message);
+        original.NurbsSurface = source;
+        var restored = SupportSurfaceExtension.RestoreDomain(original, mesh, 0, .04, converter);
+        Assert.True(restored.Triangles.Count > original.Triangles.Count);
+        Assert.Equal(original.PointsPrecise, restored.PointsPrecise.Take(original.PointsPrecise.Count));
+        Assert.Equal(original.Triangles, restored.Triangles.Take(original.Triangles.Count));
+        if (!transformed) Assert.Same(support, restored.NurbsSurface);
+        foreach (int vertex in restored.Triangles.SelectMany(t => new[] { t.A, t.B, t.C }).Distinct())
+        {
+            var parameter = restored.Uv[vertex];
+            Assert.InRange((restored.NurbsSurface.Evaluate(parameter.X, parameter.Y) - restored.Points[vertex]).Length(),
+                0, 2 * Math.Sqrt(3) * converter.SmallestUnit());
+        }
+        foreach (var edge in Adjacency.BuildEdgeList(restored.Triangles))
+        {
+            if (!edge.IsOnBorder) continue;
+            var a = restored.Uv[edge.Start]; var b = restored.Uv[edge.End];
+            Assert.True((a.X == 0 && b.X == 0) || (a.X == 1 && b.X == 1) ||
+                (a.Y == 0 && b.Y == 0) || (a.Y == 1 && b.Y == 1));
+        }
+    }
+
+    [Theory]
     [InlineData(1.0)]
     [InlineData(.5)]
     public void PlanarDomainRestorationPreservesExistingExactPatch(double width)

@@ -1895,7 +1895,7 @@ class Part(object):
         cylindrical, and spherical patches use exact analytic offsets; other
         or metadata-free patches use a welded triangle-normal offset. Collapsed,
         inverted, or unsupported topology-changing offsets fail explicitly;
-        union seams may be rebuilt from their operands with CSG. Cavity faces
+        union and intersection seams may be rebuilt from their operands with CSG. Cavity faces
         are selectable as ``ShellInner_<source-patch>``. Without ``faces``, the
         cavity is fully enclosed. ``join="round"`` rounds outward joins with
         radius equal to the thickness; sharp joins remain the default. Inward
@@ -2015,7 +2015,7 @@ class Part(object):
             frame: Frame | None = None, emit_frame: bool = False) -> tuple[Sketch | None, str | None]:
         """Draw a sketch in the viewer. Finish copies camber Python to the clipboard.
 
-        Returns (Sketch, code) or (None, None) if cancelled. Requires pyglet + imgui.
+        Returns (Sketch, code) or (None, None) if cancelled. Requires pyglet.
         """
         from .sketch_ui import sketch_interactive as _run
         return _run(
@@ -2804,6 +2804,42 @@ class Sketch(object):
         # never use a requested name that the kernel did not accept.
         curve_name = self._added_curve_name(None, "spline", index)
         return SketchCurve(curve_name, "spline")
+
+    def add_bezier(self, control_points: Sequence[Point2Like], name: EntityName | None = None,
+                   construction: bool = False) -> SketchCurve:
+        """Add one exact Bezier curve defined by its control polygon.
+
+        Unlike ``add_spline``, intermediate control points are not points on the
+        curve. Geometry is retained analytically; tessellation inherits Part tolerance.
+        Control points are fixed geometry, not sketch-solver variables.
+        """
+        index = self.curve_count
+        _require(self._n, "add_bezier")(_join_xy_points(control_points), _name(name))
+        curve = SketchCurve(self._added_curve_name(name, "bezier", index), "bezier")
+        if construction:
+            self.set_construction(curve, True)
+        return curve
+
+    def add_bspline(self, control_points: Sequence[Point2Like], degree: int = 3, *,
+                    knots: Sequence[float] | None = None, weights: Sequence[float] | None = None,
+                    name: EntityName | None = None, construction: bool = False) -> SketchCurve:
+        """Add one exact B-spline, or rational NURBS when weights are supplied.
+
+        Omitted knots create a uniform clamped spline. Otherwise pass the full
+        nondecreasing knot vector, with ``len(control_points)+degree+1`` entries.
+        Weights must be positive. Tessellation inherits Part tolerance.
+        Control points are fixed geometry, not sketch-solver variables.
+        """
+        if isinstance(degree, bool) or int(degree) != degree:
+            raise ValueError("degree must be an integer")
+        index = self.curve_count
+        _require(self._n, "add_b_spline")(_join_xy_points(control_points), int(degree),
+            "" if knots is None else "|".join(str(float(v)) for v in knots),
+            "" if weights is None else "|".join(str(float(v)) for v in weights), _name(name))
+        curve = SketchCurve(self._added_curve_name(name, "bspline", index), "bspline")
+        if construction:
+            self.set_construction(curve, True)
+        return curve
 
     def add_sampled_curve(self, points: Sequence[Point2Like],
                           name: EntityName | None = None,

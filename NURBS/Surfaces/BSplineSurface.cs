@@ -656,6 +656,12 @@ namespace NURBS
             return EvaluateNormalFromH(EvaluateH(u, v), u, v);
         }
 
+        /// <summary>Evaluate the one-sided U normal at the actual knot, not at a displaced point.</summary>
+        public Vec3D EvaluateNormal(double u, double v, bool fromLeftU)
+        {
+            return EvaluateNormalFromH(EvaluateH(u, v, fromLeftU), u, v, fromLeftU);
+        }
+
         public Vec3D EvaluatePointAndNormal(double u, double v, out Vec3D normal)
         {
             Vec4D f = EvaluateH(u, v);
@@ -663,10 +669,10 @@ namespace NURBS
             return DeBoor.Project(f);
         }
 
-        private Vec3D EvaluateNormalFromH(Vec4D f, double u, double v)
+        private Vec3D EvaluateNormalFromH(Vec4D f, double u, double v, bool fromLeftU = false)
         {
             double step = 1e-8;
-            Vec3D du = FirstDerivative(f, _dU.EvaluateH(u, v));
+            Vec3D du = EvaluateKnotDerivativeU(f, u, v, fromLeftU);
             double s = step;
             while (du.LengthSquared() < 1e-12)
             {
@@ -681,22 +687,48 @@ namespace NURBS
                     du = FirstDerivative(EvaluateH(u, lower), _dU.EvaluateH(u, lower));
                 s *= 2;
             }
-            Vec3D dv = FirstDerivative(f, _dV.EvaluateH(u, v));
+            Vec3D dv = FirstDerivative(f, _dV.EvaluateH(u, v, fromLeftU));
             s = step;
             while (dv.LengthSquared() < 1e-12)
             {
                 double upper = u + s;
                 double lower = u - s;
                 if (upper <= 1 && lower >= 0)
-                    dv = 0.5 * (FirstDerivative(EvaluateH(upper, v), _dU.EvaluateH(upper, v))
-                        + FirstDerivative(EvaluateH(lower, v), _dU.EvaluateH(lower, v)));
+                    dv = 0.5 * (FirstDerivative(EvaluateH(upper, v), _dV.EvaluateH(upper, v))
+                        + FirstDerivative(EvaluateH(lower, v), _dV.EvaluateH(lower, v)));
                 else if (upper <= 1)
-                    dv = FirstDerivative(EvaluateH(upper, v), _dU.EvaluateH(upper, v));
+                    dv = FirstDerivative(EvaluateH(upper, v), _dV.EvaluateH(upper, v));
                 else if (lower >= 0)
-                    dv = FirstDerivative(EvaluateH(lower, v), _dU.EvaluateH(lower, v));
+                    dv = FirstDerivative(EvaluateH(lower, v), _dV.EvaluateH(lower, v));
                 s *= 2;
             }
             return Vec3DOps.Cross(du, dv);
+        }
+
+        private Vec3D EvaluateKnotDerivativeU(Vec4D f, double u, double v, bool fromLeftU)
+        {
+            int span = DeBoor.KnotIndex(fromLeftU ? Math.BitDecrement(u) : u, _degreeU, _knotsU);
+            int first = span - _degreeU;
+            bool atStart = u == _knotsU[span];
+            bool atEnd = u == _knotsU[span + 1];
+            int multiplicity = 0;
+            if (atStart || atEnd)
+                foreach (double knot in _knotsU)
+                    if (knot == u) multiplicity++;
+            if (multiplicity < _degreeU)
+                return FirstDerivative(f, _dU.EvaluateH(u, v, fromLeftU));
+
+            // At a Bezier-span endpoint, use the rational control-edge
+            // derivative. Subtract Cartesian points before weighting: the
+            // homogeneous quotient otherwise invents a transverse component
+            // through cancellation on translated, exactly tangent seams.
+            int a = atStart ? first : span - 1;
+            int b = a + 1;
+            var p = DeBoor.EvaluateRational(_degreeV, v, _controlPoints[a], _knotsV);
+            var q = DeBoor.EvaluateRational(_degreeV, v, _controlPoints[b], _knotsV);
+            double weight = atStart ? q.W / p.W : p.W / q.W;
+            return (DeBoor.Project(q) - DeBoor.Project(p)) *
+                (_degreeU * weight / (_knotsU[span + 1] - _knotsU[span]));
         }
 
         //http://www.cs.mtu.edu/~shene/COURSES/cs3621/NOTES/surface/bspline-de-boor.html
@@ -706,8 +738,14 @@ namespace NURBS
         }
 
         protected unsafe virtual Vec4D EvaluateH(double u, double v)
+            => EvaluateH(u, v, false);
+
+        private unsafe Vec4D EvaluateH(double u, double v, bool fromLeftU)
         {
-            int uIndex = DeBoor.KnotIndexFromHint(ref _uSpanHint, u, _degreeU, _knotsU);
+            // Only span selection is one-sided. Moving the evaluation parameter
+            // introduces a false normal discontinuity even at tangent seams.
+            double spanU = fromLeftU ? Math.BitDecrement(u) : u;
+            int uIndex = DeBoor.KnotIndexFromHint(ref _uSpanHint, spanU, _degreeU, _knotsU);
             int vIndex = DeBoor.KnotIndexFromHint(ref _vSpanHint, v, _degreeV, _knotsV);
 
             Vec4D* bufferU = stackalloc Vec4D[_degreeU + 1];

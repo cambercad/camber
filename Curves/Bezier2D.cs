@@ -12,7 +12,13 @@ namespace Curves
         protected Bezier2D() { }
         public Bezier2D(params Vec2D[] controlPoints)
         {
-            _controlPoints = controlPoints;
+            ArgumentNullException.ThrowIfNull(controlPoints);
+            if (controlPoints.Length < 2)
+                throw new ArgumentException("A Bezier curve needs at least two control points.", nameof(controlPoints));
+            foreach (var point in controlPoints)
+                if (!double.IsFinite(point.X) || !double.IsFinite(point.Y))
+                    throw new ArgumentException("Control points must be finite.", nameof(controlPoints));
+            _controlPoints = (Vec2D[])controlPoints.Clone();
         }
 
         public override double Length()
@@ -66,7 +72,7 @@ namespace Curves
         {
             Vec2D[] copy = new Vec2D[_controlPoints.Length];
             Array.Copy(_controlPoints, copy, _controlPoints.Length);
-            return new Bezier2D(copy);
+            return new Bezier2D(copy) { Flags = Flags, Name = Name };
         }
 
         public override Curve2D Reverse()
@@ -76,7 +82,7 @@ namespace Curves
             {
                 reversed[i] = _controlPoints[_controlPoints.Length - 1 - i];
             }
-            return new Bezier2D(reversed);
+            return new Bezier2D(reversed) { Flags = Flags, Name = Name };
         }
     }
 }

@@ -18,7 +18,10 @@ namespace Geo.NurbsConstruction
 
     /// <summary>
     /// Fits a compact bicubic (or bilinear) B-spline to a triangulated patch.
-    /// Control-point count grows only until the vertex error meets <c>tolerance</c>.
+    /// Control-point count grows only until the full vertex error meets <c>tolerance</c>.
+    /// A best-effort fit may exceed tolerance; MaxError reports all referenced
+    /// vertices, not only the fitting subsample. It is not an extrapolation bound
+    /// or a bound between mesh vertices.
     /// </summary>
     public static class MeshPatchSurfaceFitter
     {
@@ -52,10 +55,13 @@ namespace Geo.NurbsConstruction
             Vec2D uvMin;
             Vec2D uvSpan;
             Dictionary<int, Vec2D> vertexUv;
-            CollectUv(patch, vertexIds, world, uv, out invented, out uvMin, out uvSpan, out vertexUv);
+            if (!CollectUv(patch, vertexIds, world, uv, out invented, out uvMin, out uvSpan, out vertexUv))
+                return false;
             if (world.Count < 3)
                 return false;
 
+            var validationUv = new List<Vec2D>(uv);
+            var validationWorld = new List<Vec3D>(world);
             Subsample(uv, world, MaxSamples);
 
             int[] sizes = { 2, 4, 5, 6, 8, 10, MaxControlPointsPerDir };
@@ -76,7 +82,7 @@ namespace Geo.NurbsConstruction
                 var candidate = BSplineSurfaceFitter.FitScattered(uv, world, n, n, degree, degree);
                 if (candidate == null)
                     continue;
-                double err = BSplineSurfaceFitter.MaxError(candidate, uv, world);
+                double err = BSplineSurfaceFitter.MaxError(candidate, validationUv, validationWorld);
                 if (err < bestErr)
                 {
                     best = candidate;
@@ -135,7 +141,7 @@ namespace Geo.NurbsConstruction
             return new Vec2D(u, v);
         }
 
-        private static void CollectUv(
+        private static bool CollectUv(
             UVSurface patch,
             List<int> vertexIds,
             List<Vec3D> world,
@@ -148,11 +154,13 @@ namespace Geo.NurbsConstruction
             uvMin = new Vec2D(double.MaxValue, double.MaxValue);
             var uvMax = new Vec2D(double.MinValue, double.MinValue);
             bool hasUv = patch.Uv != null && patch.Uv.Count >= patch.Points.Count;
+            var suppliedUv = new Dictionary<int, Vec2D>(vertexIds.Count);
             if (hasUv)
             {
                 for (int i = 0; i < vertexIds.Count; i++)
                 {
                     var t = patch.Uv[vertexIds[i]];
+                    suppliedUv.Add(vertexIds[i], t);
                     if (t.X < uvMin.X) uvMin.X = t.X;
                     if (t.Y < uvMin.Y) uvMin.Y = t.Y;
                     if (t.X > uvMax.X) uvMax.X = t.X;
@@ -161,11 +169,26 @@ namespace Geo.NurbsConstruction
             }
 
             uvSpan = new Vec2D(uvMax.X - uvMin.X, uvMax.Y - uvMin.Y);
-            invented = !hasUv || (uvSpan.X < MinUvSpan && uvSpan.Y < MinUvSpan) || uvSpan.X * uvSpan.Y < 1e-16;
+            invented = !hasUv || !double.IsFinite(uvSpan.X) || !double.IsFinite(uvSpan.Y) ||
+                uvSpan.X < MinUvSpan || uvSpan.Y < MinUvSpan ||
+                !MeanValueParameterization.HasConsistentOrientation(patch.Triangles, suppliedUv);
             vertexUv = invented ? new Dictionary<int, Vec2D>(vertexIds.Count) : null;
 
+            foreach (int id in vertexIds)
+            {
+                var p = patch.Points[id];
+                if (!double.IsFinite(p.X) || !double.IsFinite(p.Y) || !double.IsFinite(p.Z)) return false;
+            }
+
             if (invented)
+            {
                 InventPlanarUv(patch, vertexIds, vertexUv, out uvMin, out uvSpan);
+                if (!MeanValueParameterization.HasConsistentOrientation(patch.Triangles, vertexUv))
+                {
+                    if (!MeanValueParameterization.TryCreate(patch, out vertexUv)) return false;
+                    uvMin = new Vec2D(0, 0); uvSpan = new Vec2D(1, 1);
+                }
+            }
 
             for (int i = 0; i < vertexIds.Count; i++)
             {
@@ -176,6 +199,7 @@ namespace Geo.NurbsConstruction
                 else
                     uv.Add(NormalizeUv(patch.Uv[id], uvMin, uvSpan));
             }
+            return true;
         }
 
         private static void InventPlanarUv(

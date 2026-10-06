@@ -96,6 +96,7 @@ public readonly struct FastBigInteger : IEquatable<FastBigInteger>, IComparable<
 
     public int Sign => limbs == null && !wide ? Math.Sign(small) : negative ? -1 : 1;
     public bool IsZero => limbs == null && !wide && small == 0;
+    private bool IsUnit => limbs == null && !wide && (small == 1 || small == -1);
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryGetInt64(out long value) { value = small; return limbs == null && !wide; }
 
@@ -232,6 +233,8 @@ public readonly struct FastBigInteger : IEquatable<FastBigInteger>, IComparable<
             long sum = unchecked(a.small + b.small);
             if (((a.small ^ sum) & (b.small ^ sum)) >= 0) return new FastBigInteger(sum);
         }
+        if (a.IsZero) return b;
+        if (b.IsZero) return a;
         bool aNegative = a.Sign < 0, bNegative = b.Sign < 0;
         if (aNegative == bNegative) return AddMagnitude(a, b, aNegative);
         int comparison = CompareMagnitude(a, b);
@@ -245,6 +248,7 @@ public readonly struct FastBigInteger : IEquatable<FastBigInteger>, IComparable<
         if (b.IsZero) throw new DivideByZeroException();
         if (a.limbs == null && !a.wide && b.limbs == null && !b.wide && !(a.small == long.MinValue && b.small == -1))
             return new FastBigInteger(a.small / b.small);
+        if (b.IsUnit) return b.small == 1 ? a : -a;
         if (a.Length <= 2 && b.Length <= 2)
             return FromMagnitude(a.Magnitude128 / b.Magnitude128, (a.Sign < 0) != (b.Sign < 0));
         return new FastBigInteger(a.ToBigInteger() / b.ToBigInteger());
@@ -253,6 +257,7 @@ public readonly struct FastBigInteger : IEquatable<FastBigInteger>, IComparable<
     public static FastBigInteger operator %(FastBigInteger a, FastBigInteger b)
     {
         if (b.IsZero) throw new DivideByZeroException();
+        if (b.IsUnit) return default;
         if (a.limbs == null && !a.wide && b.limbs == null && !b.wide)
         {
             if (a.small == long.MinValue && b.small == -1) return default;
@@ -276,6 +281,10 @@ public readonly struct FastBigInteger : IEquatable<FastBigInteger>, IComparable<
             Int128 signedProduct = ((Int128)high << 64) | (ulong)low;
             return FromMagnitude((UInt128)(signedProduct < 0 ? -signedProduct : signedProduct), signedProduct < 0);
         }
+        // Immutable magnitudes can be reused for identity arithmetic. This also
+        // avoids BigInteger conversions when a rational denominator is one.
+        if (a.IsUnit) return a.small == 1 ? b : -b;
+        if (b.IsUnit) return b.small == 1 ? a : -a;
         int na = a.Length, nb = b.Length;
         // At this size the runtime's subquadratic multiplication overtakes the
         // limb loop, even after the conversion cost. Keep unbalanced products
@@ -311,6 +320,7 @@ public readonly struct FastBigInteger : IEquatable<FastBigInteger>, IComparable<
             while (y != 0) { ulong remainder = x % y; x = y; y = remainder; }
             return FromMagnitude(x, false);
         }
+        if (a.IsUnit || b.IsUnit) return new FastBigInteger(1);
         if (a.Length <= 2 && b.Length <= 2)
         {
             UInt128 x = a.Magnitude128, y = b.Magnitude128;

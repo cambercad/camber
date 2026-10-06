@@ -920,6 +920,26 @@ public class NativeSketch
         Native.AddCubicHermiteSpline(points, startTangent, endTangent);
     }
 
+    public void AddBezier(string controlsJoined, string name)
+    {
+        ApplyCurveName(Native.AddBezier(ParseJoinedPoints(controlsJoined)), name);
+    }
+
+    public void AddBSpline(string controlsJoined, int degree, string knotsJoined, string weightsJoined, string name)
+    {
+        static double[] Numbers(string joined)
+        {
+            if (string.IsNullOrEmpty(joined)) return null;
+            string[] parts = joined.Split('|');
+            var result = new double[parts.Length];
+            for (int i = 0; i < result.Length; i++)
+                result[i] = double.Parse(parts[i], System.Globalization.CultureInfo.InvariantCulture);
+            return result;
+        }
+        ApplyCurveName(Native.AddBSpline(ParseJoinedPoints(controlsJoined), degree,
+            Numbers(knotsJoined), Numbers(weightsJoined)), name);
+    }
+
     public void AddSampledCurve(string pointsJoined, string name)
     {
         List<Vec2D> points = ParseJoinedPoints(pointsJoined);
