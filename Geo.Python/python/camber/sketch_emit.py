@@ -2,6 +2,17 @@
 
 from . import naming as _naming
 from . import pick as _pick
+from . import sketch_curves as _curves
+
+EXTRA_CONSTRAINTS = {
+    "point_on_line": (("line_curve",), ("point",), None),
+    "point_on_circle": (("circle_curve",), ("point",), None),
+    "tangent_circles": (("curve_a", "curve_b"), (), None),
+    "horizontal_distance": ((), ("point_a", "point_b"), "value"),
+    "vertical_distance": ((), ("point_a", "point_b"), "value"),
+    "distance_to_line": (("line_curve",), ("point",), "value"),
+    "coincident_on_curve": (("curve",), ("point",), "uniform"),
+}
 
 
 def emit_sketch_python(
@@ -28,7 +39,9 @@ def emit_sketch_python(
         ]
     for a in actions:
         kind = a["kind"]
-        if kind == "line":
+        if kind == "curve_call":
+            lines.append(_curves.emit_curve(sketch_var, a))
+        elif kind == "line":
             lines.append(_fmt_add_curve(
                 sketch_var, "add_line",
                 "{0}, {1}".format(
@@ -53,6 +66,15 @@ def emit_sketch_python(
         elif kind == "rectangle":
             lines.append("{sk}.add_rectangle({a}, {b})".format(
                 sk=sketch_var, a=_fmt_xy(a["p0"]), b=_fmt_xy(a["p1"])))
+        elif kind in EXTRA_CONSTRAINTS:
+            curves, points, scalar = EXTRA_CONSTRAINTS[kind]
+            args = [key + "=" + _fmt_curve_ref(value, actions, name)
+                    for key, value in zip(curves, a.get("curves", []))]
+            args.extend(key + "=" + _fmt_point_expr(value, actions, name, sketch_var)
+                        for key, value in zip(points, a.get("points", [])))
+            if scalar:
+                args.append(scalar + "=" + _fmt_num(a["value"]))
+            lines.append(sketch_var + "." + kind + "(" + ", ".join(args) + ")")
         elif kind in ("horizontal", "vertical"):
             lines.append("{0}.{1}({2})".format(
                 sketch_var, kind, _fmt_curve_ref(a["curves"][0], actions, name)))
@@ -101,7 +123,7 @@ def emit_sketch_python(
     return "\n".join(lines) + "\n"
 
 
-_GEOM_KINDS = ("line", "circle", "arc", "rectangle")
+_GEOM_KINDS = ("line", "circle", "arc", "rectangle", "curve_call")
 
 
 def _solve_after_every_constraint(sketch):
@@ -133,7 +155,7 @@ def _set_solve_after_every_constraint(sketch, value):
     return previous
 
 
-def apply_actions(sketch, actions, start=0, end=None):
+def apply_actions(sketch, actions, start=0, end=None, *, solve=True):
     """Apply actions[start:end] onto an existing sketcher.
 
     `actions` is the full recorded list so derived-handle rewrite can see
@@ -148,7 +170,9 @@ def apply_actions(sketch, actions, start=0, end=None):
     try:
         for a in added:
             kind = a["kind"]
-            if kind == "line":
+            if kind == "curve_call":
+                _curves.apply_curve(sketch, a)
+            elif kind == "line":
                 _apply_line(sketch, a)
             elif kind == "circle":
                 _apply_add(
@@ -168,7 +192,15 @@ def apply_actions(sketch, actions, start=0, end=None):
                 sketch.add_rectangle(a["p0"], a["p1"])
         for a in added:
             kind = a["kind"]
-            if kind in ("horizontal", "vertical"):
+            if kind in EXTRA_CONSTRAINTS:
+                curves, points, scalar = EXTRA_CONSTRAINTS[kind]
+                args = dict(zip(curves, a.get("curves", [])))
+                args.update((key, _public_point(actions, value, sketch))
+                            for key, value in zip(points, a.get("points", [])))
+                if scalar:
+                    args[scalar] = a["value"]
+                getattr(sketch, kind)(**args)
+            elif kind in ("horizontal", "vertical"):
                 getattr(sketch, kind)(a["curves"][0])
             elif kind == "coincident":
                 sketch.coincident(
@@ -191,11 +223,11 @@ def apply_actions(sketch, actions, start=0, end=None):
                     a["value"])
             elif kind == "angle":
                 sketch.angle(a["curves"][0], a["curves"][1], a["value"])
-        if any(a["kind"] not in _GEOM_KINDS for a in added):
-            solve = getattr(sketch, "solve", None)
-            if solve is None:
+        if solve and any(a["kind"] not in _GEOM_KINDS for a in added):
+            solve_method = getattr(sketch, "solve", None)
+            if solve_method is None:
                 raise AttributeError("sketch cannot solve constraints")
-            solve()
+            solve_method()
     finally:
         if previous is not None:
             _set_solve_after_every_constraint(sketch, previous)
@@ -226,7 +258,13 @@ _DERIVED_UNIFORMS = {
 
 
 def _geometry_list(actions):
-    return [a for a in actions if a.get("kind") in ("line", "circle", "arc")]
+    out = []
+    for action in actions:
+        if action.get("kind") == "curve_call":
+            out.extend(action.get("display", []))
+        elif action.get("kind") in ("line", "circle", "arc"):
+            out.append(action)
+    return out
 
 
 def _curve_role(point):

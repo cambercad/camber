@@ -60,14 +60,14 @@ namespace Geo
                 return new AxisDatumLocal(axisPoint, axis);
             }
 
-            if (mesh.TryGetPlaneFromPatch(patchName, out PlaneSurfaceParams plane))
+            if (mesh.TryGetLocalPlaneFromPatch(patchName, out PlaneSurfaceParams plane))
             {
                 Vec3D normal = plane.Normal;
                 normal.Normalize();
                 return new AxisDatumLocal(plane.Origin, normal);
             }
 
-            if (mesh.TryGetPointOnEdge(reference, out Vec3D edgePoint))
+            if (mesh.TryGetLocalPointOnEdge(reference, out Vec3D edgePoint))
             {
                 if (!TryGetEdgeTangent(mesh, reference, out Vec3D tangent))
                     throw new ArgumentException($"Edge '{reference}' does not define a tangent direction.");
@@ -90,17 +90,17 @@ namespace Geo
                     return cylinder.Origin + axis * (cylinder.Height * 0.5);
                 }
 
-                if (mesh.TryGetPlaneFromPatch(patchName, out PlaneSurfaceParams plane))
+                if (mesh.TryGetLocalPlaneFromPatch(patchName, out PlaneSurfaceParams plane))
                     return plane.Origin;
 
-                if (mesh.TryGetPointOnSurface(reference, out Vec3D surfacePoint))
+                if (mesh.TryGetLocalPointOnSurface(reference, out Vec3D surfacePoint))
                     return surfacePoint;
             }
 
-            if (mesh.TryGetPointOnSurface(reference, out Vec3D uvPoint))
+            if (mesh.TryGetLocalPointOnSurface(reference, out Vec3D uvPoint))
                 return uvPoint;
 
-            if (mesh.TryGetPointOnEdge(reference, out Vec3D edgePoint))
+            if (mesh.TryGetLocalPointOnEdge(reference, out Vec3D edgePoint))
                 return edgePoint;
 
             throw new ArgumentException($"Cannot resolve point datum '{reference}' on mesh '{mesh.Name}'.");
@@ -158,7 +158,7 @@ namespace Geo
         private static bool TryGetEdgeTangent(AnchorMesh mesh, string reference, out Vec3D tangent)
         {
             tangent = default;
-            if (!mesh.TryGetEdge(reference, out LineStrip3D edge) || edge == null)
+            if (!mesh.TryGetLocalEdge(reference, out LineStrip3D edge) || edge == null)
                 return false;
 
             Vec3D start = edge.EvaluateUniform(0);

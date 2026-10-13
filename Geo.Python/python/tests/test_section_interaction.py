@@ -78,6 +78,152 @@ class AnnotationLayoutTests(unittest.TestCase):
         self.assertGreater(min(args[0] for args in drawn_lines), viewer.window.width/2)
 
 
+class LiveSectionPlaneTests(unittest.TestCase):
+    def test_rotation_preserves_position_relative_to_translated_model_center(self):
+        from types import SimpleNamespace
+        from camber.inspection import _ViewerInspection
+
+        viewer = SimpleNamespace(section_plane=None, get_bounding_box=lambda: ((8, 18, 28), (12, 22, 32)))
+        state = _ViewerInspection(viewer)
+        state._orient_section((0, 0, 1))
+        self.assertEqual(((0, 0, 1), 30), viewer.section_plane)
+        state.set_section((0, 0, 2), 62, reverse=True)
+        state._orient_section((3, 4, 0))
+        self.assertEqual(23, state.offset)
+        self.assertAlmostEqual(-23, viewer.section_plane[1])
+        self.assertAlmostEqual(1, sum(v*v for v in viewer.section_plane[0]))
+        state._orient_section((0, 1, 0), (0, 19, 0))
+        self.assertEqual(((0, -1, 0), -19), viewer.section_plane)
+
+    def test_invalid_plane_does_not_replace_the_last_valid_plane(self):
+        from types import SimpleNamespace
+        from camber.inspection import _ViewerInspection
+
+        viewer = SimpleNamespace(section_plane=None)
+        state = _ViewerInspection(viewer)
+        state.set_section((1, 0, 0), 3)
+        for normal, offset in (((0, 0, 0), 0), ((float("nan"), 0, 1), 0), ((0, 0, 1), float("inf"))):
+            with self.assertRaises(ValueError):
+                state.set_section(normal, offset)
+            self.assertEqual(((1, 0, 0), 3), viewer.section_plane)
+
+
+@unittest.skipUnless(os.environ.get("CAMBER_TEST_GL") == "1", "requires GL integration tests")
+class LiveSectionRenderingTests(unittest.TestCase):
+    def scene(self, visible=False):
+        from camber import Part, set_progress_log
+        from camber.host import Viewer
+        from camber.glview import _as_scene, pack_scene
+        from camber.inspection import _ViewerInspection
+
+        set_progress_log(False)
+        part = Part((-5, -5, -5), (5, 5, 5), tolerance=.01)
+        block = part.cuboid((-2, -2, -2), (2, 2, 2), name="section_block")
+        hole = part.cuboid((-.7, -.7, -3), (.7, .7, 3), name="section_hole")
+        body = part.subtract(block, hole, name="section_tube")
+        viewer = Viewer(size=(800, 640) if visible else (320, 320), visible=visible)
+        self.addCleanup(viewer.close)
+        viewer.set_solid(pack_scene(_as_scene(body), colors={"*": (.4, .5, .6)}))
+        viewer.checker = False
+        viewer.camera.center, viewer.camera.eye, viewer.camera.up = (0, 0, 0), (0, 0, 10), (0, 1, 0)
+        viewer.camera.ortho, viewer.camera.zoom = True, 3
+        return viewer, _ViewerInspection(viewer), body
+
+    def test_live_caps_preserve_holes_and_reuse_mesh_and_cap_buffers(self):
+        import numpy as np
+
+        viewer, state, _ = self.scene()
+        mesh = viewer._gpu_parts()[0]["mesh"]
+        original = viewer.capture_rgba()
+        state.set_section((0, 0, 1), 0)
+        cut = viewer.capture_rgba()
+
+        def orange(image):
+            return (image[:, :, 0] > 220) & (image[:, :, 1] > 125) & \
+                (image[:, :, 1] < 200) & (image[:, :, 2] < 110)
+
+        self.assertGreater(np.count_nonzero(orange(cut)), 1000)
+        self.assertFalse(orange(cut)[160, 160], "the through-hole must not be capped")
+        cap = viewer._section_cap
+        for normal, offset in (((0, 0, 1), 1), ((1, 0, 1), .3), ((1, 1, 1), -.2)):
+            state.set_section(normal, offset)
+            viewer.capture_rgba()
+            self.assertIs(mesh, viewer._gpu_parts()[0]["mesh"])
+            self.assertIs(cap, viewer._section_cap)
+        state.set_section((0, 0, 1), -3)
+        empty = viewer.capture_rgba()
+        self.assertFalse(np.any(orange(empty)))
+        np.testing.assert_array_equal(empty[160, 120], empty[0, 0])
+        state.set_section((0, 0, 1), -3, reverse=True)
+        np.testing.assert_array_equal(viewer.capture_rgba(), original)
+        viewer.section_plane = None
+        np.testing.assert_array_equal(viewer.capture_rgba(), original)
+
+    def test_section_tab_enable_and_drag_update_the_rendered_plane(self):
+        from camber.view import _selected_plane_context
+
+        viewer, state, body = self.scene(visible=True)
+        ui, mouse = viewer._ui, viewer._pyglet.window.mouse
+        face = next(name for name in body.patch_names if "section_block" in name and "ExtrudeTop" in name)
+        selected = [face]
+        viewer.set_user_callback(lambda: state.draw(ui, selected, lambda: _selected_plane_context(body, selected)))
+
+        def frame():
+            viewer.window.switch_to()
+            viewer.on_draw()
+
+        def click(x, y):
+            ui.on_mouse_press(x, viewer.window.height-y, mouse.LEFT, 0)
+            frame()
+            ui.on_mouse_release(x, viewer.window.height-y, mouse.LEFT, 0)
+            frame()
+
+        def click_label(text, checkbox=False):
+            label = next(args for kind, args, _ in ui._commands
+                         if kind == "text_align" and args[2] == text)
+            click(label[0][0]-(16 if checkbox else 0), label[0][1])
+
+        frame()
+        rect = next(rect for _, label, rect, _ in ui._tab_hits if label == "Cross section")
+        click(rect[0]+10, rect[1]+12)
+        label = next(args for kind, args, _ in ui._commands
+                     if kind == "text_align" and args[2] == "Enable cross section")
+        click(label[0][0]-16, label[0][1])
+        self.assertEqual((0, 0, 1), viewer.section_plane[0])
+        self.assertAlmostEqual(0, viewer.section_plane[1], delta=.0001)
+        mesh, cap = viewer._gpu_parts()[0]["mesh"], viewer._section_cap
+
+        for field, fraction in (("section_position", .75), ("section_elevation", .5), ("section_azimuth", .625)):
+            editor = next(editor for identity, editor in ui._editors.items()
+                          if identity[1] == "##"+field+"_value")
+            x, y, _, h = editor.rect
+            # The slider precedes the numeric field, with eight pixels spacing.
+            x, y = x-198+190*fraction, y+h/2
+            ui.on_mouse_press(x, viewer.window.height-y, mouse.LEFT, 0)
+            frame()
+            frame()
+            ui.on_mouse_release(x, viewer.window.height-y, mouse.LEFT, 0)
+            frame()
+        self.assertAlmostEqual(1, state.offset, delta=.0001)
+        self.assertAlmostEqual(2**-.5, state.normal[0])
+        self.assertAlmostEqual(2**-.5, state.normal[1])
+        self.assertAlmostEqual(0, state.normal[2])
+        self.assertIs(mesh, viewer._gpu_parts()[0]["mesh"])
+        self.assertIs(cap, viewer._section_cap)
+        click_label("Use selected face")
+        context = _selected_plane_context(body, selected)
+        self.assertAlmostEqual(state.offset, sum(a*b for a, b in zip(state.normal, context["frame"].origin)))
+        click_label("Align to view")
+        self.assertEqual(viewer.camera.frame()[0], state.normal)
+        click_label("Keep opposite side", checkbox=True)
+        self.assertTrue(state.reverse)
+        plane = viewer.section_plane
+        click_label("Enable cross section", checkbox=True)
+        self.assertIsNone(viewer.section_plane)
+        click_label("Enable cross section", checkbox=True)
+        self.assertEqual(plane, viewer.section_plane)
+
+
 @unittest.skipUnless(os.environ.get("CAMBER_TEST_GL") == "1", "requires GL integration tests")
 class SectionInteractionTests(unittest.TestCase):
     def test_keyboard_mouse_measurement_cancel_and_reopen(self):

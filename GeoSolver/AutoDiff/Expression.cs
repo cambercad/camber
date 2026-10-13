@@ -22,6 +22,7 @@ namespace GeoSolver
         Cos,
         ASin,
         ACos,
+        ATan2,
 
         //The following types can only be used for symbolic manipulation, not the evaluate
         Function, //A general function that depends on other parameters
@@ -1075,6 +1076,8 @@ namespace GeoSolver
             return new Expr() { _type = ExprType.ACos, _a = a };
         }
 
+        public static Expr Atan2(Expr y, Expr x) => new Expr(ExprType.ATan2, y, x);
+
         public Expr PartialDerivative(Param p)
         {
             Expr derivative = BuildPartialDerivative(p);
@@ -1093,6 +1096,14 @@ namespace GeoSolver
         {
             switch (_type)
             {
+                case ExprType.ATan2:
+                    {
+                        Expr dy = _a.BuildPartialDerivative(p);
+                        Expr dx = _b.BuildPartialDerivative(p);
+                        if (dy == null && dx == null) return null;
+                        Expr y = EmbedPrimal(_a), x = EmbedPrimal(_b);
+                        return (x * (dy ?? Expr.Constant(0)) - y * (dx ?? Expr.Constant(0))) / (x*x + y*y);
+                    }
                 case ExprType.Parameter:
                     return p == _value ? Expr.Constant(1) : null;
                 case ExprType.Constant:
@@ -1206,6 +1217,11 @@ namespace GeoSolver
         {
             switch (_type)
             {
+                case ExprType.ATan2:
+                    {
+                        double y = _a.Evaluate(), x = _b.Evaluate();
+                        return (x * _a.EvaluatePartialDerivative(p) - y * _b.EvaluatePartialDerivative(p)) / (x*x + y*y);
+                    }
                 case ExprType.Parameter:
                     return p == _value ? 1 : 0;
                 case ExprType.Constant:
@@ -1275,6 +1291,8 @@ namespace GeoSolver
         {
             switch (_type)
             {
+                case ExprType.ATan2:
+                    return Math.Atan2(_a.Evaluate(), _b.Evaluate());
                 case ExprType.Parameter:
                     return _value.Value;
                 case ExprType.Constant:
@@ -1645,6 +1663,8 @@ namespace GeoSolver
                     result = "ASin(" + _a.ToString(Type, cache, depth + 1) + ")"; break;
                 case ExprType.ACos:
                     result = "ACos(" + _a.ToString(Type, cache, depth + 1) + ")"; break;
+                case ExprType.ATan2:
+                    result = "Atan2(" + _a.ToString(Type, cache, depth + 1) + ", " + _b.ToString(Type, cache, depth + 1) + ")"; break;
             }
             if (result == null)
                 throw new Exception();
@@ -1660,6 +1680,13 @@ namespace GeoSolver
         {
             switch (_type)
             {
+                case ExprType.ATan2:
+                    {
+                        Expr a = _a.FoldConstants(), b = _b.FoldConstants();
+                        return a.Type == ExprType.Constant && b.Type == ExprType.Constant
+                            ? Expr.Constant(Math.Atan2(a.Value.Value, b.Value.Value))
+                            : new Expr(_type, a, b);
+                    }
                 case ExprType.Parameter:
                 case ExprType.Constant:
                 case ExprType.Function:
@@ -1729,6 +1756,7 @@ namespace GeoSolver
                 case ExprType.ASin:
                 case ExprType.ACos:
                 case ExprType.Abs:
+                case ExprType.Sign:
                     {
                         Expr a = _a.FoldConstants();
                         if (a._type == ExprType.Constant)
@@ -1749,6 +1777,7 @@ namespace GeoSolver
                 case ExprType.Subtract: return a - b;
                 case ExprType.Multiply: return a * b;
                 case ExprType.Divide: return a / b;
+                case ExprType.ATan2: return Math.Atan2(a, b);
                 default: throw new Exception();
             }
         }
@@ -1765,6 +1794,7 @@ namespace GeoSolver
                 case ExprType.ASin: return Math.Asin(a);
                 case ExprType.ACos: return Math.Acos(a);
                 case ExprType.Abs: return Math.Abs(a);
+                case ExprType.Sign: return Math.Sign(a);
                 default: throw new Exception();
             }
         }
@@ -1785,6 +1815,7 @@ namespace GeoSolver
                 case ExprType.Add:
                 case ExprType.Multiply:
                 case ExprType.Divide:
+                case ExprType.ATan2:
                     return 2;
                 case ExprType.Sqrt:
                 case ExprType.Pow2:
@@ -1794,6 +1825,7 @@ namespace GeoSolver
                 case ExprType.ASin:
                 case ExprType.ACos:
                 case ExprType.Abs:
+                case ExprType.Sign:
                     return 1;
             }
             throw new Exception();

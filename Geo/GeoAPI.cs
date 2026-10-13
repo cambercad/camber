@@ -1203,15 +1203,16 @@ Extrudes profileSketch along the curves of guideSketch (lifted to 3D using the g
             return result;
         }
 
-        [APIDescription(@"Extrude(sketch: PlotterSketcherCoordSys, height: float, maxDeviation: float = -1, name: str = None, twistRatePerExtrudeDistance: float = 0, taperAngle: float = 0) -> AnchorMesh
+        [APIDescription(@"Extrude(sketch: PlotterSketcherCoordSys, height: float, maxDeviation: float = -1, name: str = None, twistRatePerExtrudeDistance: float = 0, taperAngle: float = 0, twistCenter: Vec2D = None) -> AnchorMesh
 Linear extrusion of the sketch along the sketch's local +Z (the sketch plane normal).
   height: extrusion distance along +Z (single direction; use ExtrudeTwoSides for double-sided).
   maxDeviation: chordal tessellation tolerance for curved sketch geometry (world units); -1 uses the GeoAPI instance default.
-  twistRatePerExtrudeDistance: radians of twist per unit Z (0 = no twist).
+  twistRatePerExtrudeDistance: radians of twist per unit Z (0 = no twist). Twist is about the sketch origin unless twistCenter is set.
+  twistCenter: optional sketch-plane point (x, y) the profile rotates about. Omit it to twist about the sketch origin.
   taperAngle: draft angle in radians; positive narrows in the extrusion direction, negative widens. Cannot be combined with twist.
 Taper requires one closed contour (helper geometry excluded); supported sketch curves are offset through the same Clipper-backed sketch-offset pipeline used by Sketch.OffsetStrip. A collapsed or split offset is rejected. Patches are named ""<name>-top"", ""<name>-bottom"", and ""<name>-<contourSegmentName>"" for the side walls.")]
         public AnchorMesh Extrude(PlotterSketcherCoordSys sketch, double height, double maxDeviation = -1,
-            string name = null, double twistRatePerExtrudeDistance = 0, double taperAngle = 0)
+            string name = null, double twistRatePerExtrudeDistance = 0, double taperAngle = 0, Vec2D? twistCenter = null)
         {
             if (!double.IsFinite(taperAngle) || Math.Abs(taperAngle) >= Math.PI / 2)
                 throw new ArgumentOutOfRangeException(nameof(taperAngle), "Taper angle must be finite and between -90 and 90 degrees (in radians).");
@@ -1221,7 +1222,7 @@ Taper requires one closed contour (helper geometry excluded); supported sketch c
                     throw new NotSupportedException("Tapered extrusion cannot be combined with twist.");
                 return ExtrudeTaperedCore(sketch, height, taperAngle, maxDeviation, name);
             }
-            return ExtrudeTwoSides(sketch, height, 0, maxDeviation, name, twistRatePerExtrudeDistance);
+            return ExtrudeTwoSides(sketch, height, 0, maxDeviation, name, twistRatePerExtrudeDistance, twistCenter);
         }
 
         private AnchorMesh ExtrudeTaperedCore(PlotterSketcherCoordSys sketch, double height, double taperAngle,
@@ -1619,22 +1620,27 @@ Extrudes to one named face of a target solid. The selected face must cover the c
         /// <param name="name">Optional name for the resulting mesh (auto-generated if not provided)</param>
         /// <param name="twistRatePerExtrudeDistance">Radians of twist per unit distance along local +Z (see <see cref="Extruder.GenerateExtrudedMesh"/>).</param>
         /// <returns>The extruded mesh</returns>
-        [APIDescription(@"ExtrudeTwoSides(sketch: PlotterSketcherCoordSys, heightPositive: float, heightNegative: float, maxDeviation: float = -1, name: str = None, twistRatePerExtrudeDistance: float = 0) -> AnchorMesh
+        [APIDescription(@"ExtrudeTwoSides(sketch: PlotterSketcherCoordSys, heightPositive: float, heightNegative: float, maxDeviation: float = -1, name: str = None, twistRatePerExtrudeDistance: float = 0, twistCenter: Vec2D = None) -> AnchorMesh
 Like Extrude but extrudes in both directions along the sketch normal.
   heightPositive: distance along +Z; heightNegative: distance along -Z. Use 0 on one side to get a one-sided extrusion.
   maxDeviation: -1 uses the GeoAPI instance default.
+  twistCenter: optional sketch-plane (x, y) the profile rotates about. Omit it to twist about the sketch origin.
 Other parameters identical to Extrude.")]
-        public AnchorMesh ExtrudeTwoSides(PlotterSketcherCoordSys sketch, double heightPositive, double heightNegative, double maxDeviation = -1, string name = null, double twistRatePerExtrudeDistance = 0)
+        public AnchorMesh ExtrudeTwoSides(PlotterSketcherCoordSys sketch, double heightPositive, double heightNegative, double maxDeviation = -1, string name = null, double twistRatePerExtrudeDistance = 0, Vec2D? twistCenter = null)
         {
+            if (twistCenter != null && (!double.IsFinite(twistCenter.Value.X) || !double.IsFinite(twistCenter.Value.Y)))
+                throw new ArgumentException("Twist center must be a finite point on the sketch plane.", nameof(twistCenter));
             maxDeviation = ResolveMaxDeviation(maxDeviation);
             name = name ?? GenerateName("Extrude");
             List<List<List<Vec2D>>> contour = sketch.Tessellate(maxDeviation, out var contourN, out var names, out var metaData2D, maxDeviation, SketchTessellationFlags.ExcludeHelperGeometry);
 
             var output = new MeshOutput();
             var naming = new MeshNaming { ContourNames = names, OperationName = name };
+            Vec2D center = twistCenter ?? default;
             int numGroups = Extruder.GenerateExtrudedMesh(converter, sketch.CoordinateSystem, contour, contourN,
                 heightPositive, heightNegative, output, naming,
-                twistRatePerExtrudeDistance: twistRatePerExtrudeDistance, maxDeviation: maxDeviation, baseGroupIndex: 0);
+                twistRatePerExtrudeDistance: twistRatePerExtrudeDistance, maxDeviation: maxDeviation, baseGroupIndex: 0,
+                twistCenter: center);
             var triangleGroupToName = naming.TriangleGroupToName;
 
             ReserveGeneratedGroupIds(output.TriangleGroups, numGroups, triangleGroupToName);
@@ -1644,7 +1650,7 @@ Other parameters identical to Extrude.")]
             var profilePoints = NurbsPatchMetadataBuilder.CollectProfilePoints(contour);
             var surfaceMetaData = NurbsPatchMetadataBuilder.BuildExtrudeMetadata(
                 metaData2D, sketch.CoordinateSystem, heightPositive, heightNegative, name,
-                twistRatePerExtrudeDistance, profilePoints, contour, names);
+                twistRatePerExtrudeDistance, profilePoints, contour, names, center);
 
             var result = new AnchorMesh(name, mesh, triangleGroupToName, surfaceMetaData);
             RegisterMesh(result);
@@ -1853,7 +1859,8 @@ Lofts an ordered list of profile sketches into a mesh. Each sketch contains a si
             ReserveGeneratedGroupIds(output.TriangleGroups, numGroups, triangleGroupToName);
 
             var mesh = new MeshNormalUV(converter, output.Vertices, output.Normals, output.UVs, output.Triangles, output.TriangleGroups, output.PrecisePositions);
-            var surfaceMetaData = NurbsPatchMetadataBuilder.BuildLoftMetadata(sketches, maxDeviation, options, name, output.LoftSideSupportFactory, output.LoftSideDomains);
+            var surfaceMetaData = NurbsPatchMetadataBuilder.BuildLoftMetadata(sketches, maxDeviation, options, name,
+                output.LoftSideSupportFactory, output.LoftSideDomains, output.StartPointCap, output.EndPointCap);
             // A finite tessellation cannot prove that a smooth or curved NURBS
             // support is planar. For ruled lofts made entirely from straight
             // profile edges, each local patch is bilinear, so exact coplanarity

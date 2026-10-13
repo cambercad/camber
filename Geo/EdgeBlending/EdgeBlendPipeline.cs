@@ -1443,11 +1443,21 @@ namespace Geo
                 if (owners.Count == 2) continue;
                 boundaryEdges.Add((edge.A, edge.B, owners[0]));
             }
+            if (boundaryEdges.Count == 0) return;
             var boundaryBounds = boundaryEdges.Select(edge => SegmentBounds(edge.A, edge.B)).ToArray();
+            static Box3F EnclosingBounds((Rat3Hybrid Min, Rat3Hybrid Max) bounds)
+            {
+                var box = bounds.Min.GetBox();
+                box.Extend(bounds.Max.GetBox());
+                return box.GetBoundsF();
+            }
+            var boundaryBoxes = boundaryBounds.Select(EnclosingBounds).ToArray();
+            var boundaryTree = Tree.BuildTreeFast(i => boundaryBoxes[i], boundaryBoxes.Length);
 
             for (int i = 0; i < boundaryEdges.Count; i++)
-                for (int j = i + 1; j < boundaryEdges.Count; j++)
+                foreach (int j in new TreeBoxOverlapEnumerator(boundaryTree, boundaryBoxes[i]))
                 {
+                    if (j <= i) continue;
                     if (!BoundsOverlap(boundaryBounds[i], boundaryBounds[j])) continue;
                     var a = boundaryEdges[i];
                     var b = boundaryEdges[j];
@@ -1471,12 +1481,20 @@ namespace Geo
                         Max: new Rat3Hybrid(Max3(a.X, b.X, c.X), Max3(a.Y, b.Y, c.Y),
                                            Max3(a.Z, b.Z, c.Z)));
             }).ToArray();
+            // Integer enclosures and outward-rounded BVH boxes only select
+            // candidates. Rational bounds and coverage below still decide
+            // whether the original volume covers each exact patch boundary.
+            var triangleBoxes = triangleBounds.Select(EnclosingBounds).ToArray();
+            var triangleTree = triangleBoxes.Length == 0 ? Array.Empty<BVHNode>() :
+                Tree.BuildTreeFast(i => triangleBoxes[i], triangleBoxes.Length);
             static bool CoveredByBoundaryTriangles((Rat3Hybrid A, Rat3Hybrid B, int Surface) edge,
                 (Rat3Hybrid Min, Rat3Hybrid Max) edgeBounds, MeshNormalUV volume,
-                List<Rat3Hybrid> points, (Rat3Hybrid Min, Rat3Hybrid Max)[] triangleBounds)
+                List<Rat3Hybrid> points, (Rat3Hybrid Min, Rat3Hybrid Max)[] triangleBounds,
+                BVHNode[] triangleTree, Box3F edgeBox)
             {
+                if (triangleTree.Length == 0) return false;
                 var intervals = new List<(BigRationalHybrid Start, BigRationalHybrid End)>();
-                for (int triangleIndex = 0; triangleIndex < volume.Triangles.Count; triangleIndex++)
+                foreach (int triangleIndex in new TreeBoxOverlapEnumerator(triangleTree, edgeBox))
                 {
                     if (!BoundsOverlap(edgeBounds, triangleBounds[triangleIndex])) continue;
                     var triangle = volume.Triangles[triangleIndex];
@@ -1528,7 +1546,8 @@ namespace Geo
             for (int edgeIndex = 0; edgeIndex < boundaryEdges.Count; edgeIndex++)
             {
                 var edge = boundaryEdges[edgeIndex];
-                if (!CoveredByBoundaryTriangles(edge, boundaryBounds[edgeIndex], volume, points, triangleBounds))
+                if (!CoveredByBoundaryTriangles(edge, boundaryBounds[edgeIndex], volume, points, triangleBounds,
+                    triangleTree, boundaryBoxes[edgeIndex]))
                 {
                     string patchName = patchNames[edge.Surface].Name ?? $"closure/corner {edge.Surface}";
                     throw new InvalidOperationException(

@@ -54,6 +54,24 @@ class LabelOffsetTests(unittest.TestCase):
 
 
 class GeometricGlyphTests(unittest.TestCase):
+    def test_screen_sized_constraint_glyphs_do_not_grow_with_geometry(self):
+        for length in (10, 1000):
+            curves = [{"kind": "line", "p0": (0, 0), "p1": (length, 0)},
+                      {"kind": "line", "p0": (0, 2), "p1": (length, 2)}]
+            for wpp in (.01, .1):
+                overlay = build_constraint_overlay([{"kind":"parallel", "curves":[0,1]}], curves,
+                                                   glyph_size=8*wpp)
+                for start, end in overlay.cons_segs:
+                    self.assertAlmostEqual(8, math.dist(start, end)/wpp)
+
+    def test_screen_sized_coincidence_uses_a_small_symbol_without_abbreviated_text(self):
+        curves = [{"kind":"line", "p0":(0,0), "p1":(10,0)}]
+        overlay = build_constraint_overlay([{"kind":"coincident", "points":[(0,0), "origin"]}], curves,
+                                           glyph_size=.08)
+        self.assertFalse(overlay.labels)
+        xs = [p[0] for seg in overlay.cons_segs for p in seg]
+        self.assertAlmostEqual(.056, max(xs)-min(xs))
+
     def test_horizontal_h_at_mid_plus_offset(self):
         curves = [{"kind": "line", "p0": (0.0, 0.0), "p1": (10.0, 0.0)}]
         actions = [
@@ -323,21 +341,37 @@ class ConstraintPickAndEditTests(unittest.TestCase):
         self.assertEqual(1, state["dimension"]["edit_index"])
         self.assertTrue(state["dimension_focus"])
 
-    def test_dimension_editor_stays_inside_palette_width(self):
+    def test_dimension_editor_uses_panel_width(self):
         pair = sketch_icons.dimension_button_width() * 2 + sketch_icons.ITEM_GAP
         self.assertAlmostEqual(sketch_icons.CONTENT_W, pair)
         self.assertLessEqual(sketch_icons.CONTENT_W, sketch_icons.PANEL_W)
         ui = _DimensionEditorSpy()
-        changed, value, apply_clicked, cancel_clicked = sketch_icons.dimension_editor(
+        changed, value, apply_clicked, cancel_clicked, valid = sketch_icons.dimension_editor(
             ui, "radius", 12.5, focus=True)
         self.assertFalse(changed)
         self.assertAlmostEqual(12.5, value)
         self.assertFalse(apply_clicked)
         self.assertFalse(cancel_clicked)
-        self.assertEqual([sketch_icons.CONTENT_W], ui.item_widths)
+        self.assertTrue(valid)
+        self.assertEqual([320.0], ui.item_widths)
         self.assertEqual(1, ui.focus_count)
         self.assertTrue(ui.labels[0].startswith("##"))
         self.assertLessEqual(max(ui.button_widths), sketch_icons.CONTENT_W)
+
+    def test_enter_in_the_length_field_applies(self):
+        ui = _DimensionEditorSpy()
+        ui.submitted = True
+        _changed, value, apply_clicked, cancel_clicked, valid = sketch_icons.dimension_editor(
+            ui, "length", 10.0)
+        self.assertAlmostEqual(10.0, value)
+        self.assertTrue(valid)
+        self.assertTrue(apply_clicked)
+        self.assertFalse(cancel_clicked)
+        ui.submitted = True
+        _changed, _value, apply_clicked, _cancel, valid = sketch_icons.dimension_editor(
+            ui, "length", 0.0)
+        self.assertFalse(valid)
+        self.assertFalse(apply_clicked)
 
     def test_commit_edit_updates_the_existing_action(self):
         live = _DimensionSpy()
@@ -370,14 +404,18 @@ class ConstraintPickAndEditTests(unittest.TestCase):
 
 
 class _DimensionEditorSpy(object):
+    def IsItemValid(self):
+        return True
+
     def __init__(self):
         self.item_widths = []
         self.focus_count = 0
         self.labels = []
         self.button_widths = []
+        self.submitted = False
 
     def GetContentRegionAvail(self):
-        return (sketch_icons.CONTENT_W, 100.0)
+        return (320.0, 100.0)
 
     def CalcTextSize(self, text):
         return (len(text) * 7.0, 14.0)
@@ -409,15 +447,21 @@ class _DimensionEditorSpy(object):
     def SetKeyboardFocusHere(self, *args):
         self.focus_count += 1
 
-    def InputDouble(self, label, value, *args):
+    def InputDouble(self, label, value, *args, **kwargs):
         self.labels.append(label)
         return False, value
 
-    def Button(self, label, width, height, *, primary=False):
+    def IsItemSubmitted(self):
+        return self.submitted
+
+    def Button(self, label, width, height, *, primary=False, enabled=True):
         self.button_widths.append(float(width))
         return False
 
     def SameLine(self):
+        pass
+
+    def ValidationMessage(self, message):
         pass
 
 

@@ -11,15 +11,18 @@
         private Param[] _params;
         private int[][] _jacobianColumns;
         private HashSet<int>[] _jacobianColumnSet;
+        private double[] _residualTolerances;
         private List<DependentParam> _dependentParams;
 
         public bool FullyDefined { get { return _equations.Length == _params.Length; } }
 
-        private static Expr[] Substitute(Expr[] equations, out List<DependentParam> equalityMap, HashSet<Param> dragged = null)
+        private static Expr[] Substitute(Expr[] equations, out List<DependentParam> equalityMap,
+            ref double[] residualTolerances, HashSet<Param> dragged = null)
         {
             equalityMap = new List<DependentParam>();
             List<Expr> newEquations = new List<Expr>();
             newEquations.AddRange(equations);
+            var tolerances = residualTolerances.ToList();
 
             bool progressed = true;
             while (progressed)
@@ -37,6 +40,7 @@
                         continue;
 
                     newEquations.RemoveAt(i);
+                    tolerances.RemoveAt(i);
                     progressed = true;
 
                     if (isPin)
@@ -57,6 +61,7 @@
             }
 
             equalityMap.Reverse();
+            residualTolerances = tolerances.ToArray();
             return newEquations.ToArray();
         }
 
@@ -230,10 +235,11 @@
                 _dependentParams[i].Update();
         }
 
-        private static Expr[] SolveSingleParamEquations(Expr[] equations)
+        private static Expr[] SolveSingleParamEquations(Expr[] equations, ref double[] residualTolerances)
         {
             List<Expr> newEquations = new List<Expr>();
             newEquations.AddRange(equations);
+            var tolerances = residualTolerances.ToList();
             bool success = true;
             while (success)
             {
@@ -247,7 +253,10 @@
                         // Drop satisfied constants. Unsatisfied constants stay so SumOfSquaredErrors
                         // still reflects inconsistency; Newton handles nParams==0 without throwing.
                         if (Math.Abs(e.Evaluate()) < NewtonSolver.CONVERGE_TOLERANCE)
+                        {
                             newEquations.RemoveAt(i);
+                            tolerances.RemoveAt(i);
+                        }
                         continue;
                     }
                     if (set.Count == 1)
@@ -258,6 +267,7 @@
                         if (s)
                         {
                             newEquations.RemoveAt(i);
+                            tolerances.RemoveAt(i);
 
                             for (int j = 0; j < newEquations.Count; ++j)
                                 newEquations[j] = newEquations[j].FreezeParamAsConstant(p).FoldConstants();
@@ -267,19 +277,26 @@
                     }
                 }
             }
+            residualTolerances = tolerances.ToArray();
             return newEquations.ToArray();
         }
 
-        public EquationContainer(IList<Expr> equations, HashSet<Param> dragged = null, bool applySketchReductions = true)
+        public EquationContainer(IList<Expr> equations, HashSet<Param> dragged = null,
+            bool applySketchReductions = true, IReadOnlyList<double> residualTolerances = null)
         {
+            if (residualTolerances != null && (residualTolerances.Count != equations.Count ||
+                residualTolerances.Any(tolerance => !double.IsFinite(tolerance) || tolerance <= 0)))
+                throw new ArgumentException("Supply one positive finite tolerance per equation.", nameof(residualTolerances));
+            _residualTolerances = residualTolerances?.ToArray() ??
+                Enumerable.Repeat(NewtonSolver.CONVERGE_TOLERANCE, equations.Count).ToArray();
             _equations = new Expr[equations.Count];
             for (int i = 0; i < equations.Count; ++i)
                 _equations[i] = new Expr(equations[i]).FoldConstants();
 
             if (applySketchReductions)
             {
-                _equations = Substitute(_equations, out _dependentParams, dragged);
-                _equations = SolveSingleParamEquations(_equations);
+                _equations = Substitute(_equations, out _dependentParams, ref _residualTolerances, dragged);
+                _equations = SolveSingleParamEquations(_equations, ref _residualTolerances);
             }
             else
             {
@@ -324,6 +341,8 @@
             for (int i = 0; i < _equations.Length; i++)
                 _equationCode[i] = ExprProgram.From(_equations[i]);
         }
+
+        public double ResidualTolerance(int i) => _residualTolerances[i];
 
         public double Evaluate(int equationIndex)
         {

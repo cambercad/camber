@@ -49,6 +49,7 @@ namespace GeoSolver.Kinematics
             const int chartCount = 8;
             const int newtonPerChart = 400;
             double bestSse = double.PositiveInfinity;
+            RestartCollinearDirections();
             for (int chart = 0; chart < chartCount; chart++)
             {
                 result = ConstraintSolver.SolveDetailed(
@@ -102,6 +103,12 @@ namespace GeoSolver.Kinematics
                     direction2 = angular.Vector2;
                     desiredDot = Math.Cos(angular.Angle.Evaluate());
                 }
+                else if (constraints[i] is PerpendicularDirections3d perpendicular)
+                {
+                    direction1 = perpendicular.Direction1;
+                    direction2 = perpendicular.Direction2;
+                    desiredDot = 0;
+                }
                 else continue;
 
                 Vec3D n1 = direction1.Evaluate();
@@ -124,7 +131,7 @@ namespace GeoSolver.Kinematics
                     continue;
 
                 Vec3D axis = Vec3DOps.Cross(n1, n2);
-                if (constraints[i] is AngleBetweenVectors3d && TryGetBearingAxis(body,n2,out Vec3D bearingAxis))
+                if (constraints[i] is AngleBetweenVectors3d or PerpendicularDirections3d && TryGetBearingAxis(body,n2,out Vec3D bearingAxis))
                     axis = bearingAxis;
                 else if (axis.LengthSquared() < 1e-12)
                     axis = Vec3DOps.GetOrthoNormal(n2);

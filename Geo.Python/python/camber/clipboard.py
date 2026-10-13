@@ -65,4 +65,8 @@ def _window_class():
 
 def create_window(*args, **kwargs):
     """Create the viewer window with native clipboard protocol corrections."""
-    return _window_class()(*args, **kwargs)
+    window_class = _window_class()
+    if kwargs.get("style") == "borderless":
+        from .gui_window import chrome_window_class
+        window_class = chrome_window_class(window_class)
+    return window_class(*args, **kwargs)

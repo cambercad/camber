@@ -10,6 +10,39 @@ public sealed class SurfaceWorkflowTests : IDisposable
     public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
 
     [Fact]
+    public void OpenArcExtrusionProducesNamedCurvedSheetThatCanThicken()
+    {
+        var api = Api();
+        var sketch = api.GetPlotterSketcher(DefaultPlanes.OriginXY, "arc_profile");
+        var arc = sketch.AddArc(new Vec2D(-2, 0), new Vec2D(0, 1), new Vec2D(2, 0));
+        var surface = api.ExtrudeSurface(sketch, 5, name: "guard_sheet");
+        Assert.False(surface.IsVolume);
+        Assert.Single(surface.groupIdToExtendedName);
+        Assert.Equal(EntityNaming.ExtrudeSide("guard_sheet", arc.Name), surface.groupIdToExtendedName.Values.Single());
+        Assert.InRange(surface.Mesh.Positions.Min(p => p.Z), -1e-4, 1e-4);
+        Assert.InRange(surface.Mesh.Positions.Max(p => p.Z), 4.9999, 5.0001);
+        Assert.NotNull(surface.surfaceMetaData.Values.Single().NurbsSurface);
+        AssertSolid(api.Thicken(surface, .1, name: "guard"));
+        Assert.Throws<ArgumentOutOfRangeException>(() => api.ExtrudeSurface(sketch, 0));
+    }
+
+    [Fact]
+    public void OpenPolylineAndDisconnectedProfilesKeepOnePatchPerCurve()
+    {
+        var api = Api();
+        var sketch = api.GetPlotterSketcher(DefaultPlanes.OriginXY, "profiles");
+        sketch.AddLine(new Vec2D(0, 0), new Vec2D(2, 0));
+        sketch.AddLine(new Vec2D(2, 0), new Vec2D(2, 1));
+        sketch.AddLine(new Vec2D(5, 0), new Vec2D(6, 0));
+        var sheet = api.ExtrudeSurface(sketch, -3, name: "bent_sheets");
+        Assert.False(sheet.IsVolume);
+        Assert.Equal(3, sheet.groupIdToExtendedName.Count);
+        Assert.InRange(sheet.Mesh.Positions.Min(p => p.Z), -3.0001, -2.9999);
+        Assert.InRange(sheet.Mesh.Positions.Max(p => p.Z), -1e-4, 1e-4);
+        api.GetTopMesh();
+    }
+
+    [Fact]
     public void SewExactFacesReconstructsAClosedSolid()
     {
         var api = Api();

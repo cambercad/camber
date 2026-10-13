@@ -137,6 +137,7 @@
             int maxNewtonIterations = 0)
         {
             List<Expr> equations = new List<Expr>();
+            var residualTolerances = new List<double>();
             HashSet<Param> nonNegative = null;
 
             for (int i = 0; i < cons.Count; ++i)
@@ -148,13 +149,15 @@
                         nonNegative = new HashSet<Param>();
                     nonNegative.Add(contact.Lambda);
                 }
-                if (c is TangentCircularCircular2d tangent &&
-                    tangent.TryGenerateJoinedArcEquation(cons, equations))
-                    continue;
-                c.GenerateEquations(equations, scaling);
+                int firstRow = equations.Count;
+                if (!(c is TangentCircularCircular2d tangent &&
+                      tangent.TryGenerateJoinedArcEquation(cons, equations)))
+                    c.GenerateEquations(equations, scaling);
+                for (int row = firstRow; row < equations.Count; row++)
+                    residualTolerances.Add(NewtonSolver.ResidualTolerance(c is ContactHalfSpace3d));
             }
 
-            EquationContainer e = new EquationContainer(equations, draggedParams, applySketchReductions);
+            EquationContainer e = new EquationContainer(equations, draggedParams, applySketchReductions, residualTolerances);
             bool softOver = allowSoftOverconstrained || (nonNegative != null && nonNegative.Count > 0);
             SolveResult result = NewtonSolver.NewtonSolveDetailed(
                 e, draggedParams, nonNegative, scaling, null, softOver, maxNewtonIterations);

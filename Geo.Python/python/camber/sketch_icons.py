@@ -39,7 +39,12 @@ def _text_size(ui, text):
 
 
 def _line(dl, a, b, col, th=1.6):
-    dl.AddLine(a, b, col, th)
+    dl.AddLine(a, b, col, _stroke(dl, th))
+
+
+def _stroke(dl, thickness):
+    # Keep ribbon-size outlines legible without making larger icons heavier.
+    return max(thickness, 1.25 / max(getattr(dl, "scale", 1), 1e-6))
 
 
 def _dot(dl, c, col, r=2.0):
@@ -48,19 +53,18 @@ def _dot(dl, c, col, r=2.0):
 
 def _circ(dl, c, r, col, th=1.6, segs=28):
     try:
-        dl.AddCircle(c, r, col, segs, th)
+        dl.AddCircle(c, r, col, segs, _stroke(dl, th))
     except TypeError:
         dl.AddCircle(c, r, col, segs)
-
-
-def _circ_fill(dl, c, r, col, segs=16):
-    dl.AddCircleFilled(c, r, col, segs)
 
 
 def _arc(dl, ox, oy, cx, cy, rx, ry, start_deg, sweep_deg, col, th=1.6, n=20):
     # Screen Y-down: standard cos/sin matches GDI+ (clockwise from east).
     start = start_deg * math.pi / 180.0
     sweep = sweep_deg * math.pi / 180.0
+    if hasattr(dl, "AddEllipseArc"):
+        dl.AddEllipseArc(_pt(ox, oy, cx, cy), (rx, ry), start, sweep, col, _stroke(dl, th))
+        return
     pts = []
     for i in range(n + 1):
         t = start + sweep * i / n
@@ -112,22 +116,22 @@ def draw_arc(dl, ox, oy, ink, accent):
     ry = 8.0 * ICON / 24.0
     start = 200.0 * math.pi / 180.0
     sweep = 140.0 * math.pi / 180.0
-    n = 24
-    pts = []
-    for i in range(n + 1):
-        t = start + sweep * i / n
-        pts.append((cx + rx * math.cos(t), cy + ry * math.sin(t)))
-    for i in range(len(pts) - 1):
-        _line(dl, pts[i], pts[i + 1], ink, 1.6)
-    _dot(dl, pts[0], accent, 2.0)
-    _dot(dl, pts[n // 2], accent, 2.0)
-    _dot(dl, pts[-1], accent, 2.0)
+    _arc(dl, ox, oy, 12, 15, 9, 8, 200, 140, ink)
+    for parameter in (0, .5, 1):
+        t = start + sweep*parameter
+        _dot(dl, (cx + rx*math.cos(t), cy + ry*math.sin(t)), accent, 2.0)
 
 
 def draw_rectangle(dl, ox, oy, ink, accent):
     a = _pt(ox, oy, 4, 6)
     b = _pt(ox, oy, 20, 18)
-    dl.AddRect(a, b, ink, 0.0, 0, 1.6)
+    dl.AddRect(a, b, ink, 0.0, 0, _stroke(dl, 1.6))
+
+
+def draw_profile(dl, ox, oy, ink, accent):
+    _arc(dl, ox, oy, 12, 17, 8, 11, 180, 180, ink)
+    for point in ((4, 17), (12, 6), (20, 17)):
+        _dot(dl, _pt(ox, oy, *point), accent, 1.8)
 
 
 def draw_normal(dl, ox, oy, ink, accent):
@@ -144,25 +148,40 @@ def draw_normal(dl, ox, oy, ink, accent):
 
 
 def draw_undo(dl, ox, oy, ink, accent):
-    _line(dl, _pt(ox, oy, 6, 6), _pt(ox, oy, 18, 18), accent, 1.7)
-    _line(dl, _pt(ox, oy, 18, 6), _pt(ox, oy, 6, 18), accent, 1.7)
+    _return_arrow(dl, ox, oy, ink, accent, reverse=False)
+
+
+def draw_redo(dl, ox, oy, ink, accent):
+    _return_arrow(dl, ox, oy, ink, accent, reverse=True)
+
+
+def draw_cancel(dl, ox, oy, ink, accent):
+    _line(dl, _pt(ox, oy, 6, 6), _pt(ox, oy, 18, 18), ink, 1.6)
+    _line(dl, _pt(ox, oy, 18, 6), _pt(ox, oy, 6, 18), ink, 1.6)
+
+
+def _return_arrow(dl, ox, oy, ink, accent, *, reverse):
+    tip, tail = (20, 16) if reverse else (4, 8)
+    _line(dl, _pt(ox, oy, tip, 8), _pt(ox, oy, 12, 8), ink, 1.6)
+    _arc(dl, ox, oy, 12, 14, 6, 6, -90, -180 if reverse else 180, ink, 1.6)
+    _line(dl, _pt(ox, oy, tip, 8), _pt(ox, oy, tail, 4), accent, 1.6)
+    _line(dl, _pt(ox, oy, tip, 8), _pt(ox, oy, tail, 12), accent, 1.6)
 
 
 def draw_select(dl, ox, oy, ink, accent):
-    points = [_pt(ox, oy, 5, 3), _pt(ox, oy, 18, 13), _pt(ox, oy, 12, 14), _pt(ox, oy, 9, 21)]
+    points = [_pt(ox, oy, *point) for point in
+              ((5, 3), (5, 19), (9, 15), (13, 21), (16, 19), (12, 13), (20, 12))]
     for i in range(len(points)):
         _line(dl, points[i], points[(i + 1) % len(points)], ink, 1.6)
-    _dot(dl, _pt(ox, oy, 18, 13), accent, 2.0)
 
 
 def draw_coincident(dl, ox, oy, ink, accent):
-    r = 5.0 * ICON / 24.0
+    r = 4.0 * ICON / 24.0
     c0 = _pt(ox, oy, 9, 12)
     c1 = _pt(ox, oy, 15, 12)
-    _circ_fill(dl, c0, r, ink)
-    _circ_fill(dl, c1, r, accent)
     _circ(dl, c0, r, ink, 1.5)
     _circ(dl, c1, r, ink, 1.5)
+    _dot(dl, _pt(ox, oy, 12, 12), accent, 1.5)
 
 
 def draw_horizontal(dl, ox, oy, ink, accent):
@@ -178,8 +197,8 @@ def draw_vertical(dl, ox, oy, ink, accent):
 
 
 def draw_parallel(dl, ox, oy, ink, accent):
-    _line(dl, _pt(ox, oy, 5, 7), _pt(ox, oy, 19, 5), ink, 1.6)
-    _line(dl, _pt(ox, oy, 5, 17), _pt(ox, oy, 19, 15), ink, 1.6)
+    _line(dl, _pt(ox, oy, 5, 10), _pt(ox, oy, 19, 8), ink, 1.6)
+    _line(dl, _pt(ox, oy, 5, 16), _pt(ox, oy, 19, 14), ink, 1.6)
 
 
 def draw_perpendicular(dl, ox, oy, ink, accent):
@@ -188,7 +207,7 @@ def draw_perpendicular(dl, ox, oy, ink, accent):
     a = _pt(ox, oy, 5, 15)
     b = _pt(ox, oy, 9, 19)
     try:
-        dl.AddRect(a, b, accent, 0.0, 0, 1.6)
+        dl.AddRect(a, b, accent, 0.0, 0, _stroke(dl, 1.6))
     except TypeError:
         dl.AddRect(a, b, accent)
 
@@ -218,12 +237,9 @@ def draw_equal(dl, ox, oy, ink, accent):
 
 def draw_midpoint(dl, ox, oy, ink, accent):
     _line(dl, _pt(ox, oy, 3, 12), _pt(ox, oy, 21, 12), ink, 1.6)
-    a = _pt(ox, oy, 10, 8)
-    b = _pt(ox, oy, 14, 16)
-    try:
-        dl.AddRectFilled(a, b, accent)
-    except TypeError:
-        dl.AddRectFilled(a, b, accent)
+    for x in (4, 20):
+        _line(dl, _pt(ox, oy, x, 10), _pt(ox, oy, x, 14), ink, 1.5)
+    _dot(dl, _pt(ox, oy, 12, 12), accent, 2.2)
 
 
 def draw_concentric(dl, ox, oy, ink, accent):
@@ -236,7 +252,7 @@ def draw_fix(dl, ox, oy, ink, accent):
     a = _pt(ox, oy, 7, 11)
     b = _pt(ox, oy, 17, 19)
     try:
-        dl.AddRect(a, b, ink, 0.0, 0, 1.6)
+        dl.AddRect(a, b, ink, 0.0, 0, _stroke(dl, 1.6))
     except TypeError:
         dl.AddRect(a, b, ink)
     _arc(dl, ox, oy, 12, 10, 4, 5, 180, 180, ink, 1.6, 16)
@@ -301,6 +317,7 @@ def _invisible_button(ui, button_id, width, height):
 
 
 _TOOLTIPS = {
+    "profile": "Create or edit an ellipse, spline, gear, airfoil or text outline using coordinates and dimensions.",
     "select": "Select curves or drag sketch handles.",
     "line": "Draw a line between two points.",
     "polyline": "Draw connected line segments.",
@@ -367,18 +384,50 @@ def dimension_button_width():
     return (CONTENT_W - ITEM_GAP) * 0.5
 
 
-def dimension_editor(ui, kind, value, focus=False):
-    """Value box that stays inside the 3-column palette width.
+RELATION_LABELS = {
+    "point_on_line": "Point on line", "point_on_circle": "Point on circle",
+    "tangent_circles": "Tangent circles", "horizontal_distance": "Horizontal offset",
+    "vertical_distance": "Vertical offset", "distance_to_line": "Distance to line",
+    "coincident_on_curve": "Point at curve parameter",
+}
 
-    Keep the input and action buttons inside the three-column palette width.
+
+def relation_label(kind):
+    return RELATION_LABELS.get(kind, (kind or "Value").replace("_", " ").capitalize())
+
+
+def dimension_error(kind, value):
+    if not math.isfinite(value):
+        return "Enter a finite number"
+    if kind == "coincident_on_curve":
+        return "Curve parameter must be between 0 and 1" if not 0 <= value <= 1 else ""
+    if kind in ("horizontal_distance", "vertical_distance"):
+        return ""
+    if kind == "distance_to_line":
+        return "Distance must be nonnegative" if value < 0 else ""
+    return "Enter a number greater than zero" if value <= 0 else ""
+
+
+def dimension_editor(ui, kind, value, focus=False):
+    """Value box spanning the current panel, with Apply and Cancel beneath it.
+
+    Enter while the value field is focused applies a valid number.
     """
-    caption = (kind or "value").replace("_", " ").title()
+    caption = relation_label(kind)
     wrapped_text(ui, caption)
     changed = False
     new_value = float(value)
+    width = float(CONTENT_W)
+    try:
+        avail = ui.GetContentRegionAvail()
+        aw = float(avail[0] if hasattr(avail, "__len__") else avail.x)
+        if aw > 1.0:
+            width = aw
+    except Exception:
+        pass
     pushed = False
     try:
-        ui.PushItemWidth(float(CONTENT_W))
+        ui.PushItemWidth(width)
         pushed = True
     except Exception:
         pushed = False
@@ -388,7 +437,8 @@ def dimension_editor(ui, kind, value, focus=False):
         except Exception:
             pass
     try:
-        result = ui.InputDouble("##sk_dimension", new_value, 0.0, 0.0, "%.4f")
+        result = ui.InputDouble("##sk_dimension", new_value, 0.0, 0.0, "%.4f",
+                               error=dimension_error(kind, new_value))
         if isinstance(result, tuple):
             changed = bool(result[0])
             new_value = float(result[1])
@@ -408,17 +458,27 @@ def dimension_editor(ui, kind, value, focus=False):
             ui.PopItemWidth()
         except Exception:
             pass
+    submitted = False
+    try:
+        submitted = bool(ui.IsItemSubmitted())
+    except Exception:
+        submitted = False
+    valid = ui.IsItemValid() and not dimension_error(kind, new_value)
     apply_w = dimension_button_width()
     apply_clicked = action_button(ui, "Apply", width=apply_w,
-                                  button_id="dimension_apply", primary=True)
+                                  button_id="dimension_apply", primary=True, enabled=valid)
+    if submitted and valid:
+        apply_clicked = True
     ui.SameLine()
     cancel_clicked = action_button(ui, "Cancel", width=apply_w, button_id="dimension_cancel")
-    return changed, new_value, apply_clicked, cancel_clicked
+    if not valid:
+        ui.ValidationMessage(dimension_error(kind, new_value) or "Enter a valid number")
+    return changed, new_value, apply_clicked, cancel_clicked, valid
 
 
-def action_button(ui, label, width=78, height=26, button_id=None, primary=False):
+def action_button(ui, label, width=78, height=26, button_id=None, primary=False, enabled=True):
     return ui.Button(label + "##sk_act_" + (button_id or label), width, height,
-                     primary=primary)
+                     primary=primary, enabled=enabled)
 
 
 def begin_palette(ui, title="Sketch"):
@@ -514,6 +574,7 @@ CURVE_TOOLS = (
     ("arc", "Arc", draw_arc),
     ("circle", "Circle", draw_circle),
     ("rectangle", "Rect", draw_rectangle),
+    ("profile", "Profile", draw_profile),
 )
 
 CONSTRAINT_TOOLS = (

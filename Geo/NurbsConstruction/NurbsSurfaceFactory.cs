@@ -225,6 +225,10 @@ namespace Geo.NurbsConstruction
                     throw new ArgumentException("Loft profiles must share U degree and control-point count.");
             }
 
+            if (profiles.Skip(1).Any(profile => profile.ControlPoints.Where((point,i) =>
+                    point.W != profiles[0].ControlPoints[i].W).Any()))
+                return LoftHomogeneousProfiles(profiles, style);
+
             var uWeights = new double[nu];
             var vCurves = new List<BSplineCurve>(nu);
             for (int i = 0; i < nu; i++)
@@ -242,6 +246,54 @@ namespace Geo.NurbsConstruction
             }
 
             return new BSplineSurface(degreeU, vCurves, uWeights, (double[])profiles[0].Knots.Clone());
+        }
+
+        // Interpolate XYZW together: every authored rational section is retained,
+        // including differing conic angles/weights. No weights are averaged or snapped.
+        internal static BSplineSurface LoftHomogeneousProfiles(IReadOnlyList<BSplineCurve> profiles,
+            LoftStyle style, Vec3D? startTangent = null, Vec3D? endTangent = null, bool seamGuide = false)
+        {
+            if (!seamGuide && ClosedSeamWeightsDiffer(profiles))
+                throw new ArgumentException("Closed rational sections with differing seam weight ratios require an exact seam guide.");
+            int n=profiles.Count;
+            var columns=new Vec4D[profiles[0].ControlPoints.Length][];
+            var knots=style==LoftStyle.Ruled
+                ? new[] {0.0}.Concat(Enumerable.Range(0,n).Select(i=>(double)i/(n-1))).Append(1.0).ToArray()
+                : Enumerable.Repeat(0.0,4).Concat(Enumerable.Range(1,n-2)
+                    .SelectMany(i=>Enumerable.Repeat((double)i/(n-1),3))).Concat(Enumerable.Repeat(1.0,4)).ToArray();
+            for(int column=0;column<columns.Length;column++)
+            {
+                var points=profiles.Select(p=>p.ControlPoints[column]).ToArray();
+                if(style==LoftStyle.Ruled) { columns[column]=points; continue; }
+                var control=new List<Vec4D> {points[0]};
+                for(int span=0;span<n-1;span++)
+                {
+                    var a=span==0 ? points[1]-points[0] : (points[span+1]-points[span-1])*.5;
+                    var b=span==n-2 ? points[^1]-points[^2] : (points[span+2]-points[span])*.5;
+                    Vec4D Derivative(Vec3D tangent,double weight) =>
+                        new(tangent.X*weight/(n-1),tangent.Y*weight/(n-1),tangent.Z*weight/(n-1),0);
+                    if(span==0 && startTangent.HasValue) a=Derivative(startTangent.Value,points[0].W);
+                    if(span==n-2 && endTangent.HasValue) b=Derivative(endTangent.Value,points[^1].W);
+                    control.Add(points[span]+a/3);
+                    control.Add(points[span+1]-b/3);
+                    control.Add(points[span+1]);
+                }
+                columns[column]=control.ToArray();
+            }
+            if(columns.SelectMany(c=>c).Any(p=>!double.IsFinite(p.X)||!double.IsFinite(p.Y)||
+                    !double.IsFinite(p.Z)||!double.IsFinite(p.W)||p.W<=0))
+                throw new ArgumentException("Longitudinal interpolation must retain finite, positive rational weights; add sections or use a ruled loft.");
+            return new BSplineSurface(profiles[0].Degree,style==LoftStyle.Ruled?1:3,columns,
+                (double[])profiles[0].Knots.Clone(),knots);
+        }
+
+        internal static bool ClosedSeamWeightsDiffer(IReadOnlyList<BSplineCurve> profiles)
+        {
+            Vec3D Point(Vec4D p) => new(p.X/p.W,p.Y/p.W,p.Z/p.W);
+            if (profiles.Any(p => (Point(p.ControlPoints[0])-Point(p.ControlPoints[^1])).Length() >
+                    64*2.2204460492503131e-16*Math.Max(1,Point(p.ControlPoints[0]).Length()))) return false;
+            var first=profiles[0].ControlPoints;
+            return profiles.Skip(1).Any(p => p.ControlPoints[0].W*first[^1].W != p.ControlPoints[^1].W*first[0].W);
         }
 
         /// <summary>

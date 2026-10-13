@@ -9,6 +9,166 @@ pip install cambercad
 pip install "cambercad[view]"
 ```
 
+The full GUI modeling mode is **experimental and incomplete**. The Operations
+tab provides searchable forms for geometry operations, derived from the Python
+API signatures. Complex inputs and sketches using unsupported Python constructs still need
+direct Python editing. With a wheel built from this checkout and the viewer dependencies
+installed, start it with:
+
+```text
+python -c "import camber; camber.modeling.open('my_part.py')"
+```
+
+From the repository root on Windows, use `.\.venv\Scripts\python.exe` in place of
+`python` if the project virtual environment is not activated.
+
+The same entry point works from a Python script:
+
+```python
+import camber
+camber.modeling.open("my_part.py")
+```
+
+If the file does not exist, the workspace starts with an unsaved Part. Add sketches and features from the toolbar; select a feature to edit its parameters or Python block, then Apply and Save. The Python file remains the model definition. A failed rebuild leaves the previous geometry visible. Double-click a sketch to edit its geometry, constraints and dimensions. Unsupported sketch constructs remain editable through their Python block without losing information.
+
+Frame parameters have coordinate editors, standard plane orientations, named frame
+references, and placement from selected planar faces. Invalid inputs have an error
+border and an inline explanation. Apply remains disabled until form validation
+passes; geometry failures keep the edit open and preserve the previous model.
+Cancel discards the edit.
+
+Choosing a sketch-based feature without an existing sketch opens sketch setup.
+Finish drawing to return to that feature with the new profile selected. Selecting
+a sketch also exposes Extrude, Revolve and Surface directly in its properties.
+
+The document toolbar provides New, Open, Save, Undo and Redo. Keyboard shortcuts
+are Ctrl+N/O/S, Ctrl+Z/Y, and Ctrl+Enter to apply the current feature. Undo inside
+a text field edits that field; outside it, Undo restores the previous model revision.
+Switching features, saving or closing prompts before discarding unapplied edits.
+The feature tree can be filtered. Frame placement offers **Pick planar face**;
+select a face in the viewport, or press Esc to cancel picking.
+
+Use **File → New assembly**, then **Insert** to choose a saved part or assembly.
+The first component is fixed automatically. On the Assembly tab, choose a mate,
+then pick its first and second references in the viewport. Repeated components
+have distinct references. Face mates default to opposing normals. Preview checks
+the solved placement; Create mate keeps it. Failed solves retain the last valid
+assembly. The navigator groups Components and Constraints, including nested assemblies.
+Select a component or mate to inspect it; double-click an authored mate to edit it.
+Open component model edits its saved source; Save and Back to assembly rebuild the parent.
+During sketch editing, the same navigator groups Curves, Constraints and Dimensions.
+Click to select geometry or supply a constraint reference; double-click to edit.
+Drawing tools, constraints and dimensions appear in the main Sketch ribbon. The
+docked Properties panel edits the selection; the document toolbar and status bar
+remain in place. Finish sketch and Cancel sketch return to part modeling.
+Finish returns to the owning part and preserves the sketch's named placement.
+
+Sketch setup offers **Pick planar face**, and point inputs offer **Pick point**.
+Selections store named references, so edits resolve the current feature geometry
+rather than freezing picked coordinates. Frame references are available in Python
+as `solid.face_frame(face_name, inward=False)` and points as `solid.point(point_name)`.
+**Save as** (Ctrl+Shift+S) preserves relative component links and undo history.
+
+Detailed output is hidden initially to leave room for the model. **Python** opens
+the source editor; **View → Output** toggles the message/source panel. Advanced
+frame directions and optional arguments expand when needed, including on errors.
+**Commands** or Ctrl+F1 toggles the ribbon to maximize the viewport.
+
+The cube at the bottom left of the viewport follows the current orientation.
+Click a face center, an edge strip or a corner block to change the view; zoom
+and the view center stay unchanged. It is available in both viewer workflows.
+Edges running along X are red, Y green and Z blue.
+
+Required inputs appear first; expand Options for optional arguments. Existing
+feature results are available as inputs, including individual pattern instances.
+Coordinates and profile lists accept Python literals such as `(0, 0, 10)` and
+`[first, second]`. Public API methods returning modeling objects automatically
+receive forms; existing API categories organize the commands. Display calls and
+numeric/data queries do not become modeling features.
+
+The feature tree uses operation icons and nests consumed sketches beneath their
+extrusions or other features. Select or double-click a feature to open its
+parameter editor; Apply rebuilds dependent features. Expand a feature to select
+its profile. Preview shows that feature's result; Show final restores the finished
+part. Supported constrained sketches can be reopened without dropping their constraints.
+
+For a complete source-backed example with ribs, a stepped bearing bore and four
+counterbored mounting holes, open `python/examples/modeling/bearing_housing.py`
+in modeling mode, or run that script directly.
+
+For an assembly example with revolved, grooved races and nine rolling elements,
+run `python python/examples/modeling/ball_bearing/bearing.py`. Select a race in
+the assembly tree and choose **Open component model** to edit its sketches and
+features. Save the component, then choose **Back to assembly** to rebuild it.
+
+### Automated GUI testing
+
+`camber.gui_testing.GuiDriver` sends mouse, keyboard and text events directly to
+the pyglet window. It finds visible controls by label and panel, supports dragging
+and scrolling, and captures screenshots without desktop automation. It needs
+only pyglet; the driver contains no CAD logic. Control inspection is opt-in and
+does not retain geometry during normal GUI use.
+
+```python
+from camber.gui_testing import GuiDriver
+
+driver = GuiDriver(ui, draw_frame, capture=capture_image)
+driver.click("Name", panel="Properties")
+driver.text("Example", replace=True)
+driver.key("TAB")
+driver.click("Apply", panel="Properties")
+driver.screenshot("gui.png")
+```
+
+Use the application's frame callback for `draw_frame`. `capture_image` is
+optional; the CAD viewer's `capture_image()` includes the scene and GUI using
+an offscreen render target. Native file dialogs are tested through their
+selection callbacks. Run the GUI and workflow regression tests with
+`CAMBER_TEST_GL=1`; they use hidden windows and need an OpenGL context.
+
+To control an already running modeling workspace from another Python process,
+explicitly enable its local test endpoint:
+
+```python
+import camber
+camber.modeling.open("my_part.py", control_file="gui-control.json")
+```
+
+Then run small control scripts in another terminal:
+
+```python
+from camber.gui_remote import GuiControlClient
+
+gui = GuiControlClient.from_file("gui-control.json")
+print(gui.controls())  # Visible labels, panels, rectangles and enabled states.
+gui.click("Solid##tab", panel="Model")
+gui.screenshot("workspace.png")
+# gui.click("Diameter", panel="Properties")  # Use the label from controls().
+# gui.text("8", replace=True)
+```
+
+The client also supports `move`, `drag`, `scroll`, and `key`. Coordinates are
+logical pixels measured from the top left. Responses arrive after the input
+has been processed and the GUI redrawn. Screenshots are PNG bytes and are saved
+by the client. Native OS file dialogs remain outside this bridge.
+
+The endpoint listens only on `127.0.0.1`, requires its random session token,
+and accepts a fixed set of GUI commands. No arbitrary Python command is accepted.
+The connection file must not already exist and is removed on normal exit;
+delete a stale file after an interrupted run. Keep this credential file private.
+No additional dependencies are installed, and normal GUI startup has no server.
+
+Other pyglet applications can use the same bridge without CAD logic:
+
+```python
+import pyglet
+from camber.gui_remote import GuiControlServer
+
+with GuiControlServer(driver) as server:  # Create on the GUI thread.
+    print(server.connection)             # Pass these credentials to the client.
+    pyglet.app.run()
+```
+
 This folder is also the **wheel build** (Native AOT + DotWrap), not the old GeoScriptViewer scripts (`from Geo import …`).
 
 ---
@@ -75,8 +235,11 @@ Still in the same venv:
 python -m pip install --upgrade pip
 python -m pip install --force-reinstall (Get-ChildItem dist\camber*.whl | Select-Object -Last 1).FullName
 # Kernel needs cffi (usually pulled in by the wheel). Viewer is optional:
-python -m pip install "pyglet>=2.1.16,<3" numpy
+python -m pip install "pyglet>=3.0.dev11,<4" numpy
 ```
+
+The viewer currently uses the pyglet 3 development release for its graphics API
+and native file dialogs. Pyglet 2 is no longer supported by this checkout.
 
 Check:
 
@@ -86,7 +249,7 @@ python -c "import camber, pyglet; print('ok', camber.__file__)"
 
 If `import camber` fails, the wheel is not installed in **this** venv. Activate `.venv` again and retry step 3.
 
-If `import pyglet` fails: `python -m pip install "pyglet>=2.1.16,<3" numpy`.
+If `import pyglet` fails: `python -m pip install "pyglet>=3.0.dev11,<4" numpy`.
 
 ---
 
@@ -113,6 +276,85 @@ runtime; other pyglet consumers can call `ui.set_theme("light")` or
 In the Camber viewer, press `D` to switch the UI theme; text fields keep `D`
 for typing while focused.
 
+The reusable GUI also provides themed context menus. Open one explicitly on a
+right-click (after distinguishing it from a camera drag), then draw it each
+frame outside conditional panels:
+
+```python
+from camber.gui import MenuItem
+
+# In the application's right-click handler:
+ui.OpenContextMenu("actions")
+
+# In the frame callback, before ui.render():
+choice = ui.ContextMenu("actions", [
+    MenuItem("Rename…", icon="✎", shortcut="F2"),
+    None,  # separator
+    MenuItem("Delete", enabled=False),
+])
+if choice == (0,):
+    rename_selected()
+```
+
+The returned index path refers to the original lists, including separators:
+`(0,)` is the first root action, `(0, 1)` is its second submenu action. Shortcut
+labels are hints, not bindings. Menus support keyboard navigation, scrolling,
+outside-click/Escape dismissal, and optional checkmarks. Right-click anywhere
+in `control_gallery.py` to try them in either theme.
+
+`MenuItem(..., children=(...))` creates a submenu. Nested menus share context
+menu rendering and keyboard handling; they open to the left when there is not
+enough room on the right. `ui.MenuBar("main", headings)` takes MenuItem headings
+with children and returns the same index paths, including the heading index.
+Left/right arrows navigate menu levels or switch headings; Escape closes one
+level at a time. Menu bars also switch headings on hover while open.
+
+Property inspectors are composed from existing controls, with aligned labels
+and collapsible groups. No model-binding framework is required:
+
+```python
+if ui.PropertyGroup("Geometry"):
+    changed, radius = ui.Property("Radius", radius, step=0.1)
+    changed, name = ui.Property("Name", name)
+if ui.PropertyGroup("Appearance"):
+    changed, visible = ui.Property("Visible", visible)
+    changed, material = ui.Property("Material", material,
+                                    options=["Steel", "Aluminium"], editable=True)
+    ui.Property("Identifier", identifier, read_only=True)
+```
+
+Group names scope property identities. Numbers are edited as floats; boolean,
+text, preset, free-form preset and read-only rows reuse their corresponding
+controls. The gallery's View menu opens the Properties demonstration.
+
+Numeric fields support optional step buttons; editable combo boxes let users
+choose a preset or type another value. Both follow the `(changed, value)` pattern:
+
+```python
+changed, radius = ui.InputDouble("Radius", radius, step=0.1, fast_step=1.0)
+changed, material = ui.EditableComboBox("Material", material, ["Steel", "Aluminium"])
+```
+
+Hold Ctrl while stepping to use `fast_step`. A zero step keeps a plain numeric
+field. Confirmation dialogs block background mouse and keyboard input, remain
+open on outside clicks, and use the current theme:
+
+```python
+# When the action is requested:
+ui.OpenMessageBox("Delete body?", "This removes the selected body.",
+                  buttons=("Delete", "Cancel"), default="Cancel")
+
+# Every frame, after the other controls and before ui.render():
+response = ui.MessageBox("Delete body?")
+if response == "Delete":
+    delete_selected()
+```
+
+Tab/arrows move between buttons; Enter chooses the focused button. Escape
+chooses the configured cancel button (automatically `Cancel` when present).
+Long messages scroll with the mouse wheel. A missing cancel choice means
+Escape does not dismiss the dialog.
+
 From `Geo.Python`:
 
 ```powershell
@@ -131,6 +373,10 @@ hole = part.cylinder(origin=(1, 1, -0.5), radius=0.4, height=3.0, name='cyl')
 ```
 
 A window should open. Click a face/edge/point to copy its name. **Ctrl-click** = multi-select.
+
+`Part` is a modelling document: it owns sketches, geometry, names, operation
+history and the default tolerance. `Solid` is a solid body within that document.
+A Part can contain multiple solids, including intermediate modelling results.
 
 The Python API follows the geometry being edited: construct from a `Sketch`
 (`sk.extrude(...)`, `sk.revolve(...)`), modify a `Solid`
@@ -233,7 +479,7 @@ python -m pip install --force-reinstall (Get-ChildItem dist\camber*.whl | Select
 | Symptom | Fix |
 |---------|-----|
 | `No module named 'camber'` | Activate `.venv`, reinstall the `.whl` from `dist\` |
-| `The OpenGL viewer needs pyglet` / import error on `show()` | `python -m pip install "pyglet>=2.1.16,<3" numpy` |
+| `The OpenGL viewer needs pyglet` / import error on `show()` | `python -m pip install "pyglet>=3.0.dev11,<4" numpy` |
 | Two Pythons / “works in IDE, not in terminal” | `where.exe python` — must be `Geo.Python\.venv\Scripts\python.exe` |
 | Publish fails at link | Install VS **Desktop development with C++** |
 | Old geometry after code changes | Rebuild wheel (`publish-wheel.ps1`) **and** `--force-reinstall` the new `.whl` |
@@ -307,15 +553,18 @@ assemblies with many intersecting bounding boxes.
 
 ### Section views and measurements
 
-In the ordinary 3D viewer, press **I** to open Inspect. Ctrl-click two named
-points, edges or faces and choose **Measure minimum distance**. All combinations
+In the ordinary 3D viewer, press **I** to open Inspect. In its **Measure** tab,
+Ctrl-click two named points, edges or faces and choose **Measure minimum distance**. All combinations
 are supported, including edge–surface. Picking and closest-distance calculations
 run on the CPU in C# using cached BVHs; Python only handles viewer data and UI.
 Distances follow the displayed geometry's tessellation tolerance.
 
-Inspect also offers a live section plane (X/Y/Z, view direction, or a selected
-planar face), a position slider and reverse-side control. This visual clipping
-does not modify the CAD model. Section fill is intended for closed solids;
+In the **Cross section** tab, turn on **Enable cross section**. Choose the plane's
+normal axis, align to the view or a selected planar face, or set any orientation
+with azimuth/elevation sliders and numeric fields (degrees). Move the position
+slider or enter a distance in model units; zero is the model center. **Keep
+opposite side** reverses the cut. Updates use GPU clipping and reuse the existing
+mesh; they do not modify the CAD model. Section fill is intended for closed solids;
 disable it when inspecting open sheets. Use `camber.section` below when an
 actual capped geometry snapshot is needed.
 
@@ -394,13 +643,40 @@ Names, list length and incompatible alignment controls are validated.
 
 Supplying `first_curves` with no options selects matching-vertex correspondence.
 This mode supports sections with matching named lines and curves, including
-two-arc/two-line rounded slots. Rational section weights must agree after degree
-and knot matching. Each authored curve produces a separate selectable face named `<loft>-Side-<edge>`, plus
+two-arc/two-line rounded slots. Rational sections are interpolated in homogeneous
+coordinates, including differing weights. Each authored curve produces a separate selectable face named `<loft>-Side-<edge>`, plus
 start/end caps. Side names come from the first section's authored curve names,
 remain stable under dimension/tessellation changes, and retain analytic UV domains.
 Explicit matched correspondence rejects incompatible sections; it does not silently
 switch to perimeter-based correspondence. The existing perimeter-based loft remains
 available for other section structures and currently retains one side face.
+
+### Solid loft guides and end conditions
+
+```python
+body = part.loft(sections, guides=[leading_edge, trailing_edge])
+body = part.loft(sections, start_tangent=(0, 0, 100), end_tangent=(0, 0, 100))
+body = part.loft(sections, start_point=(0, 0, -20), end_point=(0, 0, 120))
+# Choose a conical tip instead of the default rounded closure:
+body = part.loft(sections, end_point=(0, 0, 120), end_closure="sharp")
+```
+
+Guides are lines or Hermite curves passing through corresponding contour joints
+of every section, in section order. End tangents are world-space derivative
+vectors along that order; their lengths control the bend. The longitudinal
+parameter runs from zero to one with equal section intervals.
+
+Tip points lie beyond the first or last section. Rounded closures join smoothly
+to the loft and end with a rounded tip; sharp closures form cones. Without a tip
+point, the existing flat cap remains. Rounded closures require a regular,
+star-shaped end profile, an interior projected tip and compatible tangency.
+Unsupported or conflicting geometry raises an explanatory error rather than
+fitting or snapping the profiles. Supplying these controls without `options`
+selects matched-vertex correspondence automatically.
+
+In the full GUI, choose **Loft → End conditions** for tip coordinates, closure
+styles and optional tangents. Guides and profile correspondence are under
+**More options**. Invalid inputs prevent applying the feature.
 
 The inspection example has four constrained rectangular sections, varying dimensions
 and twist, four side faces and two caps:
@@ -434,6 +710,12 @@ keep their existing behavior; use the former only when its proximity-based
 seam is intentional. Author matching start points when building a sequence
 of closed sections. The geometry and default analytic metadata both follow
 that authored curve order.
+
+Python can choose the same alignment explicitly:
+`part.loft(sections, options=LoftOptions(alignment="minimum_twist"))`.
+The full GUI provides ordered profile selection and **Customize loft → Alignment →
+Minimize twist**. This is useful for a rectangular-to-round transition whose
+section start points do not correspond. Inspect the preview before applying.
 
 
 ### Ellipse sections

@@ -69,6 +69,11 @@ Registers a solid owned by another GeoAPI instance. Its exact geometry is re-exp
             if (!ReferenceEquals(source, _api))
                 definition = GetForeignDefinition(source, mesh);
 
+            return AddDefinition(definition, position, orientation);
+        }
+
+        private AssemblyPart AddDefinition(AnchorMesh definition, Vec3D position, Quaternion orientation)
+        {
             orientation = TransformMath.NormalizeDefault(orientation);
             var initialPose = new Transform(position, orientation);
             definition.CaptureRigidRestPose(_api.Converter);

@@ -257,6 +257,7 @@ public class ContactConstraintHardTests
         static SolveResult Solve(IList<IBaseEquation> cons, bool forceSparse)
         {
             var equations = new List<Expr>();
+            var tolerances = new List<double>();
             HashSet<Param> nonNeg = null;
             foreach (var c in cons)
             {
@@ -265,10 +266,13 @@ public class ContactConstraintHardTests
                     nonNeg ??= new HashSet<Param>();
                     nonNeg.Add(contact.Lambda);
                 }
+                int firstRow = equations.Count;
                 c.GenerateEquations(equations, 1.0);
+                for (int row = firstRow; row < equations.Count; row++)
+                    tolerances.Add(NewtonSolver.ResidualTolerance(c is ContactHalfSpace3d));
             }
             return NewtonSolver.NewtonSolveDetailed(
-                new EquationContainer(equations), null, nonNeg, 1.0, forceSparse, allowSoftOverconstrained: true);
+                new EquationContainer(equations, residualTolerances: tolerances), null, nonNeg, 1.0, forceSparse, allowSoftOverconstrained: true);
         }
 
         var (denseCons, denseContacts) = Build();

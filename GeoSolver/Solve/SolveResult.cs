@@ -21,12 +21,13 @@ namespace GeoSolver
 
     /// <summary>
     /// Column-scaling hint for free Newton parameters.
-    /// Contact multipliers use <see cref="ContactLambda"/>; everything else stays <see cref="Default"/>.
+    /// Rigid-body translations and contact multipliers use physical length scaling.
     /// </summary>
     public enum ParamScaleKind
     {
         Default = 0,
         ContactLambda = 1,
         Orientation = 2,
+        Translation = 3,
     }
 }

@@ -8,6 +8,17 @@ namespace Geo;
 
 public static partial class LoftBuilder
 {
+    private static Func<INurbsSurface> CreateLoftSupportFactory(IReadOnlyList<BSplineCurve> sections, LoftOptions options)
+    {
+        var style = options.Style;
+        if (!options.HasShapeControls)
+            return () => NurbsSurfaceFactory.LoftFromProfileCurves(sections, style);
+        if (options.Style == LoftStyle.Ruled)
+            throw new ArgumentException("Guide curves and end tangents require a smooth loft style.");
+        var surface = SurfaceLoft.BuildSolid(sections, options.Guides, options.StartTangent, options.EndTangent);
+        return () => surface;
+    }
+
     private static int FindFirstCurveEdge(LoftPreparedProfile profile, string name, int section, bool closed)
     {
         if (string.IsNullOrWhiteSpace(name))
@@ -52,12 +63,14 @@ public static partial class LoftBuilder
     }
 
     private static Func<INurbsSurface> BuildExactNamedCurveLoftSupport(
-        IReadOnlyList<LoftPreparedProfile> prepared, LoftStyle style, out double[] constructionBreaks)
+        IReadOnlyList<LoftPreparedProfile> prepared, LoftOptions options, out double[] constructionBreaks)
     {
         int count = prepared[0].SourceCurves.Count;
         var sections = new List<BSplineCurve>();
         foreach (var profile in prepared)
         {
+            if (profile.FirstCurveName == null && (options.HasShapeControls || options.StartPoint.HasValue || options.EndPoint.HasValue))
+                profile.FirstCurveName = profile.SourceCurves[0].Name;
             if (profile.FirstCurveName == null || profile.SourceCurves.Count != count)
                 throw new ArgumentException("Matched curved sections require first_curves and equal curve counts.");
             int first = profile.SourceCurves.ToList().FindIndex(curve => curve.Name == profile.FirstCurveName);
@@ -74,12 +87,9 @@ public static partial class LoftBuilder
                 curves.Select(c => Curve2DToBSpline.ToBSplineCurve(c, profile.System)).ToArray()));
         }
         var compatible = SurfaceLoft.CompatibleSections(sections);
-        if (compatible.Any(section => section.ControlPoints.Where((point, i) =>
-                point.W != compatible[0].ControlPoints[i].W).Any()))
-            throw new ArgumentException("Matched curved sections must share rational weights after knot compatibility.");
         for (int p = 0; p < prepared.Count; p++) prepared[p].MatchedCurve = compatible[p];
         constructionBreaks = Enumerable.Range(0, count + 1).Select(i => (double)i / count).ToArray();
-        return () => NurbsSurfaceFactory.LoftFromProfileCurves(compatible, style);
+        return CreateLoftSupportFactory(compatible, options);
     }
 
     /// <summary>
@@ -88,11 +98,11 @@ public static partial class LoftBuilder
     /// knots compatible without changing any profile or fitting mesh samples.
     /// </summary>
     private static Func<INurbsSurface> BuildExactPolygonLoftSupport(
-        IReadOnlyList<LoftPreparedProfile> prepared, LoftStyle style, out double[] constructionBreaks,
+        IReadOnlyList<LoftPreparedProfile> prepared, LoftOptions options, out double[] constructionBreaks,
         bool matchingVertices = false)
     {
         if (matchingVertices && prepared.Any(p => p.SourceCurves?.Any(c => c is not Line2D) == true))
-            return BuildExactNamedCurveLoftSupport(prepared, style, out constructionBreaks);
+            return BuildExactNamedCurveLoftSupport(prepared, options, out constructionBreaks);
         if (matchingVertices)
         {
             int count = prepared[0].Poly.Count;
@@ -105,7 +115,7 @@ public static partial class LoftBuilder
             var matchedProfiles = prepared.Select(p => new BSplineCurve(1,
                 Enumerable.Range(0, spans + 1).Select(i => p.System.PointTo3D(p.Poly[i % count])).ToArray(),
                 (double[])matchedKnots.Clone(), p.Closed)).ToList();
-            return () => NurbsSurfaceFactory.LoftFromProfileCurves(matchedProfiles, style);
+            return CreateLoftSupportFactory(matchedProfiles, options);
         }
         // A full conic has an exact rational parameterization shared by every
         // section. Use it for both sampling and support metadata. Mixing the
@@ -122,7 +132,7 @@ public static partial class LoftBuilder
                 prepared[p].MatchedCurveNames = new[] { prepared[p].SourceCurves[0].Name };
             }
             constructionBreaks = conics[0].Knots.Distinct().ToArray();
-            return () => NurbsSurfaceFactory.LoftFromProfileCurves(conics, style);
+            return CreateLoftSupportFactory(conics, options);
         }
         constructionBreaks = null;
         var strips = prepared.Select(profile => profile.AnalyticStrip ??
@@ -154,6 +164,6 @@ public static partial class LoftBuilder
             }
             profiles.Add(new BSplineCurve(1, points, (double[])knots.Clone(), prepared[p].Closed));
         }
-        return () => NurbsSurfaceFactory.LoftFromProfileCurves(profiles, style);
+        return CreateLoftSupportFactory(profiles, options);
     }
 }

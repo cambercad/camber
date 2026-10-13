@@ -28,13 +28,77 @@ class GuiContentRegionTests(unittest.TestCase):
                                       bottom=20, right=10, spacing=(8, 6))
         ui._nav_order = []
         ui._button_at = lambda rect, *args, **kwargs: rect
+        ui._fit_text = lambda text, width: text
         self.assertEqual((211, 72), ui.GetContentRegionAvail())
         row = ui.Selectable("constraint", selected=True)
         self.assertEqual((10, 20, 211, 24), row)
 
+    def test_numeric_text_accepts_one_decimal_separator(self):
+        from camber.gui import format_decimal, numeric_text_allowed, parse_decimal
+
+        for text in ("", "-", "90", "90.", "90.5", "-0,25", "+,5"):
+            self.assertTrue(numeric_text_allowed(text), text)
+        for text in ("90x", "1.2.3", "1,2.3", "e10", " "):
+            self.assertFalse(numeric_text_allowed(text), text)
+        self.assertEqual(90.5, parse_decimal("90,5"))
+        self.assertEqual(90.5, parse_decimal("90.5"))
+        self.assertEqual("12,5000", format_decimal(12.5, "%.4f", ","))
+        self.assertEqual("12.5000", format_decimal(12.5, "%.4f", "."))
+
+    def test_wheel_coordinates_stay_in_window_pixels_on_a_scaled_display(self):
+        from types import SimpleNamespace
+        from camber.gui import UI
+
+        ui = UI.__new__(UI)
+        ui.window = SimpleNamespace(get_size=lambda: (800, 600), scale=2)
+        ui._pointer_pyglet = (100, 150)
+        self.assertEqual((100, 150), ui._logical_scroll_pointer(200, 300))
+        self.assertEqual((40, 50), ui._logical_scroll_pointer(40, 50))
+        ui._pointer_pyglet = None
+        self.assertEqual((450, 200), ui._logical_scroll_pointer(900, 400))
+
 
 @unittest.skipUnless(os.environ.get("CAMBER_TEST_GL") == "1", "requires OpenGL")
 class ViewerGuiTests(unittest.TestCase):
+    def test_zoomed_scene_is_clipped_to_docked_viewport_before_resolve(self):
+        import numpy as np
+        from camber import Part, glview
+        viewer = self.viewer()
+        body = Part((-20,-20,-20),(20,20,20)).cuboid((-10,-10,-10),(10,10,10))
+        packed = glview.pack_scene(glview._as_scene(body))
+        viewer.set_solid(packed)
+        viewer.camera.fit(*packed["bounds"])
+        viewer.camera.viewport = (120,90,320,260)
+        viewer.camera.zoom *= .15
+        for samples, transparent in ((1, False), (2, False), (2, True)):
+            viewer.set_solid_transparent(transparent)
+            with self.subTest(ssaa=samples, transparent=transparent), patch.object(glview, "_SSAA", samples):
+                pixels = viewer.capture_rgba()
+            background = np.rint(np.asarray(viewer._background_color())*255).astype(int)
+            difference = np.max(np.abs(pixels[:,:,:3].astype(int)-background), axis=2)
+            outside = np.ones(difference.shape, dtype=bool)
+            outside[90:350,120:440] = False
+            self.assertLessEqual(difference[outside].max(), 1)
+            self.assertGreater(np.count_nonzero(difference[90:350,120:440] > 20), 10000)
+            self.assertFalse(viewer._gl.glIsEnabled(viewer._gl.GL_SCISSOR_TEST))
+
+    def test_supersampled_model_uses_the_render_target_viewport(self):
+        from unittest.mock import patch
+        import numpy as np
+        from camber import Part, glview
+        v = self.viewer()
+        p = Part((-10,-10,-10),(10,10,10))
+        body = p.cuboid((-3,-3,-3),(3,3,3))
+        packed = glview.pack_scene(glview._as_scene(body))
+        v.set_solid(packed)
+        v.camera.fit(*packed["bounds"])
+        with patch.object(glview, "_SSAA", 2):
+            pixels = v.capture_rgba()
+        yy,xx = np.nonzero(np.min(pixels[:,:,:3],axis=2) < 150)
+        self.assertGreater(len(xx),5000)
+        self.assertLess(abs(float(xx.mean())-320),60)
+        self.assertLess(abs(float(yy.mean())-240),60)
+
     def setUp(self):
         self.viewers = []
 
@@ -71,6 +135,405 @@ class ViewerGuiTests(unittest.TestCase):
         self.assertIsNone(first._ui)
         self.assertIsNone(first.window.context)
         self.draw(second,lambda: (second._ui.Begin("Test"),second._ui.Text("Still alive"),second._ui.End()))
+
+    def test_context_menu_mouse_choice_survives_frames_and_uses_theme(self):
+        from camber.gui import MenuItem
+        v = self.viewer()
+        ui, mouse = v._ui, v._pyglet.window.mouse
+        choices = []
+        items = [MenuItem("Unavailable", enabled=False), None,
+                 MenuItem("Rename", icon="✎", shortcut="F2"), MenuItem("Visible", checked=True)]
+        def draw():
+            choice = ui.ContextMenu("actions", items)
+            if choice is not None:
+                choices.append(choice)
+        for theme in ("light", "dark"):
+            ui.set_theme(theme)
+            ui.OpenContextMenu("actions", (300, 200))
+            self.draw(v, draw)
+            self.assertTrue(ui.io.WantCaptureMouse)
+            self.assertTrue(ui.io.WantCaptureKeyboard)
+            self.assertTrue(any(command[1][-1] == ui.theme["content"]
+                                for command in ui._foreground if command[0] == "rrect"))
+            rect = dict(ui._menu.rows)[2]
+            x, y = rect[0]+40, rect[1]+14
+            ui.on_mouse_press(x, v.window.height-y, mouse.LEFT, 0)
+            self.draw(v, draw)
+            self.draw(v, draw)
+            ui.on_mouse_release(x, v.window.height-y, mouse.LEFT, 0)
+            self.draw(v, draw)
+            self.assertIsNone(ui._menu)
+        self.assertEqual([(2,), (2,)], choices)
+
+    def test_context_menu_disabled_items_and_separators_do_not_activate(self):
+        from camber.gui import MenuItem
+        v = self.viewer()
+        ui = v._ui
+        choices = []
+        items = [MenuItem("Unavailable", enabled=False), None, "Open"]
+        ui.OpenContextMenu("actions", (300, 200))
+        def draw():
+            choices.append(ui.ContextMenu("actions", items))
+        self.draw(v, draw)
+        for index in (0, 1):
+            rect = dict(ui._menu.rows)[index]
+            self.click(ui, rect[0]+20, rect[1]+rect[3]/2)
+            self.draw(v, draw)
+            self.assertIsNotNone(ui._menu)
+        self.assertEqual([None, None, None], choices)
+
+    def test_context_menu_keyboard_skips_disabled_items_and_separators(self):
+        from camber.gui import MenuItem
+        v = self.viewer()
+        ui, key = v._ui, v._pyglet.window.key
+        items = [MenuItem("Disabled", enabled=False), "First", None, "Last"]
+        ui.OpenContextMenu("actions", (300, 200))
+        choices = []
+        def draw():
+            choices.append(ui.ContextMenu("actions", items))
+        self.draw(v, draw)
+        for symbol, expected in ((key.UP, 3), (key.DOWN, 1), (key.END, 3), (key.HOME, 1)):
+            ui.on_key_press(symbol, 0)
+            self.draw(v, draw)
+            self.assertEqual(expected, ui._menu.nav)
+            ui.on_key_release(symbol, 0)
+        ui.on_key_press(key.RETURN, 0)
+        self.draw(v, draw)
+        self.assertEqual((1,), choices[-1])
+        self.assertIsNone(ui._menu)
+        self.assertIn(key.RETURN, ui._consumed_keys)
+        ui.on_key_release(key.RETURN, 0)
+
+    def test_context_menu_outside_dismissal_does_not_click_underlying_control(self):
+        v = self.viewer()
+        ui, key = v._ui, v._pyglet.window.key
+        clicked = []
+        def draw():
+            ui.SetNextWindowPos((0, 0))
+            ui.SetNextWindowSize((250, 200))
+            ui.Begin("Underneath")
+            if ui.Button("Do not activate", 180, 28):
+                clicked.append(True)
+            ui.End()
+            ui.ContextMenu("actions", ["Action"])
+        self.draw(v, draw)
+        button = ui._last
+        ui.OpenContextMenu("actions", (300, 200))
+        self.draw(v, draw)
+        self.click(ui, button[0]+20, button[1]+14)
+        self.assertTrue(ui.io.WantCaptureMouse)
+        self.draw(v, draw)
+        self.assertFalse(clicked)
+        self.assertIsNone(ui._menu)
+        ui.OpenContextMenu("actions", (300, 200))
+        self.draw(v, draw)
+        ui.on_key_press(key.ESCAPE, 0)
+        self.assertIsNone(ui._menu)
+        self.assertTrue(ui.io.WantCaptureKeyboard)
+        self.assertIn(key.ESCAPE, ui._consumed_keys)
+        ui.on_key_release(key.ESCAPE, 0)
+        ui.OpenContextMenu("actions")
+        ui.on_deactivate()
+        self.assertIsNone(ui._menu)
+
+    def test_context_menu_long_list_stays_on_screen_and_scrolls(self):
+        v = self.viewer()
+        ui, key = v._ui, v._pyglet.window.key
+        items = ["Action " + str(i) for i in range(40)]
+        ui.OpenContextMenu("actions", (639, 479))
+        def draw():
+            ui.ContextMenu("actions", items)
+        self.draw(v, draw)
+        x, y, w, h = ui._menu.rect
+        self.assertGreaterEqual(x, 0)
+        self.assertGreaterEqual(y, 0)
+        self.assertLessEqual(x+w, v.window.width)
+        self.assertLessEqual(y+h, v.window.height)
+        ui.on_mouse_scroll(x+20, v.window.height-y-20, 0, -4)
+        self.draw(v, draw)
+        self.assertEqual(4, ui._menu.rows[0][0])
+        ui.on_key_press(key.END, 0)
+        self.draw(v, draw)
+        self.assertEqual(39, ui._menu.rows[-1][0])
+        ui.on_key_release(key.END, 0)
+        self.draw(v, lambda: None)
+        self.assertIsNone(ui._menu)
+
+    def test_numeric_steps_ctrl_fast_step_and_invalid_text_recovery(self):
+        v = self.viewer()
+        ui, mouse, key = v._ui, v._pyglet.window.mouse, v._pyglet.window.key
+        value, changes = [1.0], []
+        def draw():
+            ui.Begin("Numbers")
+            changed, value[0] = ui.InputDouble("Radius", value[0], step=.25, fast_step=2)
+            changes.append(changed)
+            ui.End()
+        self.draw(v, draw)
+        x,y,w,h = ui._last
+        self.click(ui,x+w-12,y+13)
+        self.draw(v, draw)
+        self.assertEqual(1.25,value[0])
+        self.assertTrue(changes[-1])
+        ui.on_mouse_press(x+w-38,v.window.height-y-13,mouse.LEFT,key.MOD_CTRL)
+        self.draw(v, draw)
+        ui.on_mouse_release(x+w-38,v.window.height-y-13,mouse.LEFT,key.MOD_CTRL)
+        self.draw(v, draw)
+        self.assertEqual(-.75,value[0])
+        eid = next(iter(ui._editors))
+        ui._editors[eid].document.text = "invalid"
+        ui._focus = eid
+        self.draw(v, draw)
+        self.assertEqual(-.75,value[0])
+        self.click(ui,x+w-12,y+13)
+        self.draw(v, draw)
+        self.assertEqual(-.5,value[0])
+        self.assertEqual("-0.5000",ui._editors[eid].document.text)
+        self.draw(v, draw)
+        self.assertFalse(changes[-1])
+        for step in (-1,float("nan"),float("inf")):
+            with self.assertRaises(ValueError):
+                self.draw(v,lambda: ui.InputDouble("Bad",1,step=step))
+
+    def test_property_rows_align_editors_and_scope_repeated_labels(self):
+        v = self.viewer()
+        ui = v._ui
+        values = [1.0,2.0,False,"Steel"]
+        fields = []
+        def draw():
+            ui.SetNextWindowSize((400,340))
+            ui.Begin("Properties")
+            for group in range(2):
+                if ui.PropertyGroup("Group " + str(group)):
+                    _,values[group] = ui.Property("Radius",values[group],step=.1)
+                    fields.append(ui._last)
+            _,values[2] = ui.Property("Visible",values[2])
+            _,values[3] = ui.Property("Material",values[3],options=("Steel","Aluminium"),editable=True)
+            ui.Property("Name","Body",read_only=True)
+            ui.End()
+        self.draw(v, draw)
+        self.assertEqual(3,len(ui._editors))
+        self.assertEqual(fields[0][0],fields[1][0])
+        radius = fields[0]
+        self.click(ui,radius[0]+radius[2]-12,radius[1]+13)
+        self.draw(v, draw)
+        self.assertAlmostEqual(1.1,values[0])
+        self.assertEqual(2,values[1])
+        self.assertEqual([],ui._widths)
+        self.draw(v,lambda: (ui.Begin("Invalid"),ui.Property("Object",object(),read_only=True),ui.End()))
+        with self.assertRaises(TypeError):
+            self.draw(v,lambda: (ui.Begin("Invalid"),ui.Property("Object",object()),ui.End()))
+
+    def test_submenu_mouse_path_and_left_opening_are_stable(self):
+        from camber.gui import MenuItem
+        v = self.viewer()
+        ui = v._ui
+        items = [MenuItem("Export",children=("OBJ","STL")),"Close"]
+        choices = []
+        def draw():
+            choice = ui.ContextMenu("actions",items)
+            if choice is not None:
+                choices.append(choice)
+        ui.OpenContextMenu("actions",(635,440))
+        self.draw(v, draw)
+        r = dict(ui._menu.rows)[0]
+        ui.on_mouse_motion(r[0]+20,v.window.height-r[1]-14,1,0)
+        self.draw(v, draw)
+        self.assertEqual(2,len(ui._menu.levels))
+        child = ui._menu.levels[-1]
+        self.assertLess(child.rect[0],ui._menu.rect[0])
+        self.assertGreaterEqual(child.rect[1],0)
+        self.assertLessEqual(child.rect[1]+child.rect[3],v.window.height)
+        r = dict(child.rows)[1]
+        self.click(ui,r[0]+30,r[1]+14)
+        self.draw(v, draw)
+        self.assertEqual([(0,1)],choices)
+
+    def test_nested_submenu_keyboard_and_escape_return_to_parent(self):
+        from camber.gui import MenuItem
+        v = self.viewer()
+        ui,key = v._ui,v._pyglet.window.key
+        items = [MenuItem("Export",children=(MenuItem("Mesh",children=("OBJ","STL")),))]
+        choices = []
+        def draw():
+            choices.append(ui.ContextMenu("actions",items))
+        def press(symbol):
+            ui.on_key_press(symbol,0)
+            self.draw(v, draw)
+            ui.on_key_release(symbol,0)
+        ui.OpenContextMenu("actions",(300,200))
+        self.draw(v, draw)
+        press(key.DOWN)
+        press(key.RIGHT)
+        press(key.RIGHT)
+        self.assertEqual(3,len(ui._menu.levels))
+        press(key.ESCAPE)
+        self.assertEqual(2,len(ui._menu.levels))
+        press(key.RIGHT)
+        press(key.DOWN)
+        press(key.RETURN)
+        self.assertEqual((0,0,1),choices[-1])
+
+    def test_menu_bar_switches_headings_with_mouse_and_keyboard(self):
+        from camber.gui import MenuItem
+        v = self.viewer()
+        ui,key,mouse = v._ui,v._pyglet.window.key,v._pyglet.window.mouse
+        items = [MenuItem("File",children=("Open","Save")),
+                 MenuItem("Edit",children=("Undo",)), MenuItem("Disabled",enabled=False,children=("No",))]
+        choices = []
+        def draw():
+            ui.Begin("Menus")
+            choice = ui.MenuBar("main",items)
+            if choice is not None:
+                choices.append(choice)
+            ui.End()
+        self.draw(v, draw)
+        x,y,w,h = ui._last
+        self.click(ui,x+20,y+14)
+        self.draw(v, draw)
+        self.assertEqual((0,),ui._menu.path)
+        rect = ui._menu.bar[2][1]
+        ui.on_mouse_motion(rect[0]+20,v.window.height-rect[1]-14,1,0)
+        self.draw(v, draw)
+        self.assertEqual((1,),ui._menu.path)
+        ui.on_key_press(key.LEFT,0)
+        self.draw(v, draw)
+        ui.on_key_release(key.LEFT,0)
+        self.assertEqual((0,),ui._menu.path)
+        ui.on_key_press(key.DOWN,0)
+        self.draw(v, draw)
+        ui.on_key_release(key.DOWN,0)
+        ui.on_key_press(key.RETURN,0)
+        self.draw(v, draw)
+        ui.on_key_release(key.RETURN,0)
+        self.assertEqual([(0,0)],choices)
+        self.assertIsNone(ui._menu)
+
+    def test_menu_button_reuses_the_context_menu(self):
+        from camber.gui import MenuItem
+        v = self.viewer()
+        ui, mouse = v._ui, v._pyglet.window.mouse
+        choices = []
+        items = ("Save", MenuItem("Save as", children=("Copy", "Move")))
+        def draw():
+            ui.Begin("Toolbar")
+            choice = ui.MenuButton("Save", items)
+            if choice is not None:
+                choices.append(choice)
+            ui.End()
+        self.draw(v, draw)
+        x, y, w, h = ui._last
+        self.click(ui, x+w/2, y+h/2)
+        self.draw(v, draw)
+        self.assertEqual((0,), ui._menu.path)
+        self.click(ui, x+w/2, y+h/2)
+        self.draw(v, draw)
+        self.assertIsNone(ui._menu)
+        self.click(ui, x+8, y+h/2)
+        self.draw(v, draw)
+        row = dict(ui._menu.rows)[1]
+        ui.on_mouse_motion(row[0]+30, v.window.height-row[1]-14, 1, 0)
+        self.draw(v, draw)
+        self.assertEqual(2, len(ui._menu.levels))
+        child = dict(ui._menu.levels[1].rows)[0]
+        ui.on_mouse_press(child[0]+16, v.window.height-(child[1]+10), mouse.LEFT, 0)
+        self.draw(v, draw)
+        ui.on_mouse_release(child[0]+16, v.window.height-(child[1]+10), mouse.LEFT, 0)
+        self.draw(v, draw)
+        self.assertEqual([(1, 0)], choices)
+        self.assertIsNone(ui._menu)
+
+    def test_editable_combo_accepts_text_and_reuses_dropdown_selection(self):
+        v = self.viewer()
+        ui = v._ui
+        text, changes = ["Steel"], []
+        def draw():
+            ui.Begin("Material")
+            changed,text[0] = ui.EditableComboBox("Grade",text[0],["Steel","Aluminium"],width=220)
+            changes.append(changed)
+            ui.End()
+        self.draw(v, draw)
+        eid = next(iter(ui._editors))
+        ui._focus = eid
+        ui._editors[eid].document.text = "Custom alloy"
+        self.draw(v, draw)
+        self.assertEqual("Custom alloy",text[0])
+        self.assertTrue(changes[-1])
+        x,y,w,h = ui._last
+        self.click(ui,x+w-13,y+13)
+        self.draw(v, draw)
+        self.assertIsNotNone(ui._combo_popup)
+        _,_,popup,_ = ui._combo_popup
+        self.click(ui,popup[0]+20,popup[1]+39)
+        self.draw(v, draw)
+        self.assertEqual("Aluminium",text[0])
+        self.draw(v, draw)
+        self.assertEqual("Aluminium",ui._editors[eid].document.text)
+        self.assertFalse(changes[-1])
+        self.draw(v,lambda: (ui.Begin("Empty presets"),ui.EditableComboBox("Free text","Free",[]),ui.End()))
+
+    def test_message_box_keyboard_default_cancel_and_focus_loss(self):
+        v = self.viewer()
+        ui,key = v._ui,v._pyglet.window.key
+        choices = []
+        def draw():
+            result = ui.MessageBox("Confirm")
+            if result is not None:
+                choices.append(result)
+        ui.OpenMessageBox("Confirm","Delete the selected body?",("Delete","Cancel"),default="Cancel")
+        self.draw(v, draw)
+        ui.on_deactivate()
+        self.assertIsNotNone(ui._menu)
+        ui.on_key_press(key.RETURN,0)
+        self.draw(v, draw)
+        self.assertEqual(["Cancel"],choices)
+        ui.on_key_release(key.RETURN,0)
+        ui.OpenMessageBox("Confirm","Delete?",("Delete","Cancel"),default="Cancel")
+        self.draw(v, draw)
+        ui.on_key_press(key.TAB,0)
+        self.draw(v, draw)
+        self.assertEqual(0,ui._menu.nav)
+        ui.on_key_release(key.TAB,0)
+        ui.on_key_press(key.ESCAPE,0)
+        self.draw(v, draw)
+        self.assertEqual(["Cancel","Cancel"],choices)
+        ui.on_key_release(key.ESCAPE,0)
+        for buttons in ((),("OK","OK"),("",)):
+            with self.assertRaises(ValueError):
+                ui.OpenMessageBox("Bad","Text",buttons)
+
+    def test_message_box_blocks_outside_clicks_and_handles_long_messages(self):
+        v = self.viewer()
+        ui = v._ui
+        choices,underlying = [],[]
+        def draw():
+            ui.SetNextWindowPos((0,0))
+            ui.SetNextWindowSize((250,200))
+            ui.Begin("Behind")
+            if ui.Button("Do not click",180,28):
+                underlying.append(True)
+            ui.End()
+            result = ui.MessageBox("Notice")
+            if result is not None:
+                choices.append(result)
+        self.draw(v, draw)
+        button = ui._last
+        ui.OpenMessageBox("Notice","A long diagnostic message. "*100,buttons=("OK",))
+        self.draw(v, draw)
+        self.click(ui,button[0]+10,button[1]+14)
+        self.draw(v, draw)
+        self.assertFalse(underlying)
+        self.assertIsNotNone(ui._menu)
+        ui.on_mouse_scroll(320,240,0,-3)
+        self.draw(v, draw)
+        self.assertGreater(ui._menu.scroll,0)
+        x,y,w,h = ui._menu.rect
+        self.assertGreaterEqual(y,0)
+        self.assertLessEqual(y+h,v.window.height)
+        _,rect = ui._menu.rows[0]
+        self.click(ui,rect[0]+rect[2]/2,rect[1]+14)
+        self.draw(v, draw)
+        self.assertEqual(["OK"],choices)
+        self.assertIsNone(ui._menu)
 
     def test_dock_tab_splitter_and_camera_pick_region(self):
         v = self.viewer()
@@ -290,6 +753,31 @@ class ViewerGuiTests(unittest.TestCase):
         self.draw(v, panel)
         self.assertEqual("Medium", choice[0])
 
+    def test_combo_selection_survives_frames_between_press_and_release(self):
+        v = self.viewer()
+        ui, mouse = v._ui, v._pyglet.window.mouse
+        choice = ["Off"]
+
+        def panel():
+            ui.Begin("Section")
+            _, choice[0] = ui.ComboBox("Plane", choice[0], ("Off", "X", "Y", "Z"))
+            ui.End()
+
+        self.draw(v, panel)
+        x, y, w, h = ui._last
+        self.click(ui, x+w/2, y+h/2)
+        self.draw(v, panel)
+        _, _, popup, _ = ui._combo_popup
+        x, y = popup[0]+20, popup[1]+3*26+13
+        ui.on_mouse_press(x, v.window.height-y, mouse.LEFT, 0)
+        self.draw(v, panel)
+        self.draw(v, panel)
+        self.assertEqual("Off", choice[0])
+        ui.on_mouse_release(x, v.window.height-y, mouse.LEFT, 0)
+        self.draw(v, panel)
+        self.assertEqual("Z", choice[0])
+        self.assertIsNone(ui._combo_popup)
+
     def test_long_combo_scrolls_without_scrolling_its_panel(self):
         v = self.viewer()
         ui = v._ui
@@ -446,8 +934,10 @@ class ViewerGuiTests(unittest.TestCase):
         rect = ui._editors[eid].rect
         self.click(ui,rect[0]+5,rect[1]+5)
         ui.on_key_press(key.A,key.MOD_CTRL)
-        ui.on_key_press(key.C,key.MOD_CTRL)
-        self.assertEqual("12.5000",v.window.get_clipboard_text())
+        # Verify the UI clipboard boundary independently of desktop clipboard access.
+        with patch.object(v.window, "set_clipboard_text") as clipboard:
+            ui.on_key_press(key.C,key.MOD_CTRL)
+            clipboard.assert_called_once_with("12.5000")
         ui.on_key_press(key.TAB,0)
         self.assertEqual(ui._focus_order[1],ui._focus)
         ui._focus = None
@@ -530,6 +1020,34 @@ class ViewerGuiTests(unittest.TestCase):
             ui.on_key_press(key.V,key.MOD_CTRL)
         self.draw(v,panel)
         self.assertEqual(42.5,value[0])
+
+    def test_numeric_field_rejects_letters_and_scales_degrees_to_radians(self):
+        import math
+        v = self.viewer()
+        ui, key = v._ui, v._pyglet.window.key
+        value = [math.pi]
+        focus = [True]
+        def panel():
+            ui.Begin("Twist")
+            if focus[0]:
+                ui.SetKeyboardFocusHere()
+            _, value[0] = ui.InputDouble("twist", value[0], fmt="%.12g", multiplier=math.pi / 180)
+            ui.End()
+            focus[0] = False
+        self.draw(v, panel)
+        editor = ui._editors[ui._focus]
+        self.assertEqual("180", editor.document.text.replace(",", "."))
+        ui.on_key_press(key.A, key.MOD_CTRL)
+        ui.on_text("90")
+        self.draw(v, panel)
+        self.assertAlmostEqual(math.pi / 2, value[0])
+        ui.on_text("x")
+        ui.on_text(".")
+        ui.on_text(",")
+        self.draw(v, panel)
+        self.assertAlmostEqual(math.pi / 2, value[0])
+        self.assertEqual("90.", editor.document.text.replace(",", "."))
+        self.assertNotIn("x", editor.document.text)
 
     def test_sketch_icons_and_dimension_editor_render(self):
         from camber import sketch_icons as icons
@@ -643,6 +1161,51 @@ class ViewerGuiTests(unittest.TestCase):
         ui._focus = None
         v.on_key_press(key.D, 0)
         self.assertEqual("dark", ui.theme_name)
+
+    def test_modifier_key_transitions_override_pre_event_masks(self):
+        v = self.viewer()
+        ui, key = v._ui, v._pyglet.window.key
+        for symbol, mask, flag in ((key.LCTRL, key.MOD_CTRL, "KeyCtrl"),
+                                   (key.LSHIFT, key.MOD_SHIFT, "KeyShift"),
+                                   (key.LALT, key.MOD_ALT, "KeyAlt")):
+            with self.subTest(flag=flag):
+                ui.on_key_press(symbol, 0)
+                self.assertTrue(getattr(ui.io, flag))
+                ui.on_key_release(symbol, mask)
+                self.assertFalse(getattr(ui.io, flag))
+
+    def test_releasing_one_control_keeps_the_other_control_held(self):
+        v = self.viewer()
+        ui, key = v._ui, v._pyglet.window.key
+        ui.on_key_press(key.LCTRL, 0)
+        ui.on_key_press(key.RCTRL, key.MOD_CTRL)
+        ui.on_key_release(key.LCTRL, key.MOD_CTRL)
+        self.assertTrue(ui.io.KeyCtrl)
+        ui.on_key_release(key.RCTRL, key.MOD_CTRL)
+        self.assertFalse(ui.io.KeyCtrl)
+
+    def test_mouse_modifier_masks_resynchronize_after_missed_key_events(self):
+        v = self.viewer()
+        ui, key, mouse = v._ui, v._pyglet.window.key, v._pyglet.window.mouse
+        ui.on_mouse_press(300, 250, mouse.LEFT, key.MOD_CTRL)
+        self.assertTrue(ui.io.KeyCtrl)
+        ui.on_mouse_release(300, 250, mouse.LEFT, 0)
+        self.assertFalse(ui.io.KeyCtrl)
+        ui.on_key_press(key.LCTRL, 0)
+        ui.on_mouse_drag(300, 250, 0, 0, mouse.LEFT, 0)
+        self.assertFalse(ui.io.KeyCtrl)
+        self.assertNotIn(key.LCTRL, ui._modifier_keys)
+
+    def test_deactivation_clears_modifiers(self):
+        v = self.viewer()
+        ui, key = v._ui, v._pyglet.window.key
+        ui.on_key_press(key.LCTRL, 0)
+        ui.on_key_press(key.LSHIFT, key.MOD_CTRL)
+        ui.on_key_press(key.LALT, key.MOD_CTRL | key.MOD_SHIFT)
+        self.assertTrue(ui.io.KeyCtrl and ui.io.KeyShift and ui.io.KeyAlt)
+        ui.on_deactivate()
+        self.assertFalse(ui.io.KeyCtrl or ui.io.KeyShift or ui.io.KeyAlt)
+        self.assertFalse(ui._modifier_keys)
 
     def test_overlapping_panels_do_not_click_through(self):
         v = self.viewer()

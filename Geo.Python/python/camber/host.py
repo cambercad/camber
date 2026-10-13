@@ -2,6 +2,7 @@
 
 import ctypes
 import math
+import sys
 
 from . import glview as _g
 from .clipboard import copy_to_clipboard, create_window
@@ -72,16 +73,20 @@ class _CamParams(object):
 class Viewer(object):
     """Window host. Sketch code talks to this the way it used to talk to Polyscope."""
 
-    def __init__(self, title="Camber", *, visible=True, size=None):
+    def __init__(self, title="Camber", *, visible=True, size=None, borderless=False):
+        borderless = borderless and sys.platform == "win32"
         pyglet, np, ui_class = _g._import_gl(ui=visible)
         self._pyglet = pyglet
         self._np = np
         self._ui = None
         self._ui_letters = set()
-        self._gl = pyglet.gl
+        from pyglet.graphics.api import gl
+        from pyglet.enums import GeometryMode
+        self._gl = gl
+        self._triangles = GeometryMode.TRIANGLES
         w, h = size or (_g._WINDOW_W, _g._WINDOW_H)
         try:
-            screen = pyglet.canvas.get_display().get_default_screen()
+            screen = pyglet.display.get_display().get_default_screen()
             if size is None:
                 w = min(w, int(screen.width))
                 h = min(h, int(screen.height))
@@ -91,7 +96,8 @@ class Viewer(object):
         for samples in (4, 0):
             for major, minor in ((4, 0), (3, 3)):
                 try:
-                    config = pyglet.gl.Config(
+                    config = pyglet.config.Config()
+                    config.opengl = pyglet.config.OpenGLUserConfig(
                         double_buffer=True,
                         depth_size=24,
                         stencil_size=8,
@@ -100,15 +106,24 @@ class Viewer(object):
                         major_version=major,
                         minor_version=minor,
                     )
-                    window = create_window(w, h, title, resizable=True, config=config, visible=visible)
+                    window = create_window(w, h, title, resizable=True, config=config, visible=visible,
+                                           style="borderless" if borderless else None)
                     break
                 except Exception:
                     window = None
             if window is not None:
                 break
         if window is None:
-            window = create_window(w, h, title, resizable=True, visible=visible)
+            window = create_window(w, h, title, resizable=True, visible=visible,
+                                   style="borderless" if borderless else None)
         self.window = window
+        self._render_viewport = pyglet.graphics.Viewport(0, 0, w, h)
+        self._render_clip = pyglet.graphics.Viewport(0, 0, w, h)
+        self._scene_clipping = False
+        self._target_group = pyglet.graphics.Group()
+        self._target_group.set_viewport(self._render_viewport)
+        self._target_group.set_scissor(self._render_clip)
+        self._program_groups = {}
         self._closed = False
         self._solid = None
         self._overlays = {}
@@ -137,12 +152,16 @@ class Viewer(object):
             self._depth_copy_prog = self._compile(_g._BLIT_VERT, _g._DEPTH_COPY_FRAG)
             quad = (-1.0, -1.0, 0.0, 3.0, -1.0, 0.0, -1.0, 3.0, 0.0)
             self._blit_vl = self._blit_prog.vertex_list(
-                3, self._gl.GL_TRIANGLES, in_pos=("f", quad))
+                3, self._triangles, group=self._program_groups[self._blit_prog], in_pos=quad)
             self._resolve_vl = self._resolve_prog.vertex_list(
-                3, self._gl.GL_TRIANGLES, in_pos=("f", quad))
+                3, self._triangles, group=self._program_groups[self._resolve_prog], in_pos=quad)
             self._depth_copy_vl = self._depth_copy_prog.vertex_list(
-                3, self._gl.GL_TRIANGLES, in_pos=("f", quad))
+                3, self._triangles, group=self._program_groups[self._depth_copy_prog], in_pos=quad)
             self.camera = _g.Camera()
+            from .view_cube import ViewCube
+            self._view_cube = ViewCube()
+            self.allow_viewport_menu = None
+            self._right_press = None
             self._tick = None
             self._hidden_parts = set()
             self._wireframe = False
@@ -175,7 +194,9 @@ class Viewer(object):
 
     def _compile(self, vert, frag):
         shader = self._pyglet.graphics.shader
-        return shader.ShaderProgram(shader.Shader(vert, "vertex"), shader.Shader(frag, "fragment"))
+        program = shader.ShaderProgram(shader.Shader(vert, "vertex"), shader.Shader(frag, "fragment"), vertex_layout=None)
+        self._program_groups[program] = self._pyglet.graphics.ShaderGroup(program, parent=self._target_group)
+        return program
 
     def _flat(self, array):
         return self._np.asarray(array, dtype="f4").ravel()
@@ -190,17 +211,17 @@ class Viewer(object):
         gl = self._gl
         data = {}
         for name, array in attrs.items():
-            data[name] = ("f", self._flat(array))
+            data[name] = self._flat(array)
         idx = self._np.asarray(indices, dtype="i4").ravel()
         return prog.vertex_list_indexed(
-            int(nvert), gl.GL_TRIANGLES, idx, batch=batch or self._batch, **data)
+            int(nvert), self._triangles, idx, batch=batch or self._batch, group=self._program_groups[prog], **data)
 
     def _array(self, prog, nvert, **attrs):
         gl = self._gl
         data = {}
         for name, array in attrs.items():
-            data[name] = ("f", self._flat(array))
-        return prog.vertex_list(int(nvert), gl.GL_TRIANGLES, batch=self._batch, **data)
+            data[name] = self._flat(array)
+        return prog.vertex_list(int(nvert), self._triangles, batch=self._batch, group=self._program_groups[prog], **data)
 
     def _delete(self, vl):
         if vl is None:
@@ -214,7 +235,7 @@ class Viewer(object):
         if vl is None:
             return
         prog.use()
-        vl.draw(self._gl.GL_TRIANGLES)
+        vl.draw(self._triangles)
 
     def _make_wire(self, verts, faces):
         # Wireframe reuses the indexed surface mesh at draw time. Expanding
@@ -238,8 +259,7 @@ class Viewer(object):
         if symbol == self._pyglet.window.key.W:
             self._wireframe = not self._wireframe
         elif symbol == self._pyglet.window.key.T:
-            self._solid_transparent = not self._solid_transparent
-            self._transparency = "pretty" if self._solid_transparent else "none"
+            self.set_solid_transparent(not self._solid_transparent)
         return None
 
     def on_key_release(self, symbol, modifiers):
@@ -328,6 +348,20 @@ class Viewer(object):
             self._draw_scene()
             return
         self._ui.new_frame()
+        # Draw viewport controls beneath application panels, before their input
+        # and layout. Floating tools keep priority and the caller's last item.
+        self._viewport_context_menu()
+        x, y, w, h = self._ui.viewport_rect
+        if self._navigation_cancels_turn():
+            self.camera.cancel_turn()
+        elif self.camera.step_turn():
+            self.fit_scene()
+        if w >= 160 and h >= 160:
+            size = self._view_cube.size
+            direction = self._view_cube.draw(self._ui, self.camera.frame(), (x+12, y+h-size-12, size, size))
+            if direction is not None:
+                self.camera.start_turn(direction)
+                self.fit_scene()
         if self._tick is not None:
             self._tick()
         if self._closed:
@@ -347,6 +381,65 @@ class Viewer(object):
             gl.glDisable(gl.GL_BLEND)
             gl.glEnable(gl.GL_DEPTH_TEST)
 
+    def fit_scene(self):
+        """Frame the model on the current orientation and pull it inside the clip planes."""
+        from .view import _fit_view
+        _fit_view(self)
+
+    def _viewport_menu_allowed(self):
+        allow = self.allow_viewport_menu
+        if allow is None:
+            return True
+        return bool(allow())
+
+    def _viewport_context_menu(self):
+        from .gui import MenuItem
+        ui = self._ui
+        items = [MenuItem("Fit", shortcut="F")]
+        if ui.ContextMenu("Viewport", items) == (0,):
+            self.camera.cancel_turn()
+            self.fit_scene()
+        io = ui.GetIO()
+        pos = tuple(getattr(io, "MousePos", (-1.0, -1.0)))
+        if bool(io.MouseClicked[1]):
+            self._right_press = pos
+        if not bool(io.MouseReleased[1]):
+            if not bool(io.MouseDown[1]):
+                self._right_press = None
+            return
+        press = self._right_press
+        self._right_press = None
+        if press is None or not self._viewport_menu_allowed() or bool(io.WantCaptureMouse):
+            return
+        if (pos[0] - press[0]) ** 2 + (pos[1] - press[1]) ** 2 > 25.0:
+            return
+        x, y, w, h = ui.viewport_rect
+        if x <= pos[0] < x + w and y <= pos[1] < y + h:
+            ui.OpenContextMenu("Viewport")
+            # Opening happens after this frame's menu pass. Draw it now so the
+            # frame that created it does not treat the popup as unseen and close it.
+            ui.ContextMenu("Viewport", items)
+
+    def _navigation_cancels_turn(self):
+        io = self._ui.GetIO()
+        if bool(io.MouseDown[2]) or (bool(io.MouseDown[0]) and bool(io.MouseDown[1])):
+            return True
+        if abs(float(getattr(io, "MouseWheel", 0.0))) > 0.0:
+            return True
+        press = self._right_press
+        if press is None or not bool(io.MouseDown[1]):
+            return False
+        pos = io.MousePos
+        return (pos[0] - press[0]) ** 2 + (pos[1] - press[1]) ** 2 > 25.0
+
+    def _set_render_viewport(self, x, y, width, height):
+        self._render_viewport.set(x, y, width, height)
+        self._gl.glViewport(x, y, width, height)
+        if self._scene_clipping:
+            self._clip_scene_viewport(width, height)
+        else:
+            self._render_clip.set(x, y, width, height)
+
     def _sync_size(self):
         w, h = self.window.get_size()
         fb = getattr(self.window, "get_framebuffer_size", None)
@@ -359,14 +452,15 @@ class Viewer(object):
             fw, fh = w, h
         self.camera.width = max(int(fw), 1)
         self.camera.height = max(int(fh), 1)
-        self._gl.glViewport(0, 0, self.camera.width, self.camera.height)
+        self._set_render_viewport(0, 0, self.camera.width, self.camera.height)
 
-    def capture_rgba(self, label=None):
+    def capture_rgba(self, label=None, *, include_ui=False):
         """Render to an owned offscreen target and return top-down RGBA pixels.
 
         An invisible X11 window has no reliable back buffer. Resolving into
         our own FBO also makes capture independent of occlusion and desktop
         compositing. The renderer and its anti-aliasing are shared with show().
+        Set include_ui to render the application's frame callback and controls.
         """
         self.window.switch_to()
         self._sync_size()
@@ -384,7 +478,10 @@ class Viewer(object):
             if gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) != gl.GL_FRAMEBUFFER_COMPLETE:
                 raise RuntimeError("Cannot allocate image capture framebuffer")
             self._capture_fbo = fbo
-            self._draw_scene()
+            if include_ui:
+                self._draw_frame()
+            else:
+                self._draw_scene()
             self._bind_window()
             if label:
                 gl.glDisable(gl.GL_DEPTH_TEST)
@@ -405,6 +502,12 @@ class Viewer(object):
             self._gl_del(gl.glDeleteTextures, color)
             self._gl_del(gl.glDeleteTextures, depth)
 
+    def capture_image(self, *, include_ui=True):
+        """Capture an owned render target as a pyglet image, including controls."""
+        pixels = self.capture_rgba(include_ui=include_ui)
+        height, width = pixels.shape[:2]
+        return self._pyglet.image.ImageData(width, height, "RGBA", pixels.tobytes(), pitch=-width*4)
+
     def set_user_callback(self, fn):
         self._tick = fn
 
@@ -417,6 +520,9 @@ class Viewer(object):
     def set_solid(self, packed):
         self._hidden_parts = set()
         self._release_solid()
+        if packed is None:
+            self._solid = None
+            return
         parts = []
         for name, subset in _g.split_packed_by_part(packed):
             gpu = self._upload_solid(subset)
@@ -490,6 +596,11 @@ class Viewer(object):
             self._transparency = "simple"
         else:
             self._transparency = "none"
+
+    def set_solid_transparent(self, enabled):
+        """Render the workpiece translucently while retaining its colors and picks."""
+        self._solid_transparent = bool(enabled)
+        self.set_transparency_mode("pretty" if enabled else "none")
 
     def key_down(self, name):
         key = getattr(self._pyglet.window.key, name, None)
@@ -895,7 +1006,7 @@ class Viewer(object):
     def _begin_line_union(self, scene):
         gl = self._gl
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, int(scene["line_fbo"]))
-        gl.glViewport(0, 0, int(self._draw_w), int(self._draw_h))
+        self._set_render_viewport(0, 0, int(self._draw_w), int(self._draw_h))
         gl.glDrawBuffer(gl.GL_COLOR_ATTACHMENT0)
         gl.glClearColor(0.0, 0.0, 0.0, 0.0)
         gl.glClear(gl.GL_COLOR_BUFFER_BIT)
@@ -934,7 +1045,7 @@ class Viewer(object):
     def _bind_draw_target(self):
         gl = self._gl
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, int(self._draw_fbo))
-        gl.glViewport(0, 0, int(self._draw_w), int(self._draw_h))
+        self._set_render_viewport(0, 0, int(self._draw_w), int(self._draw_h))
         if self._draw_fbo:
             gl.glDrawBuffer(gl.GL_COLOR_ATTACHMENT0)
         else:
@@ -944,7 +1055,7 @@ class Viewer(object):
         gl = self._gl
         fbo = getattr(self, "_capture_fbo", 0)
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo)
-        gl.glViewport(0, 0, int(self.camera.width), int(self.camera.height))
+        self._set_render_viewport(0, 0, int(self.camera.width), int(self.camera.height))
         gl.glDrawBuffer(gl.GL_COLOR_ATTACHMENT0 if fbo else gl.GL_BACK)
 
     def _make_rb(self, internal, w, h, samples):
@@ -1132,7 +1243,7 @@ class Viewer(object):
         self._resolve_prog["u_ssaa"] = float(max(getattr(self, "_draw_ssaa", _g._SSAA), 1))
         gl.glActiveTexture(gl.GL_TEXTURE0)
         gl.glBindTexture(gl.GL_TEXTURE_2D, color)
-        self._resolve_vl.draw(gl.GL_TRIANGLES)
+        self._resolve_vl.draw(self._triangles)
         gl.glDepthMask(gl.GL_TRUE)
         gl.glEnable(gl.GL_DEPTH_TEST)
 
@@ -1295,7 +1406,7 @@ class Viewer(object):
         gl = self._gl
         self._unbind_tex_units()
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, int(dest_fbo))
-        gl.glViewport(0, 0, int(w), int(h))
+        self._set_render_viewport(0, 0, int(w), int(h))
         gl.glDrawBuffer(gl.GL_NONE)
         gl.glEnable(gl.GL_DEPTH_TEST)
         gl.glDepthFunc(gl.GL_GREATER)
@@ -1309,7 +1420,7 @@ class Viewer(object):
             pass
         gl.glActiveTexture(gl.GL_TEXTURE0)
         gl.glBindTexture(gl.GL_TEXTURE_2D, int(depth_tex))
-        self._depth_copy_vl.draw(gl.GL_TRIANGLES)
+        self._depth_copy_vl.draw(self._triangles)
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
         gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
         gl.glDepthFunc(gl.GL_LESS)
@@ -1339,7 +1450,7 @@ class Viewer(object):
             pass
         gl.glActiveTexture(gl.GL_TEXTURE0)
         gl.glBindTexture(gl.GL_TEXTURE_2D, int(tex))
-        self._blit_vl.draw(gl.GL_TRIANGLES)
+        self._blit_vl.draw(self._triangles)
 
     def _draw_overlay(self, rec, alpha=None):
         gpu = self._upload_overlay(rec)
@@ -1395,7 +1506,7 @@ class Viewer(object):
         gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
         for _pass in range(_g._PEEL_PASSES):
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, peel["fbo"])
-            gl.glViewport(0, 0, w, h)
+            self._set_render_viewport(0, 0, w, h)
             gl.glDrawBuffer(gl.GL_COLOR_ATTACHMENT0)
             gl.glClearColor(0.0, 0.0, 0.0, 0.0)
             gl.glClearDepth(1.0)
@@ -1408,7 +1519,7 @@ class Viewer(object):
             self._draw_overlay_list(recs)
             self._unbind_tex_units()
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, peel["accum_fbo"])
-            gl.glViewport(0, 0, w, h)
+            self._set_render_viewport(0, 0, w, h)
             gl.glDrawBuffer(gl.GL_COLOR_ATTACHMENT0)
             gl.glDisable(gl.GL_DEPTH_TEST)
             gl.glDepthMask(gl.GL_FALSE)
@@ -1491,6 +1602,24 @@ class Viewer(object):
             gl.glDepthMask(True)
             gl.glEnable(gl.GL_DEPTH_TEST)
 
+    def _background_color(self):
+        if self._ui is not None and self._ui.theme_name == "dark":
+            return (36 / 255, 39 / 255, 44 / 255)
+        return _g._BG
+
+    def _clip_scene_viewport(self, width, height):
+        """Clip docked scene drawing in the current framebuffer's pixel coordinates."""
+        if self.camera.viewport is None:
+            return
+        x, y, w, h = self.camera.viewport
+        sx, sy = width/self.camera.width, height/self.camera.height
+        left, right = math.floor(x*sx), math.ceil((x+w)*sx)
+        bottom, top = math.floor((self.camera.height-y-h)*sy), math.ceil((self.camera.height-y)*sy)
+        area = left, bottom, max(0, right-left), max(0, top-bottom)
+        self._render_clip.set(*area)
+        self._gl.glScissor(*area)
+        self._gl.glEnable(self._gl.GL_SCISSOR_TEST)
+
     def _draw_scene(self):
         np = self._np
         cam = self.camera
@@ -1516,6 +1645,7 @@ class Viewer(object):
             self._draw_w = sw
             self._draw_h = sh
             self._draw_samples = int(scene.get("samples") or 1)
+        self._scene_clipping = False
         self._bind_draw_target()
         use_msaa = scene is not None and int(scene.get("samples") or 1) > 1
         if use_msaa:
@@ -1529,9 +1659,12 @@ class Viewer(object):
         gl.glDepthMask(gl.GL_TRUE)
         gl.glDisable(gl.GL_BLEND)
         gl.glDisable(gl.GL_CULL_FACE)
-        gl.glClearColor(_g._BG[0], _g._BG[1], _g._BG[2], 1.0)
+        background = self._background_color()
+        gl.glClearColor(*background, 1.0)
         gl.glClearDepth(1.0)
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
+        self._scene_clipping = True
+        self._clip_scene_viewport(self._draw_w, self._draw_h)
         view = _g._mat4(cam.view_matrix(), np)
         proj = _g._mat4(cam.proj_matrix(), np)
         edge_r, point_r, _ = _g.overlay_radii(cam)
@@ -1610,12 +1743,18 @@ class Viewer(object):
 
         if use_msaa:
             self._set_sample_shading(False)
+        self._scene_clipping = False
+        gl.glDisable(gl.GL_SCISSOR_TEST)
         if scene is not None:
             self._resolve_ssaa(scene, fw, fh)
         else:
             self._bind_window()
         from .inspection import _draw_annotations
-        _draw_annotations(self)
+        self._clip_scene_viewport(fw, fh)
+        try:
+            _draw_annotations(self)
+        finally:
+            gl.glDisable(gl.GL_SCISSOR_TEST)
 
 
 def run_solid(obj, title="Camber", colors=None, checker=None):

@@ -26,6 +26,7 @@
         public int NumEquations { get { return _container.NumEquations; } }
 
         public double Evaluate(int i) { return _container.Evaluate(i); }
+        public double ResidualTolerance(int i) => _container.ResidualTolerance(i);
 
         public double EvaluatJacobian(int i, int j)
         {

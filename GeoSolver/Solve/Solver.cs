@@ -1,4 +1,4 @@
-﻿using GeoSolver.Sparse;
+using GeoSolver.Sparse;
 
 namespace GeoSolver
 {
@@ -56,21 +56,20 @@ namespace GeoSolver
             if (numEquations == 0)
                 return new SolveResult(true, 0, numParameters, 0);
 
-            // Regularized Fischer–Burmeister residuals settle near ~sqrt(ε)≈1e-5, not LENGTH_EPS/100.
-            // Redundant equality equations change the linear solve, not the required accuracy.
-            double residualTol = ResidualTolerance(nonNegativeParams != null && nonNegativeParams.Count > 0);
+            // Regularized contact rows use their own convergence tolerance.
+            // Equality rows retain strict accuracy even when contact is present.
 
             double[] b = new double[Math.Max(numEquations, 1)];
             FillResidual(equations, b);
 
             if (numParameters == 0)
             {
-                bool ok = IsConverged(b, numEquations, residualTol);
+                bool ok = IsConverged(equations, b, numEquations);
                 return new SolveResult(ok, SumSquares(b, numEquations), 0, numEquations,
                     ok ? null : "No free parameters with residual equations remaining.");
             }
 
-            if (IsConverged(b, numEquations, residualTol))
+            if (IsConverged(equations, b, numEquations))
                 return new SolveResult(true, SumSquares(b, numEquations), numParameters, numEquations);
 
             if (numEquations > numParameters && !allowSoftOverconstrained)
@@ -79,8 +78,8 @@ namespace GeoSolver
             int maxIter = maxNewtonIterations > 0 ? maxNewtonIterations : 400;
             bool useSparse = forceSparse ?? (numParameters >= SparseParameterThreshold);
             return useSparse
-                ? RunSparse(equations, b, draggedParams, nonNegativeParams, lengthScale, residualTol, maxIter)
-                : RunDense(equations, b, draggedParams, nonNegativeParams, lengthScale, residualTol, maxIter);
+                ? RunSparse(equations, b, draggedParams, nonNegativeParams, lengthScale, maxIter)
+                : RunDense(equations, b, draggedParams, nonNegativeParams, lengthScale, maxIter);
         }
 
         public static bool SparseNewtonSolve(IEquationContainer equations, HashSet<Param> dragged = null)
@@ -94,7 +93,6 @@ namespace GeoSolver
             HashSet<Param> draggedParams,
             HashSet<Param> nonNegativeParams,
             double lengthScale,
-            double residualTol,
             int maxIter)
         {
             int numEquations = equations.NumEquations;
@@ -124,10 +122,10 @@ namespace GeoSolver
                     break;
                 }
 
-                if (!BacktrackingLineSearch(equations, b, result, oldValues, nonNegativeParams, residualTol, out _))
+                if (!BacktrackingLineSearch(equations, b, result, oldValues, nonNegativeParams, out _))
                     return new SolveResult(false, SumSquares(b, numEquations), numParameters, numEquations, "NaN residual during line search.");
 
-                converged = IsConverged(b, numEquations, residualTol);
+                converged = IsConverged(equations, b, numEquations);
             } while (iter++ < maxIter && !converged);
 
             return new SolveResult(converged, SumSquares(b, numEquations), numParameters, numEquations,
@@ -140,7 +138,6 @@ namespace GeoSolver
             HashSet<Param> draggedParams,
             HashSet<Param> nonNegativeParams,
             double lengthScale,
-            double residualTol,
             int maxIter)
         {
             int numEquations = equations.NumEquations;
@@ -164,10 +161,10 @@ namespace GeoSolver
                     break;
                 }
 
-                if (!BacktrackingLineSearch(equations, b, result, oldValues, nonNegativeParams, residualTol, out _))
+                if (!BacktrackingLineSearch(equations, b, result, oldValues, nonNegativeParams, out _))
                     return new SolveResult(false, SumSquares(b, numEquations), numParameters, numEquations, "NaN residual during line search.");
 
-                converged = IsConverged(b, numEquations, residualTol);
+                converged = IsConverged(equations, b, numEquations);
             } while (iter++ < maxIter && !converged);
 
             return new SolveResult(converged, SumSquares(b, numEquations), numParameters, numEquations,
@@ -286,6 +283,8 @@ namespace GeoSolver
                 double s = 1.0;
                 if (p.ScaleKind == ParamScaleKind.ContactLambda)
                     s = 1.0 / L;
+                else if (p.ScaleKind == ParamScaleKind.Translation)
+                    s = L;
                 if (draggedParams != null && draggedParams.Contains(p))
                     s *= 1.0 / 20.0;
                 scale[c] = s;
@@ -323,7 +322,6 @@ namespace GeoSolver
             double[] step,
             double[] oldValues,
             HashSet<Param> nonNegativeParams,
-            double residualTol,
             out double newError)
         {
             int numParameters = equations.NumParameters;
@@ -378,7 +376,7 @@ namespace GeoSolver
                     continue;
                 }
 
-                if (newError < currentError * 1.1 || newError < residualTol * residualTol * numEquations)
+                if (newError < currentError * 1.1 || IsConverged(equations, b, numEquations))
                     return true;
 
                 alpha *= 0.5;
@@ -409,11 +407,11 @@ namespace GeoSolver
             }
         }
 
-        private static bool IsConverged(double[] b, int n, double tol)
+        private static bool IsConverged(IEquationContainer equations, double[] b, int n)
         {
             for (int i = 0; i < n; i++)
             {
-                if (double.IsNaN(b[i]) || Math.Abs(b[i]) > tol)
+                if (double.IsNaN(b[i]) || Math.Abs(b[i]) > equations.ResidualTolerance(i))
                     return false;
             }
             return true;

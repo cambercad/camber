@@ -9,6 +9,8 @@ namespace Geo
     {
         internal Func<INurbsSurface> LoftSideSupportFactory { get; set; }
         internal Dictionary<string, ParametricRange> LoftSideDomains { get; set; }
+        internal LoftPointCap StartPointCap { get; set; }
+        internal LoftPointCap EndPointCap { get; set; }
 
         public List<Tri> Triangles { get; } = new List<Tri>();
         public List<Vec3D> Vertices { get; } = new List<Vec3D>();

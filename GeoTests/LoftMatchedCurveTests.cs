@@ -90,7 +90,7 @@ public class LoftMatchedCurveTests : IDisposable
         Assert.Equal(a.groupIdToExtendedName.Values.Order(), b.groupIdToExtendedName.Values.Order());
     }
     [Fact]
-    public void MissingCurveNamesAndIncompatibleRationalSectionsAreRejected()
+    public void MissingCurveNamesAreRejectedAndDifferentRationalWeightsRemainExact()
     {
         var part = new GeoAPI(new Box3D(new Vec3D(-50), new Vec3D(100)), .04);
         Assert.Throws<ArgumentException>(() => Build(part, false, "missing", 3, .04));
@@ -104,12 +104,20 @@ public class LoftMatchedCurveTests : IDisposable
             sketch.AddLine(Point(angle), Point(0)).Name = "chord";
             sections.Add(sketch);
         }
-        var error = Assert.Throws<ArgumentException>(() => part.Loft(sections, new LoftOptions
+        var solid = part.Loft(sections, new LoftOptions
         {
             CorrespondenceMode = LoftCorrespondenceMode.MatchingVertices,
             FirstCurves = ["arc", "arc"],
-        }, "incompatible", .04));
-        Assert.Contains("rational weights", error.Message);
+        }, "varying", .04);
+        Assert.True(MeshAnalysis.IsWatertightMesh(solid.Mesh.PrecisionPositions,solid.Mesh.Triangles));
+        var surface=Assert.IsType<NURBS.BSplineSurface>(solid.surfaceMetaData["varying-Side-arc"].NurbsSurface);
+        for(int p=0;p<sections.Count;p++)
+        {
+            var profile=Geo.NurbsConstruction.NurbsSurfaceFactory.ConcatenateCompatible(sections[p].GetCurves().Single()
+                .Select(c=>Geo.NurbsConstruction.Curve2DToBSpline.ToBSplineCurve(c,sections[p].CoordinateSystem)).ToArray());
+            for(int i=0;i<=32;i++)
+                Assert.InRange((profile.EvaluateUniform(i/32.0)-surface.Evaluate(i/32.0,p)).Length(),0,1e-10);
+        }
     }
 
 }

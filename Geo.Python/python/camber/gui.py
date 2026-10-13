@@ -3,10 +3,185 @@
 Coordinates are logical pixels, top-down. No application model or other UI
 toolkit is required.
 """
+import locale
 import math
 import sys
 import time
+from dataclasses import dataclass
 from types import SimpleNamespace
+
+
+def decimal_separator():
+    """The decimal mark for this locale, limited to ``.`` or ``,``."""
+    point = locale.localeconv().get("decimal_point") or "."
+    return "," if point == "," else "."
+
+
+def numeric_text_allowed(text):
+    """A partial number: optional sign, digits, and at most one ``.`` or ``,``."""
+    if not isinstance(text, str):
+        return False
+    body = text[1:] if text[:1] in "+-" else text
+    if body.count(".") + body.count(",") > 1:
+        return False
+    return all(ch.isdigit() or ch in ".," for ch in body)
+
+
+def parse_decimal(text):
+    """Read a number written with either ``.`` or ``,`` as its decimal mark."""
+    if not numeric_text_allowed(text):
+        raise ValueError("Enter a number")
+    body = text[1:] if text[:1] in "+-" else text
+    if not any(ch.isdigit() for ch in body):
+        raise ValueError("Enter a number")
+    value = float(text.replace(",", "."))
+    if not math.isfinite(value):
+        raise ValueError("Enter a finite number")
+    return value
+
+
+def format_decimal(number, fmt, separator=None):
+    """Format ``number`` and use the locale decimal mark when it is a comma."""
+    text = fmt % number
+    mark = decimal_separator() if separator is None else separator
+    return text.replace(".", mark) if mark != "." else text
+
+
+_COVERAGE_VERTEX = """#version 150 core
+in vec2 position;
+in vec2 local_position;
+in vec4 geometry;
+in float primitive;
+in vec2 angles;
+in vec2 corner;
+in vec4 colors;
+out vec2 local;
+flat out vec4 shape;
+flat out float kind;
+flat out vec2 arc;
+flat out vec2 fourth;
+out vec4 color;
+uniform WindowBlock { mat4 projection; mat4 view; } window;
+void main() {
+    gl_Position = window.projection * window.view * vec4(position, 0.0, 1.0);
+    local = local_position; shape = geometry; kind = primitive; arc = angles; fourth = corner; color = colors;
+}
+"""
+
+_COVERAGE_FRAGMENT = """#version 150 core
+in vec2 local;
+flat in vec4 shape;
+flat in float kind;
+flat in vec2 arc;
+flat in vec2 fourth;
+in vec4 color;
+out vec4 final_color;
+const float tau = 6.28318530718;
+float segment_distance(vec2 p, vec2 a, vec2 b) {
+    vec2 d = b-a;
+    return length(p-a-d*clamp(dot(p-a,d)/max(dot(d,d),0.00001),0.0,1.0));
+}
+float cross2(vec2 a, vec2 b) { return a.x*b.y-a.y*b.x; }
+void main() {
+    float distance;
+    if (kind < 0.5) {
+        vec2 d = abs(local) - shape.xy + shape.z;
+        distance = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - shape.z;
+    } else if (kind > 3.5) {
+        vec2 a = arc, b = shape.xy, c = shape.zw, d = fourth;
+        float orientation = sign(cross2(b-a,c-a));
+        if (orientation == 0.0) { final_color = vec4(0.0); return; }
+        bool inside = cross2(b-a,local-a)*orientation >= 0.0 && cross2(c-b,local-b)*orientation >= 0.0 &&
+                      cross2(d-c,local-c)*orientation >= 0.0 && cross2(a-d,local-d)*orientation >= 0.0;
+        distance = min(min(segment_distance(local,a,b),segment_distance(local,b,c)),
+                       min(segment_distance(local,c,d),segment_distance(local,d,a)))*(inside ? -1.0 : 1.0);
+    } else if (kind > 2.5) {
+        vec2 a = arc, b = shape.xy, c = shape.zw;
+        float orientation = sign(cross2(b-a,c-a));
+        if (orientation == 0.0) { final_color = vec4(0.0); return; }
+        // Test each edge with the winding sign, so either triangle order works.
+        bool inside = cross2(b-a,local-a)*orientation >= 0.0 && cross2(c-b,local-b)*orientation >= 0.0 && cross2(a-c,local-c)*orientation >= 0.0;
+        distance = min(min(segment_distance(local,a,b),segment_distance(local,b,c)),segment_distance(local,c,a))*(inside ? -1.0 : 1.0);
+    } else {
+        vec2 radii = max(shape.xy, vec2(0.00001));
+        vec2 q = local / radii;
+        float radial = length(q);
+        float edge = (radial - 1.0) / max(length(q / radii) / max(radial, 0.00001), 1.0/max(radii.x,radii.y));
+        distance = kind < 1.5 ? edge : abs(edge) - shape.z;
+        if (kind > 1.5 && abs(arc.y) < tau - 0.00001) {
+            float theta = atan(q.y, q.x);
+            float relative = mod(sign(arc.y) * (theta - arc.x), tau);
+            if (relative > abs(arc.y)) {
+                vec2 start = radii * vec2(cos(arc.x), sin(arc.x));
+                vec2 end = radii * vec2(cos(arc.x + arc.y), sin(arc.x + arc.y));
+                distance = min(length(local - start), length(local - end)) - shape.z;
+            }
+        }
+    }
+    float width = max(fwidth(distance), 0.00001);
+    float coverage = 1.0 - smoothstep(-0.5 * width, 0.5 * width, distance);
+    final_color = vec4(color.rgb, color.a * coverage);
+}
+"""
+
+
+class _CoverageShape:
+    """A batched analytical outline with one physical pixel of edge coverage."""
+
+    def __init__(self, center, extent, shape, color, batch, parent, *, direction=(1, 0), angles=(0, 2*math.pi), corner=(0, 0), fringe=1, primitive=None):
+        import pyglet
+        from pyglet.graphics import VertexLayout
+        from pyglet.enums import BlendFactor, GeometryMode
+        program = pyglet.graphics.api.get_cached_shader(
+            "gui_coverage", (_COVERAGE_VERTEX, "vertex"), (_COVERAGE_FRAGMENT, "fragment"),
+            vertex_layout=VertexLayout(colors="4Bn"))
+        group = pyglet.graphics.Group(parent=parent)
+        group.set_shader_program(program)
+        group.set_blend(BlendFactor.SRC_ALPHA, BlendFactor.ONE_MINUS_SRC_ALPHA)
+        x, y = center
+        dx, dy = direction
+        w, h = (value + fringe for value in extent)
+        local = (-w, -h, w, -h, w, h, -w, -h, w, h, -w, h)
+        positions = [value for px, py in zip(local[::2], local[1::2])
+                     for value in (x + px*dx - py*dy, y + px*dy + py*dx)]
+        rgba = tuple(color) if len(color) == 4 else (*color, 255)
+        self._vertices = program.vertex_list(
+            6, GeometryMode.TRIANGLES, batch, group, position=positions, local_position=local,
+            geometry=tuple(shape)*6, primitive=(shape[3] if primitive is None else primitive,)*6,
+            angles=tuple(angles)*6, corner=tuple(corner)*6, colors=rgba*6)
+
+    @property
+    def color(self):
+        return tuple(self._vertices.colors[:4])
+
+    @color.setter
+    def color(self, value):
+        rgba = tuple(value) if len(value) == 4 else (*value, 255)
+        self._vertices.colors[:] = rgba*6
+
+    def delete(self):
+        self._vertices.delete()
+
+
+@dataclass(frozen=True)
+class MenuItem:
+    """Context-menu action; shortcut is a display hint, not a key binding."""
+
+    label: str
+    icon: str = ""
+    shortcut: str = ""
+    enabled: bool = True
+    checked: bool = False
+    children: tuple = ()
+
+
+@dataclass(frozen=True)
+class Control:
+    """Visible control geometry in logical, top-down window coordinates."""
+    label: str
+    panel: str
+    rect: tuple
+    enabled: bool
 
 
 def _inside(rect, point):
@@ -16,6 +191,10 @@ def _inside(rect, point):
 
 def _visible_color(color, visible):
     return color if visible else (color[0], color[1], color[2], 0)
+
+
+def _display_text(value):
+    return str(value).replace("\r\n", "\n").replace("\r", "\n")
 
 
 class DockLayout:
@@ -38,18 +217,18 @@ class DockLayout:
             return node if title in node["tabs"] else None
         return self._leaf(title, node["first"]) or self._leaf(title, node["second"])
 
-    def add(self, title, side="left", target=VIEWPORT, fraction=.28):
+    def add(self, title, side="left", target=VIEWPORT, fraction=.28, *, size=None):
         if self._leaf(title):
             return
         if side not in ("left", "right", "top", "bottom", "center"):
             raise ValueError("dock side must be left, right, top, bottom, or center")
         if target == self.VIEWPORT and side == "center":
             side = "right"
-        self._insert(title, target, side, fraction)
+        self._insert(title, target, side, fraction, size)
         self.visible[title] = True
         self._dirty = True
 
-    def _insert(self, title, target, side, fraction):
+    def _insert(self, title, target, side, fraction, size=None):
         leaf = self._leaf(target)
         if leaf is None:
             raise ValueError("unknown dock target: " + str(target))
@@ -64,6 +243,8 @@ class DockLayout:
         leaf.update(axis="x" if side in ("left", "right") else "y",
                     ratio=fraction if first else 1-fraction,
                     first=new if first else old, second=old if first else new)
+        if size is not None:
+            leaf.update(size=max(1, size), fixed_first=first)
 
     def _remove(self, node, title):
         if "tabs" in node:
@@ -138,7 +319,16 @@ class DockLayout:
             x, y, w, h = rect
             horizontal = node["axis"] == "x"
             total = w if horizontal else h
-            split = max(120, min(total-120, round(total*node["ratio"]))) if total >= 245 else max(1, total//2)
+            preferred = total*node["ratio"]
+            if "size" in node:
+                preferred = node["size"] if node["fixed_first"] else total-node["size"]
+            minimum_a = minimum_b = 120
+            if "size" in node:
+                if node["fixed_first"]:
+                    minimum_a = min(120,node["size"])
+                else:
+                    minimum_b = min(120,node["size"])
+            split = max(minimum_a, min(total-minimum_b, round(preferred))) if total >= minimum_a+minimum_b+5 else max(1, total//2)
             node["ratio"] = split / max(total, 1)
             if horizontal:
                 ra, bar, rb = (x, y, split-2, h), (x+split-2, y, 4, h), (x+split+2, y, max(0,w-split-2), h)
@@ -174,10 +364,25 @@ class DockLayout:
 
 
 class _DrawList:
-    def __init__(self, ui, foreground=False):
+    def __init__(self, ui, foreground=False, *, scale=1, offset=(0, 0)):
         self.ui, self.foreground = ui, foreground
+        self.scale, self.offset = scale, offset
+
+    def transformed(self, scale, offset):
+        return _DrawList(self.ui, self.foreground, scale=scale, offset=offset)
 
     def _add(self, kind, *args):
+        if self.scale != 1 or self.offset != (0, 0):
+            args = list(args)
+            count = {"line": 2, "rect": 2, "rrect": 2, "triangle": 3, "quad": 4}.get(kind, 1)
+            for i in range(count):
+                args[i] = tuple(a*self.scale+b for a,b in zip(args[i], self.offset))
+            for i in {"line": (3,), "rrect": (2,), "circle": (1,), "arc": (1,3),
+                      "text": (3,), "text_align": (3,)}.get(kind, ()):
+                args[i] *= self.scale
+            if kind == "ellipse_arc":
+                args[1] = tuple(value*self.scale for value in args[1])
+                args[5] *= self.scale
         self.ui._emit(kind, *args, foreground=self.foreground,clip=not self.foreground)
 
     def AddLine(self, a, b, col, th=1):
@@ -202,16 +407,24 @@ class _DrawList:
     def AddCircleFilled(self, c, r, col, segs=0):
         self._add("circle", tuple(c), r, col)
 
+    def AddEllipseArc(self, center, radii, start, sweep, color, thickness=1.6):
+        """Continuous elliptical arc; angles are radians in top-down coordinates."""
+        self._add("ellipse_arc", tuple(center), tuple(radii), start, sweep, color, thickness)
+
     def AddTriangleFilled(self, a, b, c, col):
         self._add("triangle", tuple(a), tuple(b), tuple(c), col)
+
+    def AddQuadFilled(self, a, b, c, d, col):
+        """Fill a convex quadrilateral with antialiasing only at its boundary."""
+        self._add("quad", tuple(a), tuple(b), tuple(c), tuple(d), col)
 
     def AddText(self, *args):
         p, col, text = args[2:5] if len(args) >= 5 else args[:3]
         size = args[1] if len(args) >= 5 else self.ui._font_size()
         self._add("text", tuple(p), col, str(text), size)
 
-    def AddTextAligned(self, pos, col, text, align="left"):
-        self._add("text_align", tuple(pos), col, str(text), self.ui._font_size(), align)
+    def AddTextAligned(self, pos, col, text, align="left", *, size=None):
+        self._add("text_align", tuple(pos), col, str(text), self.ui._font_size() if size is None else size, align)
 
 
 class UI:
@@ -248,7 +461,9 @@ class UI:
 
     def __init__(self, window):
         from pyglet.window import key
+        from pyglet.window.camera import Camera2D
         self.window = window
+        self._camera = Camera2D(window)
         self.io = SimpleNamespace(DisplaySize=window.get_size(), MousePos=(-1, -1),
                                   MouseDelta=(0, 0), MouseWheel=0, MouseDown=[False]*3,
                                   MouseClicked=[False]*3, MouseReleased=[False]*3,
@@ -270,6 +485,9 @@ class UI:
         self._cursor_name = None
         self._cursors = {}
         self._dock_tabs = []
+        self._dock_headers = {}
+        self._ribbon_group = None
+        self._ribbon_column = None
         self._dock_press = None
         self._dock_drag = None
         self._split_drag = None
@@ -296,6 +514,10 @@ class UI:
         self._keyboard_activate = None
         self._keyboard_delta = 0
         self._consumed_keys = set()
+        self._pressed_keys = {}
+        self._inspect_controls = False
+        self._controls = []
+        self._modifier_keys = set()
         self._focus_next = False
         self._focus_order = []
         self._nav_order = []
@@ -304,14 +526,20 @@ class UI:
         self._combo_press = None
         self._combo_scroll = 0
         self._combo_nav = 0
+        self._combo_options = ()
         self._combo_commit = False
         self._combo_keyboard = False
         self._combo_seen = False
+        self._menu = None
+        self._menu_capture = False
         self._last = (0, 0, 0, 0)
+        self._last_valid = True
+        self._item_submitted = False
         self._measurements = {}
         self._active = None
         self._drag = None
         self._last_click = (-1, 0, (-100, -100))
+        self._pointer_pyglet = None
         self._press_pos = (-1, -1)
         self._press_panel = None
         self._release_pos = (-1, -1)
@@ -328,7 +556,7 @@ class UI:
                 "content": (255,255,255,255), "control": (248,248,248,255),
                 "hover": (232,242,251,255), "selected": (108,179,231,255),
                 "text": (31,31,31,255), "muted": (111,111,111,255),
-                "border": (207,207,207,255), "accent": (0,120,215,255),
+                "border": (207,207,207,255), "accent": (0,120,215,255), "error": (185,48,48,255),
                 "accent_hover": (0,103,188,255),
                 "field": (255,255,255,255), "input_border": (137,137,137,255),
                 "scroll_track": (248,248,248,255), "scroll_thumb": (178,178,178,255),
@@ -340,7 +568,7 @@ class UI:
                 "content": (28,28,28,255), "control": (48,48,48,255),
                 "hover": (57,65,72,255), "selected": (31,95,145,255),
                 "text": (223,223,223,255), "muted": (165,165,165,255),
-                "border": (64,64,64,255), "accent": (77,170,252,255),
+                "border": (64,64,64,255), "accent": (77,170,252,255), "error": (245,115,115,255),
                 "accent_hover": (103,188,255,255),
                 "field": (39,39,39,255), "input_border": (124,124,124,255),
                 "scroll_track": (37,37,37,255), "scroll_thumb": (105,105,105,255),
@@ -370,8 +598,12 @@ class UI:
     def text_input_focused(self):
         return self._focus in self._editors
 
-    def dock_panel(self, title, side="left", target=DockLayout.VIEWPORT, fraction=.28):
-        self.docks.add(title, side, target, fraction)
+    def dock_panel(self, title, side="left", target=DockLayout.VIEWPORT, fraction=.28, *, size=None, header=True):
+        self.docks.add(title, side, target, fraction, size=size)
+        self._dock_headers[title] = bool(header)
+
+    def _dock_header_height(self, node):
+        return 31 if len(node["tabs"]) > 1 or self._dock_headers.get(node["active"], True) else 0
 
     def set_dock_visible(self, title, visible):
         self.docks.set_visible(title, visible)
@@ -388,14 +620,15 @@ class UI:
 
     def _panel_at(self, point):
         return next((p for p in reversed(self._shown)
-                     if not p.flags & 128 and _inside(p.rect, point)), None)
+                     if not p.flags & 128 and _inside(p.rect, point)
+                     and (not getattr(p, "parent", None) or _inside(self._clip(p.parent), point))), None)
 
     def _capture(self):
-        self.io.WantCaptureMouse = (self._panel_at(self.io.MousePos) is not None or self._drag is not None
+        self.io.WantCaptureMouse = (self._menu is not None or self._menu_capture or self._panel_at(self.io.MousePos) is not None or self._drag is not None
                                     or self._active is not None or self._dock_press is not None
                                     or self._split_drag is not None or any(_inside(bar, self.io.MousePos)
                                     for _, bar, _ in self.docks.splitters))
-        self.io.WantCaptureKeyboard = self._focus is not None
+        self.io.WantCaptureKeyboard = self._menu is not None or bool(self._consumed_keys) or self._focus is not None
 
     def _update_cursor(self):
         point = self.io.MousePos
@@ -440,19 +673,25 @@ class UI:
         return ImageMouseCursor(image, len(rows[0])//2, len(rows)//2, acceleration=True)
 
     def on_mouse_motion(self, x, y, dx, dy):
+        self._pointer_pyglet = (x, y)
         self.io.MousePos = (x, self.window.height-y)
         if dx or dy:
             self._combo_keyboard = False
+            if self._menu is not None:
+                for level in self._menu.levels:
+                    level.keyboard = False
         a, b = self.io.MouseDelta
         self.io.MouseDelta = (a+dx, b-dy)
         self._capture()
         self._update_cursor()
 
     def on_mouse_leave(self, x, y):
+        self._pointer_pyglet = None
         self.io.MousePos = (-1, -1)
         self._update_cursor()
 
     def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
+        self._update_modifiers(modifiers)
         self.on_mouse_motion(x, y, dx, dy)
         if self._split_drag:
             node, rect = self._split_drag
@@ -460,6 +699,8 @@ class UI:
             start = rect[0] if node["axis"] == "x" else rect[1]
             span = rect[2] if node["axis"] == "x" else rect[3]
             node["ratio"] = max(.05, min(.95, (coordinate-start)/max(span, 1)))
+            if "size" in node:
+                node["size"] = span*node["ratio"] if node["fixed_first"] else span*(1-node["ratio"])
             self.docks._dirty = True
             self._layout_docks()
             return
@@ -481,6 +722,7 @@ class UI:
 
     def on_mouse_press(self, x, y, button, modifiers):
         from pyglet.window import mouse
+        self._update_modifiers(modifiers)
         self.on_mouse_motion(x, y, 0, 0)
         index = {mouse.LEFT: 0, mouse.RIGHT: 1, mouse.MIDDLE: 2}.get(button)
         if index is None:
@@ -490,6 +732,26 @@ class UI:
         old_button, old_time, old_pos = self._last_click
         self.io.MouseDoubleClicked[index] = old_button == button and now-old_time < .4 and math.dist(old_pos, (x,y)) < 5
         self._last_click = (button, now, (x,y))
+        if self._menu is not None:
+            self._menu_capture = True
+            menu = self._menu
+            menu.keyboard = False
+            if index == 0 and menu.bar is not None:
+                name, items, rects = menu.bar
+                heading = next((i for i,r in enumerate(rects) if _inside(r,self.io.MousePos)), None)
+                if heading is not None:
+                    if heading == menu.path[0]:
+                        self._menu = None
+                    else:
+                        self._open_bar(name,items,rects,heading)
+                    self._capture()
+                    return
+            hit = self._menu_hit()
+            menu.press = (hit[0].path+(hit[1],)) if index == 0 and hit else None
+            if menu.message is None and not any(level.rect and _inside(level.rect,self.io.MousePos) for level in menu.levels):
+                self._menu = None
+            self._capture()
+            return
         if index == 0:
             self._focus_visible = False
             self._press_pos = self.io.MousePos
@@ -537,11 +799,27 @@ class UI:
 
     def on_mouse_release(self, x, y, button, modifiers):
         from pyglet.window import mouse
+        self._update_modifiers(modifiers)
         self.on_mouse_motion(x, y, 0, 0)
         index = {mouse.LEFT: 0, mouse.RIGHT: 1, mouse.MIDDLE: 2}.get(button)
         if index is not None:
             self.io.MouseDown[index] = False
             self.io.MouseReleased[index] = True
+        if self._menu_capture:
+            if index == 0 and self._menu is not None:
+                menu = self._menu
+                hit = self._menu_hit()
+                if hit and hit[0].path+(hit[1],) == menu.press:
+                    level,i = hit
+                    item = level.items[i]
+                    if item is not None and item.enabled:
+                        if item.children:
+                            self._open_submenu(level,i,False)
+                        else:
+                            menu.choice = i if menu.message is not None else menu.press
+                menu.press = None
+            self._capture()
+            return
         if index == 0:
             self._release_pos = self.io.MousePos
             if self._combo_press:
@@ -569,7 +847,14 @@ class UI:
         self._capture()
 
     def on_mouse_scroll(self, x, y, sx, sy):
+        x, y = self._logical_scroll_pointer(x, y)
         self.on_mouse_motion(x, y, 0, 0)
+        if self._menu is not None:
+            hit = self._menu_hit()
+            level = hit[0] if hit else self._menu.levels[-1]
+            level.scroll = max(0, level.scroll-int(sy)*(32 if self._menu.message is not None else 1))
+            level.keyboard = False
+            return
         if self._combo_popup and _inside(self._combo_popup[2], self.io.MousePos):
             self._combo_scroll = max(0, self._combo_scroll-int(sy))
             visible = max(1, self._combo_popup[2][3]//26)
@@ -582,12 +867,84 @@ class UI:
         else:
             self.io.MouseWheel += sy
 
+    def _logical_scroll_pointer(self, x, y):
+        """Window-pixel pointer for a wheel event.
+
+        Win32 delivers wheel coordinates in physical pixels. Motion and clicks
+        are already in window pixels, and that is the position zoom must use.
+        """
+        scale = float(getattr(self.window, "scale", 1) or 1)
+        logical = self._pointer_pyglet
+        if logical is not None and scale > 1:
+            if abs(x - logical[0] * scale) <= 1 and abs(y - logical[1] * scale) <= 1:
+                return logical
+        width, height = self.window.get_size()
+        if scale > 1 and (x > width + 1 or y > height + 1):
+            return x / scale, y / scale
+        return x, y
+
+    def _update_modifiers(self, modifiers, symbol=None, pressed=False):
+        from pyglet.window import key
+        for flag, mask, keys in (("KeyCtrl", key.MOD_CTRL, (key.LCTRL, key.RCTRL)),
+                                 ("KeyShift", key.MOD_SHIFT, (key.LSHIFT, key.RSHIFT)),
+                                 ("KeyAlt", key.MOD_ALT, (key.LALT, key.RALT))):
+            if symbol in keys:
+                # X11 key events carry the mask from before the transition.
+                # The explicit key transition determines this modifier's state.
+                if pressed:
+                    self._modifier_keys.add(symbol)
+                else:
+                    self._modifier_keys.discard(symbol)
+                active = any(k in self._modifier_keys for k in keys)
+            else:
+                active = bool(modifiers & mask)
+                if not active:
+                    self._modifier_keys.difference_update(keys)
+            setattr(self.io, flag, active)
+
     def on_key_press(self, symbol, modifiers):
         from pyglet.window import key
         self.io.KeysDown[symbol] = True
-        self.io.KeyCtrl = bool(modifiers & key.MOD_CTRL)
-        self.io.KeyShift = bool(modifiers & key.MOD_SHIFT)
-        self.io.KeyAlt = bool(modifiers & key.MOD_ALT)
+        self._update_modifiers(modifiers, symbol, pressed=True)
+        if self._menu is not None:
+            root = self._menu
+            menu = root.levels[-1]
+            enabled = [i for i, item in enumerate(menu.items) if item is not None and item.enabled]
+            if symbol == key.ESCAPE:
+                if len(root.levels) > 1:
+                    root.levels.pop()
+                    root.levels[-1].keyboard = True
+                elif root.message is None:
+                    self._menu = None
+                elif root.cancel is not None:
+                    root.choice = root.cancel
+            elif root.message is None and symbol == key.LEFT and len(root.levels) > 1:
+                root.levels.pop()
+                root.levels[-1].keyboard = True
+            elif root.message is None and symbol == key.RIGHT and menu.nav in enabled and menu.items[menu.nav].children:
+                self._open_submenu(menu,menu.nav,True)
+            elif root.bar is not None and symbol in (key.LEFT,key.RIGHT) and len(root.levels) == 1:
+                name,items,rects = root.bar
+                headings = [i for i,item in enumerate(items) if item.enabled and item.children]
+                current = headings.index(root.path[0])
+                self._open_bar(name,items,rects,headings[(current+(-1 if symbol == key.LEFT else 1)) % len(headings)],keyboard=True)
+            elif symbol in (key.UP, key.DOWN, key.HOME, key.END, key.LEFT, key.RIGHT, key.TAB) and enabled:
+                if root.message is None and symbol in (key.LEFT, key.RIGHT):
+                    self._consumed_keys.add(symbol)
+                    return
+                current = enabled.index(menu.nav) if menu.nav in enabled else -1
+                backwards = symbol in (key.UP, key.LEFT) or (symbol == key.TAB and self.io.KeyShift)
+                menu.nav = (enabled[0] if symbol == key.HOME else enabled[-1] if symbol == key.END or (current < 0 and backwards)
+                            else enabled[(current + (-1 if backwards else 1)) % len(enabled)])
+                menu.keyboard = True
+            elif symbol in (key.RETURN, key.NUM_ENTER) and menu.nav in enabled:
+                if menu.items[menu.nav].children:
+                    self._open_submenu(menu,menu.nav,True)
+                else:
+                    root.choice = menu.nav if root.message is not None else menu.path+(menu.nav,)
+            self._consumed_keys.add(symbol)
+            self._capture()
+            return
         editor = self._editors.get(self._focus)
         if self._combo_open is not None and editor is None:
             if symbol == key.ESCAPE:
@@ -596,8 +953,11 @@ class UI:
                 return
             if symbol == key.TAB:
                 self._combo_open = self._combo_popup = None
-            if symbol in (key.UP, key.DOWN):
-                self._combo_nav += -1 if symbol == key.UP else 1
+            if symbol in (key.UP, key.DOWN, key.HOME, key.END):
+                if symbol in (key.HOME, key.END):
+                    self._combo_nav = 0 if symbol == key.HOME else len(self._combo_options)-1
+                else:
+                    self._combo_nav += -1 if symbol == key.UP else 1
                 self._combo_keyboard = True
                 self._consumed_keys.add(symbol)
                 return
@@ -638,6 +998,10 @@ class UI:
                 editor.document.text = editor.original
                 editor.commit = True
                 self._focus = None
+            elif symbol in (key.RETURN, key.NUM_ENTER) and not editor.multiline:
+                editor.commit = True
+                editor.submitted = True
+                self._focus = None
             elif self.io.KeyCtrl and symbol in (key.Z,key.Y):
                 source,target = (editor.redo,editor.undo) if symbol == key.Y or self.io.KeyShift else (editor.undo,editor.redo)
                 if source:
@@ -655,22 +1019,29 @@ class UI:
                     if symbol in (key.C, key.X):
                         self.window.set_clipboard_text(doc.text[a:b])
                         if symbol == key.X:
-                            self._edit(editor,caret.on_text,"")
+                            self._insert_text(editor, "")
                     else:
-                        self._edit(editor,caret.on_text,self.window.get_clipboard_text())
+                        self._insert_text(editor, self.window.get_clipboard_text() or "")
+        if editor is None:
+            self._pressed_keys[symbol] = modifiers & (key.MOD_SHIFT | key.MOD_CTRL | key.MOD_ALT | key.MOD_COMMAND)
         self._capture()
 
     def on_key_release(self, symbol, modifiers):
         self.io.KeysDown[symbol] = False
         self._consumed_keys.discard(symbol)
-        from pyglet.window import key
-        self.io.KeyCtrl = bool(modifiers & key.MOD_CTRL)
-        self.io.KeyShift = bool(modifiers & key.MOD_SHIFT)
-        self.io.KeyAlt = bool(modifiers & key.MOD_ALT)
+        self._update_modifiers(modifiers, symbol)
 
     def on_deactivate(self):
+        if self._menu is not None and self._menu.message is not None:
+            self._menu.press = None
+        else:
+            self._menu = None
+        self._menu_capture = False
         self.io.KeysDown.clear()
+        self._pressed_keys.clear()
         self._consumed_keys.clear()
+        self._modifier_keys.clear()
+        self.io.KeyCtrl = self.io.KeyShift = self.io.KeyAlt = False
         self.io.MouseDown[:] = [False]*3
         self.shortcut_letters.clear()
         self._drag = self._active = None
@@ -685,9 +1056,10 @@ class UI:
                     self._edit(editor, editor.caret.on_text, "\n")
                 else:
                     editor.commit = True
+                    editor.submitted = True
                     self._focus = None
             elif text != "\t":
-                self._edit(editor,editor.caret.on_text,text)
+                self._insert_text(editor, text)
         self._capture()
 
     def on_text_motion(self, motion):
@@ -713,7 +1085,24 @@ class UI:
             editor.redo.clear()
             editor.commit = True
 
+    def _insert_text(self, editor, text):
+        """Insert text, dropping characters a numeric field does not accept."""
+        if getattr(editor, "numeric", False) and not self._numeric_insertion_ok(editor, text):
+            return
+        self._edit(editor, editor.caret.on_text, text)
+
+    @staticmethod
+    def _numeric_insertion_ok(editor, text):
+        if not isinstance(text, str):
+            return False
+        caret = editor.caret
+        mark = caret.position if caret.mark is None else caret.mark
+        start, end = sorted((caret.position, mark))
+        proposed = editor.document.text[:start] + text + editor.document.text[end:]
+        return numeric_text_allowed(proposed)
+
     def new_frame(self):
+        self._controls.clear()
         self.io.DisplaySize = self.window.get_size()
         self._capture()
         self._shown = []
@@ -731,9 +1120,13 @@ class UI:
         self._tabbar = None
         self._combo_seen = False
         self._combo_popup = None
+        if self._menu is not None:
+            self._menu.seen = False
 
     def _emit(self, kind, *args, foreground=False, clip=True):
-        command = (kind, args, self._current if clip else None)
+        if kind in ("text", "text_align"):
+            args = (*args[:2], _display_text(args[2]), *args[3:])
+        command = (kind, args, self._current if clip is True else clip or None)
         (self._foreground if foreground else self._commands).append(command)
 
     def _style(self, index, default):
@@ -778,7 +1171,7 @@ class UI:
             p.rect, p.flags, p.docked = rect, flags | 2 | 4, True
             p.hidden = node["active"] != title
             p.padding, p.spacing = self._style(0, (10, 8)), self._style(1, (8, 6))
-            p.title_h = p.clip_top = 31
+            p.title_h = p.clip_top = self._dock_header_height(node)
             p.cursor = (x+p.padding[0], y+p.title_h+p.padding[1]-p.scroll)
             p.bottom, p.right = p.cursor[1], p.cursor[0]
             p.previous = None
@@ -870,7 +1263,7 @@ class UI:
         if dx or dy:
             for i in range(p.background_index+1,len(self._commands)):
                 kind,args,clip = self._commands[i]
-                count = {"line":2,"rect":2,"rrect":2,"triangle":3,"circle":1,"arc":1,"text":1,"text_align":1}.get(kind,0)
+                count = {"line":2,"rect":2,"rrect":2,"triangle":3,"quad":4,"circle":1,"arc":1,"text":1,"text_align":1}.get(kind,0)
                 args = tuple((a[0]+dx,a[1]+dy) if j<count else a for j,a in enumerate(args))
                 self._commands[i] = kind,args,clip
         p.rect = (x,y,w,26 if p.collapsed else h)
@@ -885,6 +1278,38 @@ class UI:
         self._draw_scrollbar(p)
         self._current = None
 
+    def BeginChild(self, label, width=0, height=0):
+        """A separately scrolling content region inside the current panel."""
+        parent = self._current
+        if parent is None:
+            raise RuntimeError("BeginChild requires a parent panel")
+        available = self.GetContentRegionAvail()
+        rect = self._item(width or available[0], height or available[1])
+        identity = self._id("##child_" + label)
+        child = self._panels.setdefault(identity, SimpleNamespace(scroll=0, max_scroll=0, scale=1))
+        child.parent = parent
+        child.rect, child.flags = rect, 1 | 2 | 4
+        child.docked = child.hidden = child.collapsed = False
+        child.padding, child.spacing = (0, 0), parent.spacing
+        child.scale = parent.scale
+        child.title_h = child.clip_top = 0
+        child.cursor = (rect[0], rect[1]-child.scroll)
+        child.bottom, child.right = child.cursor[1], child.cursor[0]
+        child.previous = None
+        self._shown.append(child)
+        self._current = child
+        return True
+
+    def EndChild(self):
+        child = self._current
+        if child is None or not getattr(child, "parent", None):
+            raise RuntimeError("EndChild without BeginChild")
+        x, y, w, h = child.rect
+        child.max_scroll = max(0, child.bottom+child.scroll-y-h)
+        child.scroll = min(child.scroll, child.max_scroll)
+        self._draw_scrollbar(child)
+        self._current = child.parent
+
     def _scroll_geometry(self, p):
         x, y, w, h = p.rect
         track = (x+w-13, y+p.title_h+5, 9, max(1,h-p.title_h-10))
@@ -897,19 +1322,28 @@ class UI:
         if not p.max_scroll or p.flags & 32:
             return
         track, thumb = self._scroll_geometry(p)
+        clip = getattr(p, "parent", None) or False
         x, y, w, h = track
-        self._emit("rrect", (x,y), (x+w,y+h), 4, self.theme["scroll_track"], clip=False)
+        self._emit("rrect", (x,y), (x+w,y+h), 4, self.theme["scroll_track"], clip=clip)
         x, y, w, h = thumb
         color = self.theme["scroll_hover"] if _inside(track,self.io.MousePos) else self.theme["scroll_thumb"]
-        self._emit("rrect", (x,y), (x+w,y+h), 3, color, clip=False)
+        self._emit("rrect", (x,y), (x+w,y+h), 3, color, clip=clip)
 
     def _clip(self, p):
         if p is None:
             return (0,0,*self.io.DisplaySize)
         x,y,w,h = p.rect
-        return (x,y+p.clip_top,max(0,w-(14 if p.max_scroll and not p.flags & 32 else 0)),max(0,h-p.clip_top))
+        rect = (x,y+p.clip_top,max(0,w-(14 if p.max_scroll and not p.flags & 32 else 0)),max(0,h-p.clip_top))
+        if getattr(p, "parent", None):
+            a, b, c, d = self._clip(p.parent)
+            left, top = max(rect[0], a), max(rect[1], b)
+            return (left, top, max(0,min(rect[0]+rect[2],a+c)-left),
+                    max(0,min(rect[1]+rect[3],b+d)-top))
+        return rect
 
     def _hover(self, rect):
+        if self._menu is not None or self._menu_capture:
+            return False
         p = self._current
         return _inside(rect,self.io.MousePos) and _inside(self._clip(p),self.io.MousePos) and self._panel_at(self.io.MousePos) is p
 
@@ -921,9 +1355,13 @@ class UI:
             p = self._current
         x,y = p.cursor
         self._last = (x,y,w,h)
+        self._last_valid = True
+        self._item_submitted = False
         p.previous = self._last
         p.right,p.bottom = max(p.right,x+w),max(p.bottom,y+h)
-        p.cursor = (p.rect[0]+p.padding[0],p.bottom+p.spacing[1])
+        column = getattr(self, "_ribbon_column", None)
+        p.cursor = (column.position[0] if column else p.rect[0]+p.padding[0],
+                    y+h+p.spacing[1] if column else p.bottom+p.spacing[1])
         return self._last
 
     def SameLine(self, offset=None):
@@ -939,7 +1377,8 @@ class UI:
 
     def GetContentRegionAvail(self):
         p = self._current
-        return (max(0,p.rect[0]+p.rect[2]-p.cursor[0]-p.padding[0]),
+        scrollbar = 14 if getattr(p, "max_scroll", 0) and not getattr(p, "flags", 0) & 32 else 0
+        return (max(0,p.rect[0]+p.rect[2]-p.cursor[0]-p.padding[0]-scrollbar),
                 max(0,p.rect[1]+p.rect[3]-p.cursor[1]-p.padding[1]))
 
     def GetWindowPos(self):
@@ -948,9 +1387,10 @@ class UI:
     def _button_at(self, rect, identity, label="", selected=False, invisible=False,
                    clip_content=True, centered=False, bordered=False, flat=False,
                    primary=False, enabled=True, tab_stop=True):
+        self._record_control(identity, rect, enabled, clip_content=clip_content)
         if enabled and tab_stop:
             self._nav_order.append(identity)
-        hovered = enabled and (self._hover(rect) if clip_content else _inside(rect,self.io.MousePos))
+        hovered = enabled and self._menu is None and not self._menu_capture and (self._hover(rect) if clip_content else _inside(rect,self.io.MousePos))
         if enabled and hovered and self.io.MouseClicked[0] and _inside(rect,self._press_pos) and self._current is self._press_panel:
             self._active = identity
             if tab_stop:
@@ -961,6 +1401,7 @@ class UI:
             self._keyboard_activate = None
         if not invisible:
             x,y,w,h = rect
+            primary = primary and enabled
             color = (self.theme["accent_hover"] if hovered else self.theme["accent"]) if primary else self._color(
                 6 if selected else 5 if hovered else 4,
                 self.theme["selected"] if selected else self.theme["hover"] if hovered else
@@ -990,6 +1431,72 @@ class UI:
         return self._button_at(rect,self._id(label),shown,centered=True,bordered=True,
                                primary=primary,enabled=enabled)
 
+    def RibbonButton(self, label, drawer, *, width=76, height=66, tooltip=None,
+                     selected=False, enabled=True, icon_size=32, compact=False):
+        """Compact command tile with a caller-drawn vector icon."""
+        shown = label.split("##")[0]
+        identity = self._id(label)
+        rect = self._item(width, height)
+        clicked = self._button_at(rect, identity, invisible=True, enabled=enabled)
+        hovered = self._hover(rect)
+        x, y, w, h = rect
+        # Keep the command topology stable: inserting a background on hover
+        # reallocates the cached icon primitives and can reorder their layers.
+        self._emit("rrect", (x,y), (x+w,y+h), 4,
+                   _visible_color(self.theme["selected" if selected else "hover"], selected or hovered and enabled))
+        if self._focus_visible and self._focus == identity:
+            for a,b in (((x,y),(x+w,y)), ((x+w,y),(x+w,y+h)),
+                        ((x+w,y+h),(x,y+h)), ((x,y+h),(x,y))):
+                self._emit("line", a, b, self.theme["accent"], 1)
+        ink = self.theme["text"] if enabled else self.theme["muted"]
+        origin = (x+5,y+(h-icon_size)/2) if compact else (x+(w-icon_size)/2,y+5)
+        dl = self.GetWindowDrawList().transformed(icon_size/24, origin)
+        drawer(dl, 0, 0, ink, self.theme["accent"] if enabled else self.theme["muted"])
+        self._emit("text_align", (x+icon_size+12,y+h/2) if compact else (x+w/2,y+h-15), ink,
+                   self._fit_text(shown, max(0, w-icon_size-18 if compact else w-8)),
+                   self._font_size(), "left" if compact else "center")
+        if hovered and tooltip:
+            self.SetTooltip(tooltip)
+        return clicked
+
+    def BeginRibbonGroup(self, label):
+        """Lay out a named command group alongside the previous ribbon group."""
+        if self._ribbon_group is not None:
+            raise RuntimeError("Ribbon groups cannot nest")
+        p = self._current
+        self._ribbon_group = (label, p.cursor, p.right, p.bottom)
+        p.right, p.bottom = p.cursor
+        p.previous = None
+
+    def BeginRibbonColumn(self, gap=0):
+        """Stack compact commands in a column aligned to the ribbon group."""
+        if self._ribbon_group is None:
+            raise RuntimeError("Ribbon columns require a ribbon group")
+        p = self._current
+        if p.previous is not None:
+            self.SameLine()
+        p.cursor = (p.cursor[0], self._ribbon_group[1][1])
+        self._ribbon_column = SimpleNamespace(position=p.cursor, spacing=p.spacing)
+        p.spacing = (p.spacing[0], gap)
+
+    def EndRibbonColumn(self):
+        if self._ribbon_column is None:
+            raise RuntimeError("EndRibbonColumn without BeginRibbonColumn")
+        self._current.spacing = self._ribbon_column.spacing
+        self._ribbon_column = None
+
+    def EndRibbonGroup(self):
+        if self._ribbon_group is None:
+            raise RuntimeError("EndRibbonGroup without BeginRibbonGroup")
+        label, (x,y), right, bottom = self._ribbon_group
+        p = self._current
+        edge, footer = p.right+8, max(y+66, p.bottom)
+        self._emit("text_align", ((x+edge)/2,footer+8), self.theme["muted"], label, 11, "center")
+        self._emit("line", (edge+7,y+3), (edge+7,footer+14), self.theme["border"], 1)
+        p.cursor, p.previous = (edge+20,y), None
+        p.right, p.bottom = max(right,edge+20), max(bottom,footer+16)
+        self._ribbon_group = None
+
     def _tab_at(self, rect, identity, label, selected, clip_content=True):
         clicked = self._button_at(rect, identity, invisible=True, clip_content=clip_content)
         x, y, w, h = rect
@@ -1010,12 +1517,14 @@ class UI:
         rect = self._item(width or self.CalcTextSize(shown)[0]+20, height)
         return self._tab_at(rect, self._id(label), shown, selected)
 
-    def InvisibleButton(self, label, size, flags=0):
-        return self._button_at(self._item(*size),self._id(label),invisible=True)
+    def InvisibleButton(self, label, size, flags=0, *, tab_stop=True):
+        return self._button_at(self._item(*size),self._id(label),invisible=True,tab_stop=tab_stop)
 
     def Checkbox(self, label, value):
         shown = label.split("##")[0]
-        rect = self._item(self.CalcTextSize(shown)[0]+28,24)
+        width = min(self.CalcTextSize(shown)[0]+28, max(28, self.GetContentRegionAvail()[0]))
+        fitted = self._fit_text(shown, max(0, width-24))
+        rect = self._item(width,24)
         changed = self._button_at(rect,self._id(label),invisible=True)
         x,y,w,h = rect
         border = self.theme["accent"] if self._hover(rect) else self.theme["input_border"]
@@ -1025,7 +1534,9 @@ class UI:
         self._emit("text_align", (x+8,y+12),
                    _visible_color(self.theme["check_mark"], value),
                    "✓", 12, "center")
-        self._emit("text_align", (x+24,y+12), self.theme["text"], shown, self._font_size(), "left")
+        self._emit("text_align", (x+24,y+12), self.theme["text"], fitted, self._font_size(), "left")
+        if fitted != shown and self.IsItemHovered():
+            self.SetTooltip(shown)
         return changed, not value if changed else value
 
     def RadioButton(self, label, selected=False):
@@ -1055,10 +1566,12 @@ class UI:
                    self._font_size(), "left")
         return changed, state
 
-    def TreeNode(self, label, depth=0, selected=False, *, leaf=False, default_open=False):
+    def TreeNode(self, label, depth=0, selected=False, *, leaf=False, default_open=False, drawer=None, force_open=False):
         """Draw one tree row; return ``(clicked, expanded)`` for caller-driven children."""
         identity = self._id(label)
         expanded = self._tree_open.setdefault(identity, default_open)
+        if force_open:
+            expanded = self._tree_open[identity] = True
         rect = self._item(self.GetContentRegionAvail()[0], 24)
         clicked = self._button_at(rect, identity, invisible=True)
         if clicked and not leaf:
@@ -1071,8 +1584,15 @@ class UI:
         if not leaf:
             self._emit("text_align", (indent+8,y+h/2), self.theme["muted"],
                        "▾" if expanded else "▸", self._font_size(), "center")
-        self._emit("text_align", (indent+20,y+h/2), self.theme["text"],
-                   label.split("##")[0], self._font_size(), "left")
+        if drawer:
+            drawer(self.GetWindowDrawList(), indent+18, y, self.theme["text"], self.theme["accent"])
+        text = label.split("##")[0]
+        text_x = indent+(46 if drawer else 20)
+        shown = self._fit_text(text, max(0, x+w-8-text_x))
+        self._emit("text_align", (text_x,y+h/2), self.theme["text"],
+                   shown, self._font_size(), "left")
+        if shown != text and self.IsItemHovered():
+            self.SetTooltip(text)
         return clicked, expanded
 
     def ListBox(self, label, options, selected=-1, width=0):
@@ -1090,14 +1610,69 @@ class UI:
             self._current.spacing = spacing
         return selected
 
+    def PropertyGroup(self, label, *, default_open=True):
+        """Collapsible property section; draw its Property rows when True."""
+        self._current.property_group = label
+        _, expanded = self.TreeNode(label+"##properties", default_open=default_open)
+        return expanded
+
+    def Property(self, label, value, *, options=None, editable=False, read_only=False,
+                 step=0, fast_step=0, label_width=120):
+        """Aligned label/editor row returning (changed, value).
+
+        Reuses text, numeric, checkbox and combo controls. Numbers are edited
+        as floats. Group labels scope row identities; no data binding is hidden.
+        """
+        if not read_only and options is None and not isinstance(value,(str,bool,int,float)):
+            raise TypeError("editable properties must be text, boolean, or numeric")
+        available = self.GetContentRegionAvail()[0]
+        label_width = min(max(0,label_width), max(0,available*.5))
+        rect = self._item(label_width,26)
+        self._emit("text_align",(rect[0],rect[1]+13),self.theme["text"],
+                   self._fit_text(label.split("##")[0],label_width),self._font_size(),"left")
+        self.SameLine()
+        width = max(1,self.GetContentRegionAvail()[0])
+        identity = "##property/"+str(getattr(self._current,"property_group",""))+"/"+label
+        self.PushItemWidth(width)
+        try:
+            if read_only:
+                self.TextEllipsis(str(value),width,muted=True,height=26)
+                return False,value
+            if options is not None:
+                control = self.EditableComboBox if editable else self.ComboBox
+                return control(identity,value,options,width)
+            if isinstance(value,bool):
+                return self.Checkbox(identity,value)
+            if isinstance(value,(int,float)):
+                return self.InputDouble(identity,float(value),step,fast_step)
+            return self.InputText(identity,value,width)
+        finally:
+            self.PopItemWidth()
+
     def ComboBox(self, label, value, options, width=0):
         """Return ``(changed, value)`` with a clipped, keyboard-accessible popup."""
+        return self._combo_box(label, value, options, width, editable=False)
+
+    def EditableComboBox(self, label, value, options, width=0):
+        """Edit free-form text or choose a preset; return (changed, text)."""
+        return self._combo_box(label, str(value), tuple(map(str, options)), width, editable=True)
+
+    def _combo_box(self, label, value, options, width, *, editable):
         options = tuple(options)
-        if not options:
+        if not options and not editable:
             raise ValueError("combo box needs at least one option")
         identity = self._id(label)
         rect = self._item(width or min(240, self.GetContentRegionAvail()[0]), 26)
-        if self._button_at(rect, identity, invisible=True):
+        x, y, w, h = rect
+        changed = False
+        trigger = rect
+        if editable:
+            changed, value = self._input_text_at(label+"##edit", value, (x,y,max(1,w-26),h))
+            trigger = (x+w-26,y,26,h)
+        if not options and self._combo_open == identity:
+            self._combo_open = self._combo_popup = None
+        if self._button_at(trigger, identity, "▾" if editable else "", invisible=not editable,
+                           centered=True, bordered=editable, enabled=bool(options)):
             if self._combo_open == identity:
                 self._combo_open = self._combo_popup = None
             else:
@@ -1106,16 +1681,18 @@ class UI:
                 self._combo_scroll = 0
                 self._combo_nav = options.index(value) if value in options else 0
                 self._combo_keyboard = False
-        x, y, w, h = rect
         active = self._combo_open == identity
         border = self.theme["accent"] if active or self._hover(rect) else self.theme["input_border"]
-        self._emit("rrect", (x,y), (x+w,y+h), 2, border)
-        self._emit("rrect", (x+1,y+1), (x+w-1,y+h-1), 1, self.theme["field"])
-        self._emit("text_align", (x+8,y+h/2), self.theme["text"],
-                   self._fit_text(str(value), w-34), self._font_size(), "left")
-        self._emit("text_align", (x+w-14,y+h/2), self.theme["muted"], "▾", 14, "center")
+        if not editable:
+            self._emit("rrect", (x,y), (x+w,y+h), 2, border)
+            self._emit("rrect", (x+1,y+1), (x+w-1,y+h-1), 1, self.theme["field"])
+            self._emit("text_align", (x+8,y+h/2), self.theme["text"],
+                       self._fit_text(str(value), w-34), self._font_size(), "left")
+        if not editable:
+            self._emit("text_align", (x+w-14,y+h/2), self.theme["muted"], "▾", 14, "center")
         if not active:
-            return False, value
+            return changed, value
+        self._combo_options = options
         self._combo_seen = True
         below = self.window.height-y-h-4
         above = y-4
@@ -1154,15 +1731,363 @@ class UI:
             if 0 <= index < len(options) and _inside(row, self.io.MousePos):
                 choice = index
         self._combo_commit = False
-        self._combo_press = None
+        # A press can span multiple rendered frames; consume it on release.
+        if self.io.MouseReleased[0]:
+            self._combo_press = None
         if choice is not None:
             self._combo_open = self._combo_popup = None
-            return options[choice] != value, options[choice]
-        return False, value
+            return changed or options[choice] != value, options[choice]
+        return changed, value
+
+    def OpenContextMenu(self, name, position=None):
+        """Open a named menu at the cursor or a top-down logical-pixel position.
+
+        Call ContextMenu(name, items) each frame, outside any conditional panel.
+        Opening is explicit so callers can distinguish right clicks from drags.
+        """
+        if self._menu is not None and self._menu.message is not None:
+            return
+        self._open_popup(name, position)
+
+    def _open_popup(self, name, position=None):
+        self._combo_open = self._combo_popup = self._combo_press = None
+        self._focus = self._active = None
+        self._menu = SimpleNamespace(name=name, position=tuple(position or self.io.MousePos),
+                                     items=(), rows=[], rect=None, nav=-1, scroll=0,
+                                     press=None, choice=None, keyboard=False, seen=False,
+                                     message=None, cancel=None)
+        self._menu.path = ()
+        self._menu.parent_rect = None
+        self._menu.bar = None
+        self._menu.levels = [self._menu]
+        self._capture()
+
+    @staticmethod
+    def _menu_items(items):
+        items = tuple(MenuItem(item) if isinstance(item,str) else item for item in items)
+        if any(item is not None and not isinstance(item,MenuItem) for item in items):
+            raise TypeError("menu items must be MenuItem, str, or None")
+        return items
+
+    def _menu_hit(self):
+        return next(((level,i) for level in reversed(self._menu.levels)
+                     for i,rect in level.rows if _inside(rect,self.io.MousePos)), None)
+
+    def _open_submenu(self, level, index, keyboard):
+        item = level.items[index]
+        if not item.enabled or not item.children:
+            return
+        depth = next(i for i,node in enumerate(self._menu.levels) if node is level)+1
+        path = level.path+(index,)
+        level.nav = index
+        if len(self._menu.levels) > depth and self._menu.levels[depth].path == path:
+            if keyboard:
+                child = self._menu.levels[depth]
+                child.keyboard = True
+                enabled = [i for i,item in enumerate(child.items) if item is not None and item.enabled]
+                if child.nav not in enabled:
+                    child.nav = enabled[0] if enabled else -1
+            return
+        rect = dict(level.rows).get(index)
+        if rect is None:
+            return
+        items = self._menu_items(item.children)
+        enabled = [i for i,item in enumerate(items) if item is not None and item.enabled]
+        child = SimpleNamespace(items=items,rows=[],rect=None,nav=enabled[0] if keyboard and enabled else -1,
+                                scroll=0,keyboard=keyboard,path=path,parent_rect=rect,
+                                position=(rect[0]+rect[2]+4,rect[1]-4))
+        self._menu.levels[depth:] = [child]
+
+    def _open_bar(self, name, items, rects, index, *, keyboard=False):
+        if not items[index].enabled or not items[index].children:
+            return
+        rect = rects[index]
+        self._open_popup(name,(rect[0],rect[1]+rect[3]))
+        self._menu.items = self._menu_items(items[index].children)
+        self._menu.path = (index,)
+        self._menu.bar = (name,items,rects)
+        self._menu.keyboard = keyboard
+
+    def MenuBar(self, name, menus, width=0):
+        """Horizontal MenuItem headings with children; return an action index path."""
+        menus = self._menu_items(menus)
+        if any(item is None for item in menus):
+            raise ValueError("menu bars do not have separator headings")
+        name = self._id(name)
+        x,y,w,h = self._item(width or self.GetContentRegionAvail()[0],28)
+        self._emit("rect",(x,y),(x+w,y+h),self.theme["title"])
+        rects = []
+        left = x
+        for i,item in enumerate(menus):
+            bw = min(self.CalcTextSize(item.label)[0]+24,max(0,x+w-left))
+            rect = (left,y,bw,h)
+            rects.append(rect)
+            active = self._menu is not None and self._menu.bar is not None and self._menu.name == name
+            clicked = self._button_at(rect,(name,i),item.label,flat=True,
+                                      selected=active and self._menu.path[0] == i,
+                                      enabled=item.enabled and bool(item.children))
+            hovered = _inside(rect,self.io.MousePos) and _inside(self._clip(self._current),self.io.MousePos)
+            if clicked or (active and hovered and not self._menu.keyboard and self._menu.path[0] != i):
+                self._open_bar(name,menus,rects,i)
+            left += bw
+        return self._track_bar_menu(name, menus, rects)
+
+    def MenuButton(self, label, items, width=0, height=0, *, enabled=True, primary=False,
+                   drawer=None, tooltip=None, icon_size=18):
+        """Open a context menu under this button. Returns the chosen item path, or None.
+
+        ``items`` match ContextMenu: MenuItem, text, or None for a separator.
+        The popup, submenus, and keyboard behavior are the shared menu.
+        A vector ``drawer`` draws a toolbar icon with a trailing chevron.
+        """
+        shown = label.split("##")[0]
+        name = self._id(label)
+        if drawer is not None:
+            rect = self._item(width or 42, height or 28)
+        else:
+            rect = self._item(width or self.CalcTextSize(shown)[0]+36, height or self._font_size()+10)
+        open_menu = (self._menu is not None and self._menu.name == name
+                     and self._menu.bar is not None and self._menu.message is None)
+        clicked = self._button_at(rect, name, invisible=True, enabled=enabled, selected=open_menu)
+        self._draw_menu_button(rect, shown, enabled, primary, drawer, icon_size, open_menu)
+        if clicked:
+            self._open_bar(name, (MenuItem(shown or "Menu", children=tuple(items)),), (rect,), 0)
+        if tooltip and self.IsItemHovered():
+            self.SetTooltip(tooltip)
+        choice = self._track_bar_menu(name, (MenuItem(shown or "Menu", children=tuple(items)),), (rect,))
+        return None if choice is None else choice[1:]
+
+    def _draw_menu_button(self, rect, shown, enabled, primary, drawer, icon_size, selected):
+        x, y, w, h = rect
+        hovered = self._hover(rect)
+        ink = self.theme["text"] if enabled else self.theme["muted"]
+        if drawer is None:
+            fill = self.theme["accent"] if primary and enabled else self.theme["control"]
+            if not primary and (selected or hovered and enabled):
+                fill = self.theme["selected"] if selected else self.theme["hover"]
+            self._emit("rrect", (x,y), (x+w,y+h), 3, self.theme["accent"] if primary and enabled else self.theme["border"])
+            self._emit("rrect", (x+1,y+1), (x+w-1,y+h-1), 2, fill)
+            self._emit("text_align", (x+8,y+h/2), (255,255,255,255) if primary and enabled else ink,
+                       self._fit_text(shown, max(0,w-28)), self._font_size(), "left")
+        else:
+            self._emit("rrect", (x,y), (x+w,y+h), 4,
+                       _visible_color(self.theme["selected" if selected else "hover"], selected or hovered and enabled))
+            origin = (x+4, y+(h-icon_size)/2)
+            drawer(self.GetWindowDrawList().transformed(icon_size/24, origin),
+                   0, 0, ink, self.theme["accent"] if enabled else self.theme["muted"])
+        self._emit("text_align", (x+w-10,y+h/2), self.theme["muted"], "▾", 12, "center")
+
+    def _track_bar_menu(self, name, menus, rects):
+        """Draw the open menu-bar or button menu and return its action path."""
+        menu = self._menu
+        if menu is None or menu.name != name or menu.bar is None or menu.message is not None:
+            return None
+        index = menu.path[0] if menu.path else -1
+        menu.bar = (name, menus, rects)
+        if index < 0 or index >= len(menus) or not menus[index].enabled:
+            self._menu = None
+            return None
+        rect = rects[index]
+        menu.position = (rect[0], rect[1]+rect[3])
+        return self.ContextMenu(name, menus[index].children)
+
+    def ContextMenu(self, name, items):
+        """Draw a themed popup and return the action's index path, or None.
+
+        Items are MenuItem objects or strings; None inserts a separator.
+        Icons are text glyphs. Shortcut labels do not register key bindings.
+        """
+        menu = self._menu
+        if menu is None or menu.name != name or menu.message is not None:
+            return None
+        menu.seen = True
+        menu.items = self._menu_items(items)
+        if not menu.items:
+            self._menu = None
+            return None
+        if menu.choice is not None:
+            choice = menu.choice
+            branch = menu.items
+            valid = True
+            for i in choice[len(menu.path):]:
+                if i < 0 or i >= len(branch) or branch[i] is None or not branch[i].enabled:
+                    valid = False
+                    break
+                branch = self._menu_items(branch[i].children)
+            if valid and not branch:
+                self._menu = None
+                return choice
+            menu.choice = None
+        index = 0
+        while index < len(menu.levels):
+            if index:
+                level = menu.levels[index]
+                parent = menu.levels[index-1]
+                i = level.path[-1]
+                if i >= len(parent.items) or parent.items[i] is None or not parent.items[i].enabled or not parent.items[i].children:
+                    del menu.levels[index:]
+                    break
+                level.items = self._menu_items(parent.items[i].children)
+                level.parent_rect = dict(parent.rows).get(i)
+                if level.parent_rect is None:
+                    del menu.levels[index:]
+                    break
+                r = level.parent_rect
+                level.position = (r[0]+r[2]+4,r[1]-4)
+            self._draw_menu_level(menu.levels[index])
+            index += 1
+        self._capture()
+        return None
+
+    def _draw_menu_level(self, menu):
+        if menu.nav >= len(menu.items):
+            menu.nav = -1
+        size = self._font_size()
+        width = max((self.CalcTextSize(item.label, font_size=size)[0]
+                     + self.CalcTextSize(item.shortcut, font_size=size)[0] + 80
+                     for item in menu.items if item is not None), default=120)
+        width = min(max(180, width), self.window.width)
+        height = min(8 + sum(9 if item is None else 28 for item in menu.items), self.window.height)
+        x, y = menu.position
+        if menu.parent_rect is not None and x+width > self.window.width:
+            x = menu.parent_rect[0]-width-4
+        x = max(0, min(x, self.window.width-width))
+        y = max(0, min(y, self.window.height-height))
+        menu.rect = (x, y, width, height)
+        menu.scroll = min(menu.scroll, len(menu.items)-1)
+
+        def rows_from(first):
+            top, rows = y+4, []
+            for i in range(first, len(menu.items)):
+                h = 9 if menu.items[i] is None else 28
+                if top+h > y+height-4:
+                    break
+                rows.append((i, (x+4, top, width-8, h)))
+                top += h
+            return rows
+
+        menu.rows = rows_from(menu.scroll)
+        if menu.keyboard and menu.nav >= 0:
+            if menu.nav < menu.scroll:
+                menu.scroll = menu.nav
+            while menu.scroll < menu.nav and not any(i == menu.nav for i, _ in rows_from(menu.scroll)):
+                menu.scroll += 1
+            menu.rows = rows_from(menu.scroll)
+        self._emit("rrect", (x+2,y+2), (x+width+2,y+height+2), 3,
+                   (0,0,0,45), foreground=True, clip=False)
+        self._emit("rrect", (x,y), (x+width,y+height), 3, self.theme["border"], foreground=True, clip=False)
+        self._emit("rrect", (x+1,y+1), (x+width-1,y+height-1), 2, self.theme["content"], foreground=True, clip=False)
+        hit = self._menu_hit()
+        for i, rect in menu.rows:
+            item = menu.items[i]
+            left, top, w, h = rect
+            if item is None:
+                self._emit("line", (left+4,top+4), (left+w-4,top+4), self.theme["border"], 1,
+                           foreground=True, clip=False)
+                continue
+            hovered = hit is not None and hit[0] is menu and hit[1] == i
+            if not menu.keyboard and hovered:
+                menu.nav = i if item.enabled else -1
+                if item.enabled and item.children:
+                    self._open_submenu(menu,i,False)
+                else:
+                    depth = next(i for i,node in enumerate(self._menu.levels) if node is menu)+1
+                    del self._menu.levels[depth:]
+            open_branch = any(level.path == menu.path+(i,) for level in self._menu.levels[1:])
+            if item.enabled and (open_branch or (menu.nav == i if menu.keyboard else hovered)):
+                self._emit("rrect", (left,top), (left+w,top+h), 2, self.theme["hover"], foreground=True, clip=False)
+            color = self.theme["text"] if item.enabled else self.theme["muted"]
+            self._emit("text_align", (left+12,top+h/2), color, "✓" if item.checked else item.icon,
+                       size, "center", foreground=True, clip=False)
+            hint = "▸" if item.children else item.shortcut
+            hint_width = self.CalcTextSize(hint, font_size=size)[0]
+            self._emit("text_align", (left+28,top+h/2), color,
+                       self._fit_text(item.label, max(0,w-48-hint_width)), size, "left", foreground=True, clip=False)
+            self._emit("text_align", (left+w-8,top+h/2), self.theme["muted"], hint,
+                       size, "right", foreground=True, clip=False)
+
+    def OpenMessageBox(self, name, message, buttons=("OK", "Cancel"), *, default=None, cancel=None):
+        """Open a modal confirmation; render MessageBox(name) each frame.
+
+        Enter activates the focused button; Escape chooses cancel if provided
+        (or a button labelled Cancel). Outside clicks never dismiss the dialog.
+        """
+        buttons = tuple(buttons)
+        if not buttons or any(not isinstance(b,str) or not b for b in buttons) or len(set(buttons)) != len(buttons):
+            raise ValueError("message box needs distinct, non-empty button labels")
+        default = default if default is not None else buttons[0]
+        cancel = cancel if cancel is not None else "Cancel" if "Cancel" in buttons else None
+        if default not in buttons or (cancel is not None and cancel not in buttons):
+            raise ValueError("default and cancel must name message-box buttons")
+        self._open_popup(name)
+        menu = self._menu
+        menu.message = str(message)
+        menu.items = tuple(MenuItem(b) for b in buttons)
+        menu.nav = buttons.index(default)
+        menu.cancel = buttons.index(cancel) if cancel is not None else None
+        menu.keyboard = True
+
+    def MessageBox(self, name):
+        """Draw a modal message box and return the chosen button label, or None."""
+        menu = self._menu
+        if menu is None or menu.name != name or menu.message is None:
+            return None
+        menu.seen = True
+        if menu.choice is not None:
+            self._menu = None
+            return menu.items[menu.choice].label
+        width = min(460, self.window.width)
+        inner = max(1,width-32)
+        button_widths = [max(72,self.CalcTextSize(item.label)[0]+24) for item in menu.items]
+        stacked = sum(button_widths)+8*(len(button_widths)-1) > inner
+        footer = len(button_widths)*36 if stacked else 36
+        text_height = self.CalcTextSize(menu.message, wrap_width=inner)[1]
+        body_height = max(1,min(text_height, self.window.height-footer-84))
+        height = min(self.window.height, body_height+footer+84)
+        x,y = (self.window.width-width)/2,(self.window.height-height)/2
+        menu.rect = (x,y,width,height)
+        menu.scroll = max(0,min(menu.scroll,text_height-body_height))
+        self._emit("rect", (0,0), self.window.get_size(), (0,0,0,100), foreground=True, clip=False)
+        self._emit("rrect", (x,y), (x+width,y+height), 4, self.theme["border"], foreground=True, clip=False)
+        self._emit("rrect", (x+1,y+1), (x+width-1,y+height-1), 3, self.theme["content"], foreground=True, clip=False)
+        self._emit("text_align", (x+16,y+22), self.theme["text"], str(name).split("##")[0],
+                   16, "left", True, foreground=True, clip=False)
+        text_clip = SimpleNamespace(rect=(x+16,y+46,inner,body_height),clip_top=0,max_scroll=0,flags=32)
+        self._emit("text", (x+16,y+46-menu.scroll), self.theme["text"], menu.message,
+                   14, inner, foreground=True, clip=text_clip)
+        if text_height > body_height:
+            self._emit("text_align", (x+16,y+height-footer-14), self.theme["muted"], "Scroll to read",
+                       12, "left", foreground=True, clip=False)
+        menu.rows = []
+        left = x+16 if stacked else x+width-16-sum(button_widths)-8*(len(button_widths)-1)
+        top = y+height-footer-8
+        for i,(item,bw) in enumerate(zip(menu.items,button_widths)):
+            w = inner if stacked else bw
+            rect = (left,top,w,28)
+            menu.rows.append((i,rect))
+            hovered = _inside(rect,self.io.MousePos)
+            active = menu.nav == i
+            self._emit("rrect", (left,top), (left+w,top+28), 3,
+                       self.theme["accent"] if active else self.theme["border"], foreground=True, clip=False)
+            self._emit("rrect", (left+1,top+1), (left+w-1,top+27), 2,
+                       self.theme["hover"] if hovered else self.theme["control"], foreground=True, clip=False)
+            self._emit("text_align", (left+w/2,top+14), self.theme["text"],
+                       self._fit_text(item.label,max(0,w-16)), 14, "center", foreground=True, clip=False)
+            if stacked:
+                top += 36
+            else:
+                left += w+8
+        self._capture()
+        return None
 
     def Selectable(self, label, selected=False):
         rect = self._item(self.GetContentRegionAvail()[0],24)
-        return self._button_at(rect,self._id(label),label.split("##")[0],selected,flat=True)
+        text = label.split("##")[0]
+        shown = self._fit_text(text, max(0, rect[2]-16))
+        clicked = self._button_at(rect,self._id(label),shown,selected,flat=True)
+        if shown != text and self.IsItemHovered():
+            self.SetTooltip(text)
+        return clicked
 
     def DataGrid(self, columns, rows, selected=-1, widths=None, group_by=None):
         """Draw a compact scrollable grid in the current panel; return the selected row index."""
@@ -1224,6 +2149,7 @@ class UI:
         previous = value
         rect = self._item(width or min(240, self.GetContentRegionAvail()[0]), 26)
         identity = self._id(label)
+        self._record_control(identity, rect)
         self._nav_order.append(identity)
         if self._hover(rect) and self.io.MouseClicked[0] and self._current is self._press_panel:
             self._active = identity
@@ -1253,6 +2179,29 @@ class UI:
     def _id(self, label):
         return (id(self._current),label)
 
+    def enable_control_inspection(self, enabled=True):
+        """Opt into lightweight control geometry for automated GUI tests."""
+        self._inspect_controls = bool(enabled)
+        self._controls.clear()
+
+    @property
+    def controls(self):
+        return tuple(self._controls)
+
+    def _record_control(self, identity, rect, enabled=True, *, clip_content=True):
+        if not self._inspect_controls:
+            return
+        panel = self._current
+        clip = self._clip(panel) if clip_content else panel.rect
+        x, y = max(rect[0], clip[0]), max(rect[1], clip[1])
+        right, bottom = min(rect[0]+rect[2], clip[0]+clip[2]), min(rect[1]+rect[3], clip[1]+clip[3])
+        if right <= x or bottom <= y:
+            return
+        while panel is not None and getattr(panel, "parent", None) is not None:
+            panel = panel.parent
+        title = next((name for name, value in self._panels.items() if value is panel and isinstance(name, str)), "")
+        self._controls.append(Control(identity[1], title, (x, y, right-x, bottom-y), enabled))
+
     def BeginTabBar(self, name):
         p = self._current
         origin = (p.cursor[0],p.cursor[1]+p.scroll)
@@ -1268,7 +2217,7 @@ class UI:
         rect = (b.x,b.origin[1],w,24)
         selected = self._tabs[b.identity] == label
         self._tab_hits.append((b.identity,label,rect,p))
-        if self._tab_at(rect,(b.identity,label),label,selected,clip_content=False):
+        if self._tab_at(rect,(b.identity,label+"##tab"),label,selected,clip_content=False):
             self._tabs[b.identity] = label
             selected = True
         b.x += w+4
@@ -1287,13 +2236,15 @@ class UI:
         p.cursor = (b.origin[0],b.bottom+p.spacing[1])
         self._tabbar = None
 
-    def CalcTextSize(self, text, hide=False, wrap_width=-1):
+    def CalcTextSize(self, text, hide=False, wrap_width=-1, *, font_size=None):
         import pyglet
-        text = str(text).split("##")[0] if hide else str(text)
-        identity = (text,self.font_name,self._font_size(),wrap_width)
+        text = _display_text(text)
+        text = text.split("##")[0] if hide else text
+        font_size = self._font_size() if font_size is None else font_size
+        identity = (text,self.font_name,font_size,wrap_width)
         if identity in self._measurements:
             return self._measurements[identity]
-        font = pyglet.font.load(name=self.font_name,size=self._font_size()*72/96)
+        font = pyglet.font.load(name=self.font_name,size=font_size*72/96)
         lines = text.split("\n")
         widths = [sum(g.advance+p.x_advance for g,p in zip(*font.get_glyphs(line))) for line in lines]
         width = max(widths,default=0)
@@ -1301,14 +2252,14 @@ class UI:
         if wrap_width > 0:
             # Use pyglet's actual wrapping rules rather than guessing line count.
             doc = pyglet.text.document.UnformattedDocument(text)
-            doc.set_style(0,len(text),dict(font_name=self.font_name,font_size=self._font_size()*72/96))
+            doc.set_style(0,len(text),dict(font_name=self.font_name,font_size=font_size*72/96))
             layout = pyglet.text.layout.TextLayout(doc,width=wrap_width,multiline=True)
             try:
                 size = (layout.content_width,layout.content_height)
             finally:
                 layout.delete()
         else:
-            size = (width,count*(self._font_size()+3))
+            size = (width,count*(font_size+3))
         if len(self._measurements) >= 512:
             self._measurements.clear()
         self._measurements[identity] = size
@@ -1317,6 +2268,8 @@ class UI:
     def _fit_text(self, text, width):
         if self.CalcTextSize(text)[0] <= width:
             return text
+        if self.CalcTextSize("…")[0] > width:
+            return ""
         lo, hi = 0, len(text)
         while lo < hi:
             mid = (lo+hi+1)//2
@@ -1324,7 +2277,7 @@ class UI:
                 lo = mid
             else:
                 hi = mid-1
-        return text[:lo]+"…" if lo else ""
+        return text[:lo]+"…"
 
     def TextUnformatted(self, text):
         width = self._wrap[-1] if self._wrap else -1
@@ -1333,7 +2286,56 @@ class UI:
         self._emit("text",(x,y),self._color(0,self.theme["text"]),str(text),self._font_size(),width)
 
     Text = TextUnformatted
-    TextWrapped = TextUnformatted
+    def TextWrapped(self, text):
+        width = max(1, self.GetContentRegionAvail()[0])
+        self._wrap.append(width)
+        try:
+            self.TextUnformatted(text)
+        finally:
+            self._wrap.pop()
+
+    def Heading(self, text, size=18):
+        """A left-aligned heading, clipped to the available row."""
+        width = self.GetContentRegionAvail()[0]
+        shown = str(text)
+        while shown and self.CalcTextSize(shown, font_size=size)[0] > width:
+            shown = shown[:-2] + "…" if len(shown) > 1 else ""
+        x,y,_,h = self._item(width,size+8)
+        self._emit("text_align",(x,y+h/2),self.theme["text"],shown,size,"left",True)
+
+    def TextEllipsis(self, text, width=0, *, muted=False, height=20):
+        """One bounded text row, with the full value available on hover."""
+        width = width or self.GetContentRegionAvail()[0]
+        shown = self._fit_text(str(text),width)
+        x,y,_,h = self._item(width,height)
+        self._emit("text_align",(x,y+h/2),self.theme["muted" if muted else "text"],shown,self._font_size(),"left")
+        if shown != str(text) and self.IsItemHovered():
+            self.SetTooltip(str(text))
+
+    def TextMuted(self, text, *, wrap=False):
+        self.PushStyleColor(0, tuple(c/255 for c in self.theme["muted"]))
+        try:
+            (self.TextWrapped if wrap else self.TextUnformatted)(text)
+        finally:
+            self.PopStyleColor()
+
+    def IconButton(self, label, drawer, *, tooltip=None, enabled=True, selected=False):
+        """A compact toolbar command using the same vector icon pipeline as ribbons."""
+        return self.RibbonButton("##"+label,drawer,width=28,height=28,icon_size=18,
+                                 compact=True,tooltip=tooltip or label,enabled=enabled,selected=selected)
+
+    def ValidationMessage(self, message):
+        """An inline, wrapping explanation using the theme's validation color."""
+        if message:
+            self.PushStyleColor(0, tuple(c/255 for c in self.theme["error"]))
+            try:
+                self.TextWrapped(message)
+            finally:
+                self.PopStyleColor()
+
+    def Spacing(self, height=8):
+        """Reserve vertical space between content groups."""
+        self._item(0, height)
 
     def SectionHeader(self, label):
         x, y, w, h = self._item(self.GetContentRegionAvail()[0], 24)
@@ -1345,33 +2347,71 @@ class UI:
         x,y,w,h = self._item(self.GetContentRegionAvail()[0],2)
         self._emit("line",(x,y),(x+w,y),self.theme["border"],1)
 
-    def InputDouble(self, label, value, step=0, fast_step=0, fmt="%.4f"):
+    def InputDouble(self, label, value, step=0, fast_step=0, fmt="%.4f", *, error="", multiplier=1.0):
+        """Edit a finite number; positive step adds −/+ buttons (Ctrl uses fast_step).
+
+        ``multiplier`` converts the number in the box into the reported value:
+        the box shows ``value / multiplier`` and returns ``displayed * multiplier``.
+        Pass ``math.pi / 180`` to show degrees for a value stored in radians.
+        The box accepts digits, one leading sign, and one decimal separator
+        (``.`` or ``,``). The displayed separator follows the locale.
+        ``step`` is in the same units as ``value``.
+        """
+        if not math.isfinite(step) or not math.isfinite(fast_step) or step < 0 or fast_step < 0:
+            raise ValueError("numeric steps must be finite and non-negative")
+        if not math.isfinite(multiplier) or multiplier == 0:
+            raise ValueError("numeric multiplier must be finite and non-zero")
         eid = self._id(label)
         width = self._widths[-1] if self._widths else min(200,self.GetContentRegionAvail()[0])
-        rect = self._item(width,26)
-        editor = self._field_editor(eid, fmt % value, rect)
+        rect = self._item(max(80,width) if step else width,26)
+        x,y,w,h = rect
+        field = (x,y,w-52,h) if step else rect
+        editor = self._field_editor(eid, format_decimal(value / multiplier, fmt), field, numeric=True)
+        submitted = bool(getattr(editor, "submitted", False))
+        editor.submitted = False
         changed = False
         try:
-            parsed = float(editor.document.text)
-            valid = math.isfinite(parsed)
+            parsed = parse_decimal(editor.document.text) * multiplier
+            valid = True
         except ValueError:
             parsed,valid = value,False
         if valid and (self._focus == eid or editor.commit):
-            changed,value = parsed != value,parsed
+            changed = not math.isclose(parsed, value, rel_tol=1e-9, abs_tol=1e-12)
+            if changed:
+                value = parsed
             editor.last_value = value
         elif self._focus != eid and not editor.commit and value != editor.last_value:
-            editor.document.text = fmt % value
+            editor.document.text = format_decimal(value / multiplier, fmt)
             editor.last_value = value
         editor.commit = False
-        self._field_draw(eid, rect, valid)
+        self._field_draw(eid, field, valid and not error)
+        if step:
+            amount = fast_step if self.io.KeyCtrl and fast_step else step
+            for index, direction in enumerate((-1,1)):
+                button = (x+w-50+index*26,y,24,h)
+                if self._button_at(button,(eid,direction), "−" if direction < 0 else "+",
+                                   centered=True,bordered=True):
+                    candidate = value+direction*amount
+                    if math.isfinite(candidate):
+                        changed,value = changed or candidate != value,candidate
+                        self._edit(editor,setattr,editor.document,"text",format_decimal(value / multiplier, fmt))
+                        editor.commit = False
+                        editor.last_value = value
+        self._item_submitted = submitted and valid and not error
         return changed,value
 
-    def InputText(self, label, value, width=0, hint=""):
-        """Single-line editable text, returning (changed, value)."""
-        eid = self._id(label)
+    def InputText(self, label, value, width=0, hint="", *, error="", numeric=False):
+        """Single-line editable text, returning (changed, value).
+
+        ``numeric`` accepts only digits, one leading sign, and one decimal separator.
+        """
         width = width or (self._widths[-1] if self._widths else min(240,self.GetContentRegionAvail()[0]))
         rect = self._item(width,26)
-        editor = self._field_editor(eid, str(value), rect)
+        return self._input_text_at(label, value, rect, hint, error=error, numeric=numeric)
+
+    def _input_text_at(self, label, value, rect, hint="", *, error="", numeric=False):
+        eid = self._id(label)
+        editor = self._field_editor(eid, str(value), rect, numeric=numeric)
         changed = editor.document.text != value
         if self._focus != eid and not editor.commit and value != editor.last_value:
             editor.document.text = str(value)
@@ -1380,7 +2420,9 @@ class UI:
             value = editor.document.text
         editor.last_value = value
         editor.commit = False
-        self._field_draw(eid, rect, True, hint)
+        self._field_draw(eid, rect, not error, hint)
+        if error and self.IsItemHovered():
+            self.SetTooltip(error)
         return changed,value
 
     def InputTextMultiline(self, label, value, width=0, height=96, hint=""):
@@ -1398,7 +2440,22 @@ class UI:
         self._field_draw(eid, rect, True, hint)
         return changed, value
 
-    def _field_editor(self, eid, initial, rect, multiline=False):
+    def InputVector3(self, label, values, *, error=""):
+        """Three coordinate text fields; preserve incomplete edits for validation."""
+        if len(values) != 3:
+            raise ValueError("A vector input needs three components")
+        width = max(1, (self.GetContentRegionAvail()[0]-16)/3)
+        result, changed = [], False
+        for index, (axis, value) in enumerate(zip("XYZ", values)):
+            if index:
+                self.SameLine()
+            edited, value = self.InputText(label+"##"+axis, value, width=width, hint=axis, error=error)
+            result.append(value)
+            changed |= edited
+        return changed, result
+
+    def _field_editor(self, eid, initial, rect, multiline=False, numeric=False):
+        self._record_control(eid, rect)
         import pyglet
         width = rect[2]
         editor = self._editors.get(eid)
@@ -1409,9 +2466,10 @@ class UI:
                 doc,width=width-12,height=rect[3]-6,multiline=multiline)
             caret = pyglet.text.caret.Caret(layout,color=self.theme["text"][:3])
             editor = SimpleNamespace(document=doc,layout=layout,caret=caret,rect=rect,
-                                     multiline=multiline,
-                                     original=doc.text,commit=False,last_value=initial,undo=[],redo=[])
+                                     multiline=multiline,numeric=bool(numeric),
+                                     original=doc.text,commit=False,submitted=False,last_value=initial,undo=[],redo=[])
             self._editors[eid] = editor
+        editor.numeric = bool(numeric)
         self._focus_order.append(eid)
         self._nav_order.append(eid)
         editor.rect = rect
@@ -1428,6 +2486,7 @@ class UI:
         return editor
 
     def _field_draw(self, eid, rect, valid, hint=""):
+        self._last_valid = bool(valid)
         editor = self._editors[eid]
         x,y,w,h = rect
         # Pyglet's Caret owns a separate vertex list created before the layout
@@ -1435,7 +2494,7 @@ class UI:
         # the same command stream as the field instead.
         editor.caret.visible = False
         self._capture()
-        border = self.theme["accent"] if self._focus == eid else self.theme["input_border"] if valid else (196,75,75,255)
+        border = self.theme["error"] if not valid else self.theme["accent"] if self._focus == eid else self.theme["input_border"]
         self._emit("rrect",(x,y),(x+w,y+h),2,border)
         self._emit("rrect",(x+1,y+1),(x+w-1,y+h-1),1,self.theme["field"])
         self._emit("editor",eid)
@@ -1466,17 +2525,37 @@ class UI:
 
     def SetTooltip(self, text):
         x,y = self.io.MousePos
-        w,h = self.CalcTextSize(text)
-        x = min(x+12,max(0,self.window.width-w-12))
-        y = min(y+18,max(0,self.window.height-h-12))
-        self._emit("rect",(x,y),(x+w+12,y+h+8),self.theme["title"],foreground=True,clip=False)
-        self._emit("text",(x+6,y+4),self.theme["text"],text,14,foreground=True,clip=False)
+        width = max(1, min(360, self.window.width-24))
+        w,h = self.CalcTextSize(text, wrap_width=width)
+        width = max(1, min(width, w))
+        _,h = self.CalcTextSize(text, wrap_width=width)
+        x = min(x+12,max(0,self.window.width-width-20))
+        y = min(y+18,max(0,self.window.height-h-16))
+        self._emit("rrect",(x,y),(x+width+16,y+h+12),3,self.theme["border"],foreground=True,clip=False)
+        self._emit("rrect",(x+1,y+1),(x+width+15,y+h+11),2,self.theme["field"],foreground=True,clip=False)
+        self._emit("text",(x+8,y+6),self.theme["text"],str(text),self._font_size(),width,foreground=True,clip=False)
 
     def IsItemHovered(self):
         return self._hover(self._last)
 
+    def IsItemValid(self):
+        """Whether the last text or numeric field passed validation."""
+        return self._last_valid
+
+    def IsItemSubmitted(self):
+        """Whether Enter confirmed the last single-line field."""
+        return self._item_submitted
+
     def IsWindowHovered(self, flags=0):
         return self._panel_at(self.io.MousePos) is not None
+
+    def region_occupied(self, rect):
+        """Whether a visible interactive panel intersects a screen rectangle."""
+        x, y, width, height = rect
+        return any(not panel.flags & self.ImGuiWindowFlags_NoInputs and
+                   x < panel.rect[0]+panel.rect[2] and x+width > panel.rect[0] and
+                   y < panel.rect[1]+panel.rect[3] and y+height > panel.rect[1]
+                   for panel in self._shown)
 
     IsAnyItemHovered = IsWindowHovered
 
@@ -1491,6 +2570,10 @@ class UI:
 
     def IsMouseDoubleClicked(self, button):
         return self.io.MouseDoubleClicked[button]
+
+    def IsKeyPressed(self, key, *, modifiers=None):
+        """An unhandled key press since the last rendered frame, including quick taps. Modifier matching ignores lock keys."""
+        return key in self._pressed_keys and (modifiers is None or self._pressed_keys[key] == modifiers)
 
     def IsKeyDown(self, key):
         return self.io.KeysDown.get(key,False)
@@ -1560,6 +2643,8 @@ class UI:
             seen.add(id(node))
             x, y, w, h = rect
             emit("rect", (x,y), (x+w,y+h), self.theme["content"])
+            if not self._dock_header_height(node):
+                continue
             emit("rect", (x,y), (x+w,y+31), self.theme["title"])
             emit("rect", (x,y+30), (x+w,y+31), self.theme["border"])
             tab_x = x+4
@@ -1590,13 +2675,15 @@ class UI:
         self._dock_tabs = hits
         return commands
 
-    def _command_visible(self, command):
+    def _command_bounds(self, command):
         kind, args, panel = command
-        clip = self._clip(panel)
         if kind in ("rect", "rrect", "line"):
             a, b = args[:2]
             bounds = (min(a[0], b[0]), min(a[1], b[1]),
                       abs(a[0]-b[0])+1, abs(a[1]-b[1])+1)
+            if kind == "line":
+                pad = args[3]/2
+                bounds = (bounds[0]-pad,bounds[1]-pad,bounds[2]+2*pad,bounds[3]+2*pad)
         elif kind in ("text", "text_align"):
             x, y = args[0]
             width = max(1, len(args[2])*args[3])
@@ -1605,25 +2692,38 @@ class UI:
                           width, args[3]+8)
             else:
                 bounds = (x, y, width, args[3]+6)
+                if len(args) > 4 and args[4] > 0:
+                    _, height = self.CalcTextSize(args[2], wrap_width=args[4], font_size=args[3])
+                    bounds = (x,y,args[4],height)
         elif kind in ("circle", "arc"):
             (x, y), radius = args[:2]
+            if kind == "arc":
+                radius += args[3]/2
             bounds = (x-radius, y-radius, 2*radius, 2*radius)
-        elif kind == "triangle":
-            points = args[:3]
+        elif kind == "ellipse_arc":
+            (x,y),(rx,ry),_,_,_,thickness = args
+            pad = thickness/2+1
+            bounds = (x-rx-pad,y-ry-pad,2*rx+2*pad,2*ry+2*pad)
+        elif kind in ("triangle", "quad"):
+            points = args[:3 if kind == "triangle" else 4]
             xs, ys = [p[0] for p in points], [p[1] for p in points]
             bounds = (min(xs), min(ys), max(xs)-min(xs)+1, max(ys)-min(ys)+1)
         elif kind == "editor":
             bounds = self._editors[args[0]].rect
         else:
-            return True
+            raise ValueError("Unknown GUI primitive: " + kind)
+        return bounds
+
+    def _command_visible(self, command):
+        clip = self._clip(command[2])
+        bounds = self._command_bounds(command)
         return (bounds[0] < clip[0]+clip[2] and bounds[0]+bounds[2] > clip[0] and
                 bounds[1] < clip[1]+clip[3] and bounds[1]+bounds[3] > clip[1])
 
     def render(self):
         """Cached batched primitives; only changed commands allocate GPU objects."""
         import pyglet
-        from pyglet import gl, shapes
-        from pyglet.math import Mat4
+        from pyglet.graphics.api import gl
         if self._current is not None:
             self.End()
         commands = [command for command in self._dock_chrome()+self._commands+self._foreground
@@ -1634,39 +2734,49 @@ class UI:
         if self._clip_class is None:
             window = self.window
             class ClipGroup(pyglet.graphics.Group):
-                current = None
                 def __init__(self, order, rect):
                     super().__init__(order=order)
                     self.rect = rect
+                    sx,sy = (a/max(1,b) for a,b in zip(window.get_framebuffer_size(),window.get_size()))
+                    x,y,w,h = rect
+                    self.set_scissor(pyglet.graphics.Viewport(round(x*sx), round((window.height-y-h)*sy),
+                                                              max(0,round(w*sx)), max(0,round(h*sy))))
                 def __eq__(group, other):
                     return type(group) is type(other) and group.order == other.order and group.rect == other.rect
                 def __hash__(group):
                     return hash((type(group), group.order, group.rect))
-                def set_state(group):
-                    if ClipGroup.current == group.rect:
-                        return
-                    sx,sy = (a/max(1,b) for a,b in zip(window.get_framebuffer_size(),window.get_size()))
-                    x,y,w,h = group.rect
-                    gl.glEnable(gl.GL_SCISSOR_TEST)
-                    gl.glScissor(round(x*sx),round((window.height-y-h)*sy),max(0,round(w*sx)),max(0,round(h*sy)))
-                    ClipGroup.current = group.rect
-                def unset_state(group):
-                    pass
             self._clip_class = ClipGroup
         ClipGroup = self._clip_class
         segment = None
         segment_start = 0
+        paint_cells = {}
         groups = {}
         color_slots = {"rect": 2, "rrect": 3, "line": 2,
-                       "circle": 2, "arc": 2, "triangle": 3,
-                       "text": 1, "text_align": 1}
+                       "circle": 2, "arc": 2, "triangle": 3, "quad": 4,
+                       "text": 1, "text_align": 1, "ellipse_arc": 4}
+        sx, sy = (pixels/max(1, logical) for pixels, logical in zip(
+            self.window.get_framebuffer_size(), self.window.get_size()))
         for i,(kind,args,p) in enumerate(commands):
             clip = self._clip(p)
             if p is not None:
                 identity = (id(p), clip)
                 if identity != segment:
                     segment, segment_start = identity, i
-                order = 4*segment_start + (2 if kind == "editor" else 1 if kind in ("text", "text_align") else 0)
+                    paint_cells.clear()
+                # GPU allocation order is not painter order. Only overlapping
+                # commands need successive layers; disjoint controls still batch.
+                x,y,w,h = self._command_bounds((kind,args,p))
+                x0,y0 = max(x,clip[0]),max(y,clip[1])
+                x1,y1 = min(x+w,clip[0]+clip[2]),min(y+h,clip[1]+clip[3])
+                cells = [(cx,cy) for cx in range(math.floor(x0/64),math.floor(x1/64)+1)
+                         for cy in range(math.floor(y0/64),math.floor(y1/64)+1)]
+                previous = {entry for cell in cells for entry in paint_cells.get(cell, ())}
+                layer = 1+max((depth for a,b,c,d,depth in previous
+                               if x0<c and x1>a and y0<d and y1>b), default=-1)
+                entry = (x0,y0,x1,y1,layer)
+                for cell in cells:
+                    paint_cells.setdefault(cell, []).append(entry)
+                order = 4*segment_start + layer
             else:
                 segment = None
                 order = 4*i
@@ -1706,28 +2816,49 @@ class UI:
             a = args
             if kind == "rect":
                 (x,y),(u,v),color = a
-                obj = shapes.Rectangle(x,self.window.height-v,max(0,u-x),max(0,v-y),color=color,batch=batch,group=group)
+                half = (max(0,u-x)/2,max(0,v-y)/2)
+                obj = _CoverageShape(((x+u)/2,self.window.height-(y+v)/2),half,
+                                     (*half,0,0),color,batch,group,fringe=1/min(sx,sy))
             elif kind == "rrect":
                 (x,y),(u,v),radius,color = a
                 width, height = max(0,u-x), max(0,v-y)
                 radius = min(radius,width/2,height/2)
-                obj = (shapes.RoundedRectangle(x,self.window.height-v,width,height,radius=radius,
-                                               segments=4,color=color,batch=batch,group=group)
-                       if radius >= 1 else
-                       shapes.Rectangle(x,self.window.height-v,width,height,color=color,batch=batch,group=group))
+                obj = _CoverageShape(((x+u)/2,self.window.height-(y+v)/2),(width/2,height/2),
+                                     (width/2,height/2,radius,0),color,batch,group,fringe=1/min(sx,sy))
             elif kind == "line":
                 (x,y),(u,v),color,th = a
-                obj = shapes.Line(x,self.window.height-y,u,self.window.height-v,thickness=th,color=color,batch=batch,group=group)
+                dx,dy = u-x,y-v
+                length = math.hypot(dx,dy)
+                direction = (dx/length,dy/length) if length else (1,0)
+                obj = _CoverageShape(((x+u)/2,self.window.height-(y+v)/2), (length/2,th/2),
+                                     (length/2,th/2,0,0),color,batch,group,direction=direction,
+                                     fringe=1/min(sx,sy))
             elif kind in ("circle","arc"):
                 (x,y),r,color = a[:3]
-                cls = shapes.Circle if kind == "circle" else shapes.Arc
-                kw = {} if kind == "circle" else dict(thickness=a[3])
-                obj = cls(x,self.window.height-y,r,color=color,batch=batch,group=group,**kw)
-            elif kind == "triangle":
-                (x,y),(u,v),(s,t),color = a
-                obj = shapes.Triangle(x,self.window.height-y,u,self.window.height-v,s,self.window.height-t,color=color,batch=batch,group=group)
+                half = 0 if kind == "circle" else a[3]/2
+                obj = _CoverageShape((x,self.window.height-y), (r+half,r+half),
+                                     (r,r,half,1 if kind == "circle" else 2),color,batch,group,
+                                     fringe=1/min(sx,sy))
+            elif kind == "ellipse_arc":
+                (x,y),(rx,ry),start,sweep,color,th = a
+                obj = _CoverageShape((x,self.window.height-y), (rx+th/2,ry+th/2),
+                                     (rx,ry,th/2,2),color,batch,group,
+                                     angles=(-start,-sweep),fringe=1/min(sx,sy))
+            elif kind in ("triangle", "quad"):
+                points, color = a[:-1], a[-1]
+                xs, ys = tuple(zip(*points))
+                cx,cy = (min(xs)+max(xs))/2,(min(ys)+max(ys))/2
+                extent = ((max(xs)-min(xs))/2,(max(ys)-min(ys))/2)
+                local = tuple((x-cx,cy-y) for x,y in points)
+                obj = _CoverageShape((cx,self.window.height-cy),extent,(*local[1],*local[2]),
+                                     color,batch,group,angles=local[0],primitive=3 if kind == "triangle" else 4,
+                                     corner=local[3] if kind == "quad" else (0,0),fringe=1/min(sx,sy))
             elif kind in ("text", "text_align"):
                 (x,y),color,text,size = a[:4]
+                # Fractional layout positions (notably centers of odd-width buttons)
+                # must not shift the glyph atlas between framebuffer pixels.
+                x = round(x*sx)/sx
+                y = round(y*sy)/sy
                 if kind == "text_align":
                     # Segoe UI's line box sits below its visible glyphs. Lift centered
                     # labels slightly so their ink, rather than the line box, is centered.
@@ -1761,17 +2892,16 @@ class UI:
             self._focus = None
         if not self._combo_seen:
             self._combo_open = self._combo_popup = None
-        projection,view = self.window.projection,self.window.view
+            self._combo_press = None
+        if self._menu is not None and not self._menu.seen:
+            self._menu = None
         enabled = gl.glIsEnabled(gl.GL_SCISSOR_TEST)
         scissor = (gl.GLint*4)()
         gl.glGetIntegerv(gl.GL_SCISSOR_BOX,scissor)
         try:
-            self.window.projection = Mat4.orthogonal_projection(0,self.window.width,0,self.window.height,-1,1)
-            self.window.view = Mat4()
-            ClipGroup.current = None
-            batch.draw()
+            with batch.draw_with_options() as options:
+                options.camera = self._camera
         finally:
-            self.window.projection,self.window.view = projection,view
             gl.glScissor(*scissor)
             (gl.glEnable if enabled else gl.glDisable)(gl.GL_SCISSOR_TEST)
         if self.io.MouseReleased[0]:
@@ -1781,8 +2911,11 @@ class UI:
         self.io.MouseClicked[:] = [False]*3
         self.io.MouseReleased[:] = [False]*3
         self.io.MouseDoubleClicked[:] = [False]*3
+        self._pressed_keys.clear()
         self._keyboard_activate = None
         self._keyboard_delta = 0
+        if not any(self.io.MouseDown):
+            self._menu_capture = False
         self._capture()
         self._update_cursor()
 

@@ -127,6 +127,39 @@ def _name(name):
     return str(name)
 
 
+def _twist_center(point):
+    """Sketch-plane (x, y), or NaN pair when the twist axis is the sketch origin."""
+    if point is None:
+        return float("nan"), float("nan")
+    if isinstance(point, str) or len(point) < 2:
+        raise TypeError("twist_center must be a sketch-plane (x, y) point")
+    return float(point[0]), float(point[1])
+
+
+def _call_optional_center(fn, args, twist_center):
+    """Pass a twist center when this wheel's extrude accepts it.
+
+    Omitting the center must keep working on a wheel built before that argument
+    existed, so editing or deleting a feature can still rebuild the part.
+    """
+    cx, cy = _twist_center(twist_center)
+    if twist_center is None:
+        try:
+            return fn(*args, cx, cy)
+        except TypeError as exc:
+            if "positional arguments" not in str(exc):
+                raise
+            return fn(*args)
+    try:
+        return fn(*args, cx, cy)
+    except TypeError as exc:
+        if "positional arguments" in str(exc):
+            raise TypeError(
+                "this camber wheel cannot twist about a sketch point; rebuild with Geo.Python/publish-wheel.ps1"
+            ) from exc
+        raise
+
+
 def _require(obj, attr):
     fn = getattr(obj, attr, None)
     if fn is None:
@@ -369,7 +402,7 @@ def _arc_center_xy(action):
     ux = (
         (a[0] * a[0] + a[1] * a[1]) * (b[1] - c[1])
         + (b[0] * b[0] + b[1] * b[1]) * (c[1] - a[1])
-        + (c[0] * c[0] + c[1] * c[1]) * (b[1] - a[1])
+        + (c[0] * c[0] + c[1] * c[1]) * (a[1] - b[1])
     ) / d
     uy = (
         (a[0] * a[0] + a[1] * a[1]) * (c[0] - b[0])
@@ -687,7 +720,8 @@ class LoftOptions(object):
     def __init__(self, *,
                  correspondence: Literal["arc_length", "uniform", "features", "vertices"] | None = None,
                  style: Literal["ruled", "smooth_catmull_rom", "hermite"] | None = None,
-                 crease_policy: Literal["all_profiles", "first_profile", "none"] | None = None) -> None:
+                 crease_policy: Literal["all_profiles", "first_profile", "none"] | None = None,
+                 alignment: Literal["origin_foot", "minimum_twist", "as_authored"] | None = None) -> None:
         """Create general loft settings; omitted values use the kernel defaults."""
         NativeLoftOptions = _native_mod()["NativeLoftOptions"]
         self._n = NativeLoftOptions()
@@ -697,6 +731,20 @@ class LoftOptions(object):
             self.style = style
         if crease_policy is not None:
             self.crease_policy = crease_policy
+        if alignment is not None:
+            self.alignment = alignment
+
+    @property
+    def alignment(self) -> Literal["origin_foot", "minimum_twist", "as_authored"]:
+        """Closed-profile seam alignment; the default preserves authored starts."""
+        return ("origin_foot", "minimum_twist", "as_authored")[self._n.alignment_mode]
+
+    @alignment.setter
+    def alignment(self, value: Literal["origin_foot", "minimum_twist", "as_authored"]) -> None:
+        choices = ("origin_foot", "minimum_twist", "as_authored")
+        if value not in choices:
+            raise ValueError("alignment must be one of " + ", ".join(choices))
+        self._n.alignment_mode = choices.index(value)
 
     @property
     def correspondence(self) -> Literal["arc_length", "uniform", "features", "vertices"]:
@@ -1060,7 +1108,10 @@ class Assembly(object):
 
     def add_part(self, solid: Solid, position: Point3Like = (0, 0, 0),
                  orientation: Sequence[float] = (0, 0, 0, 1)) -> AssemblyPart:
-        """Place a solid from any Part at ``position`` with quaternion ``orientation`` (x,y,z,w). Returns AssemblyPart."""
+        """Insert a solid component at a position and orientation.
+
+        ``orientation`` is a quaternion (x, y, z, w). Returns AssemblyPart.
+        """
         px, py, pz = _xyz(position)
         if len(orientation) != 4:
             raise ValueError("orientation must be quaternion (x, y, z, w)")
@@ -1271,7 +1322,10 @@ class Assembly(object):
 
 
 class Part(object):
-    """CAD session: operating box, sketches, solids, booleans, import/export.
+    """Modelling document owning sketches, geometry, names and operation history.
+
+    A Part can contain multiple solid bodies, including intermediate results.
+    A Solid is closed-volume geometry within the document, not the document itself.
 
     ``low`` / ``high`` are the world AABB (vec3, 3-tuple, or a scalar on all axes).
     ``tolerance`` is default tessellation when methods pass ``max_deviation=-1``.
@@ -1279,7 +1333,7 @@ class Part(object):
     """
 
     def __init__(self, low: Point3Like, high: Point3Like, tolerance: float = 0.01) -> None:
-        """Create an independent CAD session without resetting other sessions."""
+        """Create an independent modelling document without resetting other Parts."""
         NativePart, _, _ = _native()
         lx, ly, lz = _xyz(low)
         hx, hy, hz = _xyz(high)
@@ -1350,7 +1404,10 @@ class Part(object):
     def sketch(self, plane: str = "xy", name: EntityName | None = None,
                origin_name: EntityName | None = None, frame: Frame | None = None,
                constrained: bool = False) -> Sketch:
-        """2D sketch. ``plane`` is ``xy``/``xz``/``yz``; or pass ``frame=``.
+        """Create a sketch on a standard plane, named planar face, or frame.
+
+        ``plane`` accepts ``xy``/``xz``/``yz`` or a named planar face;
+        alternatively pass ``frame=``. Named faces are resolved on each rebuild.
 
         ``constrained=True`` attaches the constraint solver (coincident, length, …).
         """
@@ -1386,11 +1443,13 @@ class Part(object):
         _require(self._n, "unregister_sketch")(sketch._n)
 
     def _extrude(self, sketch, height, name=None, both_sides=False, max_deviation=-1, twist=0,
-                taper_angle=0):
+                taper_angle=0, twist_center=None):
         """Extrude along the sketch-plane normal.
 
         ``height`` is in world units; ``twist`` is radians per unit length;
         ``taper_angle`` is radians and positive angles narrow along extrusion.
+        ``twist_center`` is an optional sketch-plane ``(x, y)`` the profile spins about.
+        Omit it to twist about the sketch origin.
         Taper cannot be combined with ``both_sides`` or ``twist``.
         """
         n = _name(name)
@@ -1399,14 +1458,20 @@ class Part(object):
         if both_sides:
             if float(taper_angle) != 0:
                 raise ValueError("tapered extrusion cannot be combined with both_sides")
-            return Solid(_require(self._n, "extrude_two_sides")(sketch._n, height, height, md, tw, n), self)
-        return Solid(_require(self._n, "extrude")(
-            sketch._n, height, md, tw, n, float(taper_angle)), self)
+            return Solid(_call_optional_center(
+                _require(self._n, "extrude_two_sides"),
+                (sketch._n, height, height, md, tw, n), twist_center), self)
+        return Solid(_call_optional_center(
+            _require(self._n, "extrude"),
+            (sketch._n, height, md, tw, n, float(taper_angle)), twist_center), self)
 
-    def _extrude_two_sides(self, sketch, plus_z, minus_z=0.0, name=None, max_deviation=-1, twist=0):
+    def _extrude_two_sides(self, sketch, plus_z, minus_z=0.0, name=None, max_deviation=-1, twist=0,
+                           twist_center=None):
         """Extrude ``plus_z`` along +normal and ``minus_z`` along −normal."""
-        return Solid(_require(self._n, "extrude_two_sides")(
-            sketch._n, plus_z, minus_z, float(max_deviation), float(twist), _name(name)), self)
+        return Solid(_call_optional_center(
+            _require(self._n, "extrude_two_sides"),
+            (sketch._n, plus_z, minus_z, float(max_deviation), float(twist), _name(name)),
+            twist_center), self)
 
     def _extrude_until_next(self, sketch, target, name=None, max_deviation=-1):
         """Extrude along the nearer of the two sketch-normal directions to ``target``."""
@@ -1612,7 +1677,12 @@ class Part(object):
     @api_group("Multi-profile")
     def loft(self, sketches: Sequence[Sketch], options: LoftOptions | None = None,
              name: EntityName | None = None, max_deviation: float = -1, *,
-             first_curves: Sequence[str] | None = None) -> Solid:
+             first_curves: Sequence[str] | None = None,
+             guides: Sequence[Curve3D] | None = None,
+             start_tangent: Point3Like | None = None, end_tangent: Point3Like | None = None,
+             start_point: Point3Like | None = None, end_point: Point3Like | None = None,
+             start_closure: Literal["sharp", "rounded"] | None = None,
+             end_closure: Literal["sharp", "rounded"] | None = None) -> Solid:
         """Loft through Sketches, preserving their authored start points as connectors.
 
         ``options`` is LoftOptions. Symmetric sections are not automatically
@@ -1623,8 +1693,19 @@ class Part(object):
         clockwise sections are not reversed to counterclockwise.
         This selects matched correspondence when options are omitted. Sections
         must have equal curve counts; each curve produces a separate side face.
-        Arc/line and spline sections retain their exact NURBS shapes and require
-        compatible rational weights after degree elevation and knot insertion.
+        Arc/line and spline sections retain their exact NURBS shapes.
+
+        ``guides`` constrain corresponding contour joints across every section.
+        Use a line or a Hermite curve with one point at each section, in order.
+        ``start_tangent`` and ``end_tangent`` are world-space derivative vectors:
+        direction and magnitude, both pointing along the section order. The
+        longitudinal parameter runs from 0 to 1 with equal section intervals.
+
+        ``start_point`` / ``end_point`` close the solid to an explicit tip beyond
+        the first / last section. Closure defaults to ``"rounded"`` (a smooth
+        join and rounded tip); ``"sharp"`` creates a conical tip. Without a point,
+        the existing flat cap is preserved. Invalid or conflicting controls
+        raise an error; sections and guides are never fitted or snapped.
         """
         sketches = list(sketches)
         if first_curves is not None:
@@ -1635,11 +1716,34 @@ class Part(object):
                 raise ValueError("first_curves must contain one curve name per section")
             if any(not isinstance(n, str) or not n.strip() or "|" in n for n in first_curves):
                 raise ValueError("first_curves entries must be nonempty curve names without '|'")
+        from .geom import _pack_points3
+        def vector(value, label, *, direction=False):
+            if value is None:
+                return ""
+            xyz = tuple(float(v) for v in _xyz(value))
+            if not all(math.isfinite(v) for v in xyz) or direction and not any(xyz):
+                raise ValueError(label + " must be a finite " + ("nonzero vector" if direction else "XYZ point"))
+            return _pack_points3([xyz])
+        def closure(value, point, label):
+            if value is not None and value not in ("sharp", "rounded"):
+                raise ValueError(label + " must be 'sharp' or 'rounded'")
+            if value is not None and point is None:
+                raise ValueError(label + " requires its corresponding point")
+            return -1 if value is None else 0 if value == "sharp" else 1
+        start_mode = closure(start_closure, start_point, "start_closure")
+        end_mode = closure(end_closure, end_point, "end_closure")
+        guides = [] if guides is None else list(guides)
+        controlled = bool(guides) or any(v is not None for v in
+                                        (start_tangent, end_tangent, start_point, end_point))
         if options is None:
-            options = LoftOptions(correspondence="vertices" if first_curves is not None else None)
+            options = LoftOptions(correspondence="vertices" if first_curves is not None or controlled else None)
         return Solid(_require(self._n, "loft")(
             _sketch_list(sketches), options._n, float(max_deviation), _name(name),
-            "" if first_curves is None else _join_names(first_curves)), self)
+            "" if first_curves is None else _join_names(first_curves), _curve_list(guides),
+            vector(start_tangent, "start_tangent", direction=True),
+            vector(end_tangent, "end_tangent", direction=True),
+            vector(start_point, "start_point"), vector(end_point, "end_point"),
+            start_mode, end_mode), self)
 
     @api_group("Multi-profile")
     def loft_surface(self, sections: Sequence[Sketch], *, guides: Sequence[Curve3D] | None = None,
@@ -2041,10 +2145,14 @@ class Sketch(object):
     @api_group("Build solids")
     def extrude(self, height: float, name: EntityName | None = None, both_sides: bool = False,
                 max_deviation: float = -1, twist: float = 0,
-                taper_angle: float = 0) -> Solid:
-        """Extrude this sketch; positive taper narrows the far end (radians)."""
+                taper_angle: float = 0, twist_center: Point2Like | None = None) -> Solid:
+        """Extrude this sketch; positive taper narrows the far end (radians).
+
+        ``twist`` is radians per unit length. ``twist_center`` is an optional
+        sketch-plane point the profile rotates about; omit it to use the origin.
+        """
         return self._part._extrude(self, height, name, both_sides, max_deviation,
-                                   twist, taper_angle)
+                                   twist, taper_angle, twist_center)
 
     @api_group("Surface modeling")
     def extrude_surface(self, height: float, name: EntityName | None = None,
@@ -2056,9 +2164,12 @@ class Sketch(object):
     @api_group("Build solids")
     def extrude_two_sides(self, plus_z: float, minus_z: float = 0.0,
                           name: EntityName | None = None, max_deviation: float = -1,
-                          twist: float = 0) -> Solid:
-        """Extrude along both sides of the sketch plane."""
-        return self._part._extrude_two_sides(self, plus_z, minus_z, name, max_deviation, twist)
+                          twist: float = 0, twist_center: Point2Like | None = None) -> Solid:
+        """Extrude along both sides of the sketch plane.
+
+        ``twist_center`` is an optional sketch-plane point the profile rotates about.
+        """
+        return self._part._extrude_two_sides(self, plus_z, minus_z, name, max_deviation, twist, twist_center)
 
     @api_group("Build solids")
     def extrude_until_next(self, target: Solid, name: EntityName | None = None,
@@ -2709,7 +2820,7 @@ class Sketch(object):
             return False
         x, y = _xy(xy)
         try:
-            return int(fn(int(curve), int(point), float(x), float(y))) != 0
+            return int(fn(_curve_index(self, curve), int(point), float(x), float(y))) != 0
         except Exception:
             return False
 
@@ -3064,6 +3175,14 @@ def _parse_sketch_curve_dump(text):
     for raw in (text or "").splitlines():
         fields = raw.split("\t")
         kind = fields[0] if fields else ""
+        if kind == "P" and len(fields) >= 6 and len(fields) % 2 == 0:
+            try:
+                nums = [float(v) for v in fields[2:]]
+            except ValueError:
+                continue
+            actions.append({"kind": "polycurve", "name": fields[1],
+                            "points": list(zip(nums[::2], nums[1::2]))})
+            continue
         if kind == "L":
             name, nums = _dump_name_and_nums(fields, 4)
             if nums is None:
@@ -3176,6 +3295,22 @@ class _MeshBody(object):
         """Area-centroid frame of a tessellated patch (normal from its winding)."""
         return Frame._from_native(_require(self._n, "patch_frame_at")(int(index)))
 
+    def face_frame(self, face_name: EntityName, *, inward: bool = False) -> Frame:
+        """Resolve a named planar face to a frame. Curved faces are rejected.
+
+        Z follows the outward face normal; ``inward=True`` reverses Y and Z,
+        useful for drilling into a body. The face's construction direction is X.
+        """
+        return Frame._from_native(_require(self._n, "face_frame")(str(face_name), int(bool(inward))))
+
+    def point(self, anchor_name: EntityName) -> vec3:
+        """Resolve a named edge anchor, for example an entry in ``point_names``.
+
+        Keeping this call in a model preserves the reference when earlier
+        features change, instead of copying the current coordinates.
+        """
+        return vec3(tuple(map(float, _require(self._n, "point")(str(anchor_name)).split())))
+
     @property
     def curve_names(self) -> tuple[str, ...]:
         """Canonical mesh-edge curve names, accepted by fillet and chamfer."""
@@ -3228,7 +3363,10 @@ class _MeshBody(object):
 
 
 class Solid(_MeshBody):
-    """Closed triangle volume owned by a Part.
+    """Solid body: closed-volume geometry owned by a Part modelling document.
+
+    Solid-producing operations return bodies within the owning Part, which
+    supplies their default tolerance and records successful operations.
 
     Operators are ``+`` union, ``-`` subtract, and ``&`` intersect.
     """

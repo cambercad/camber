@@ -21,6 +21,7 @@ MODE_ANY = "any"
 MODE_POINTS = "points"
 MODE_LINES = "lines"
 MODE_CIRCLES = "circles"
+MODE_FULL_CIRCLES = "full_circles"
 MODE_LINE_OR_CIRCLE = "line_or_circle"
 MODE_POINT_AND_LINE = "point_and_line"
 
@@ -131,6 +132,8 @@ def allowed(target, mode):
         return kind == KIND_CURVE and curve_kind == "line"
     if mode == MODE_CIRCLES:
         return kind == KIND_CURVE and curve_kind in ("circle", "arc")
+    if mode == MODE_FULL_CIRCLES:
+        return kind == KIND_CURVE and curve_kind == "circle"
     if mode == MODE_LINE_OR_CIRCLE:
         return kind == KIND_CURVE and curve_kind in ("line", "circle", "arc")
     if mode == MODE_POINT_AND_LINE:
@@ -338,6 +341,8 @@ def sketch_curve_world_pts(action, frame, lift):
         return circle_polyline(action["center"], action["radius"], frame, lift)
     if kind == "arc":
         return arc_polyline(action["start"], action["mid"], action["end"], frame, lift)
+    if kind == "polycurve":
+        return [uv_to_world(p, frame, lift) for p in action["points"]]
     return []
 
 

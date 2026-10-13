@@ -9,6 +9,15 @@ from camber.gui import DockLayout
 
 
 class DockLayoutTests(unittest.TestCase):
+    def test_short_fixed_bars_keep_requested_height(self):
+        docks = DockLayout()
+        docks.add("Status","bottom",size=28)
+        docks.add("Document","top",size=40)
+        for size in ((1920,1080),(1280,720)):
+            docks.layout(*size)
+            self.assertEqual(26,docks.rects["Status"][1][3])
+            self.assertEqual(38,docks.rects["Document"][1][3])
+
     def test_split_hide_and_restore_viewport(self):
         docks = DockLayout()
         docks.add("Features", "left")

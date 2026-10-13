@@ -3,6 +3,8 @@ using Curves;
 using CSG;
 using GeoCore;
 using GeoMeta;
+using Geo.NurbsConstruction;
+using NURBS;
 
 namespace Geo;
 
@@ -19,14 +21,62 @@ Joins exactly coincident rational surface boundaries. Surface orientations are r
     }
 
     [APIDescription(@"ExtrudeSurface(sketch: PlotterSketcherCoordSys, height: float, maxDeviation: float = -1, name: str = None) -> AnchorMesh
-Extrudes a closed sketch profile and returns the uncapped side patches as an open surface.")]
+Extrudes open or closed sketch profiles and returns the uncapped side patches as an open surface.")]
     public AnchorMesh ExtrudeSurface(PlotterSketcherCoordSys sketch, double height,
         double maxDeviation = -1, string name = null)
     {
+        ArgumentNullException.ThrowIfNull(sketch);
+        if (!double.IsFinite(height) || height == 0)
+            throw new ArgumentOutOfRangeException(nameof(height), "Surface extrusion height must be finite and nonzero.");
         name ??= GenerateName("ExtrudeSurface");
+        var strips = sketch.GetCurves().Select(s => s.Where(c => !c.IsHelperGeometry).ToList())
+            .Where(s => s.Count > 0).ToList();
+        double joinTolerance = SketchStripTessellateOptions.DefaultOpen().CurveMatchingTolerance;
+        if (strips.Any(s => (s[0].StartPosition-s[^1].EndPosition).Length() > joinTolerance))
+            return ExtrudeOpenSurface(sketch, strips, height, ResolveMaxDeviation(maxDeviation), name);
         var generated = Extrude(sketch, height, maxDeviation, name);
         return RegisterSideSurface(generated, name,
             EntityNaming.ExtrudeBottom(name), EntityNaming.ExtrudeTop(name));
+    }
+
+    private AnchorMesh ExtrudeOpenSurface(PlotterSketcherCoordSys sketch,
+        IReadOnlyList<List<Curve2D>> strips, double height, double maxDeviation, string name)
+    {
+        var positions = new List<Vec3D>();
+        var precise = new List<Rat3Hybrid>();
+        var normals = new List<Vec3D>();
+        var uv = new List<Vec2D>();
+        var triangles = new List<Tri>();
+        var groups = new List<int>();
+        var names = new Dictionary<int, string>();
+        var metadata = new Dictionary<string, SurfaceMetaData>();
+        foreach (var curve in strips.SelectMany(s => s))
+        {
+            var profile = Curve2DToBSpline.ToBSplineCurve(curve, sketch.CoordinateSystem);
+            var surface = NurbsSurfaceFactory.LinearExtrude(profile, sketch.CoordinateSystem.Z, height);
+            var tess = AdaptiveSurfaceSplitter.TriangulateAdaptive(surface, maxDeviation: maxDeviation);
+            int offset = positions.Count;
+            foreach (var point in tess.Points)
+            {
+                var converted = converter.Convert(point);
+                var exact = new Rat3Hybrid(converted.X, converted.Y, converted.Z);
+                precise.Add(exact);
+                positions.Add(converter.Convert(exact));
+            }
+            normals.AddRange(tess.Normals);
+            uv.AddRange(tess.UV);
+            triangles.AddRange(tess.Triangles.Select(t => new Tri(t.A + offset, t.B + offset, t.C + offset)));
+            int group = ReserveGroupIds(1);
+            groups.AddRange(Enumerable.Repeat(group, tess.Triangles.Count));
+            string patch = EntityNaming.ExtrudeSide(name, curve.Name);
+            names.Add(group, patch);
+            metadata.Add(patch, new(SurfaceType.Unknown, surface, ParametricRange.UnitSquare));
+        }
+        var mesh = new MeshNormalUV(converter, positions, normals, uv, triangles, groups, precise,
+            skipWatertightCheck: true);
+        var result = new AnchorMesh(name, mesh, names, metadata, deferCoplanarPostProcess: true, isVolume: false);
+        RegisterMesh(result);
+        return result;
     }
 
     [APIDescription(@"RevolveSurface(sketch: PlotterSketcher, angle: float, maxDeviation: float = -1, name: str = None) -> AnchorMesh

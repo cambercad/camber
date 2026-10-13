@@ -48,6 +48,11 @@ pip install "cambercad[view]"
 import camber
 ```
 
+The **experimental, incomplete** full GUI modeling mode can be started with
+`python -c "import camber; camber.modeling.open('my_part.py')"` after installing
+the current development wheel and viewer dependencies. See the
+[Python guide](Geo.Python/README.md) for its current scope and workflow.
+
 `cffi` is a normal dependency of the native module. pip may print `cffi` under `cambercad`; that is expected.
 
 ## Tests
@@ -94,11 +99,11 @@ Both Windows and Linux publish scripts write **only** `cambercad-*.whl` into the
 ```text
 camber/
   dist/
-    cambercad-0.1.7-py3-none-win_amd64.whl
-    cambercad-0.1.7-py3-none-manylinux_2_38_x86_64.whl
+    cambercad-0.1.8-py3-none-win_amd64.whl
+    cambercad-0.1.8-py3-none-manylinux_2_38_x86_64.whl
 ```
 
-That layout matches PyPI (`twine upload dist/cambercad-0.1.7-*.whl`). Dependency wheels (`cffi`, …) are staged temporarily and not kept in `dist/`. Scripts retag DotWrap’s `py3-none-any` name to a platform tag so Win/Linux wheels can sit side by side. The Linux build uses auditwheel to validate native dependencies and determine the minimum glibc version; the Ubuntu 24.04 build requires glibc 2.38. Build on an older compatible toolchain to support older glibc releases.
+That layout matches PyPI (`twine upload dist/cambercad-0.1.8-*.whl`). Dependency wheels (`cffi`, …) are staged temporarily and not kept in `dist/`. Scripts retag DotWrap’s `py3-none-any` name to a platform tag so Win/Linux wheels can sit side by side. The Linux build uses auditwheel to validate native dependencies and determine the minimum glibc version; the Ubuntu 24.04 build requires glibc 2.38. Build on an older compatible toolchain to support older glibc releases.
 
 ## Build the wheel (Windows)
 

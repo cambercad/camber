@@ -519,10 +519,21 @@ public class ExtruderTests
         const double H = 2.0;
         double twistRate = Math.PI / (2.0 * H);
         var converter = MeshTestHelpers.MakeConverter();
-        var contour = MeshTestHelpers.MakeSquareContourCCW(1.0);
-        var contours = new List<List<List<Vec2D>>> { new List<List<Vec2D>> { contour } };
-        var contourNormals = new List<List<List<Vec2D>>> { new List<List<Vec2D>> { Extruder.WeightedNormals2D(contour) } };
-        var names = new List<List<string>> { new List<string> { "Edge" } };
+        // One segment per side, matching sketch tessellation: each wall keeps its own normal.
+        var square = MeshTestHelpers.MakeSquareContourCCW(1.0);
+        var edges = new List<List<Vec2D>>();
+        var edgeNormals = new List<List<Vec2D>>();
+        var edgeNames = new List<string>();
+        for (int i = 0; i < square.Count - 1; i++)
+        {
+            var edge = new List<Vec2D> { square[i], square[i + 1] };
+            edges.Add(edge);
+            edgeNormals.Add(Extruder.WeightedNormals2D(edge));
+            edgeNames.Add("E" + i);
+        }
+        var contours = new List<List<List<Vec2D>>> { edges };
+        var contourNormals = new List<List<List<Vec2D>>> { edgeNormals };
+        var names = new List<List<string>> { edgeNames };
 
         var triangles = new List<Tri>();
         var vertices = new List<Vec3D>();
@@ -551,6 +562,87 @@ public class ExtruderTests
             }
         }
         Assert.True(foundTopTwistedCorner);
+
+        // Corner (0.5, -0.5) is shared by the bottom edge (outward -Y, z = twistRate * x)
+        // and the right edge (outward +X, z = twistRate * y). Each wall keeps its own normal.
+        double k = twistRate * 0.5;
+        double scale = 1.0 / Math.Sqrt(1.0 + k * k);
+        bool foundBottom = false, foundRight = false;
+        for (int i = 0; i < vertices.Count; i++)
+        {
+            var v = vertices[i];
+            if (Math.Abs(v.Z) > 1e-5 || Math.Abs(v.X - 0.5) > 1e-5 || Math.Abs(v.Y + 0.5) > 1e-5)
+                continue;
+            var n = normals[i];
+            if (Math.Abs(n.X) < 1e-5 && Math.Abs(n.Y + scale) < 1e-5 && Math.Abs(n.Z - k * scale) < 1e-5)
+                foundBottom = true;
+            if (Math.Abs(n.X - scale) < 1e-5 && Math.Abs(n.Y) < 1e-5 && Math.Abs(n.Z + k * scale) < 1e-5)
+                foundRight = true;
+        }
+        Assert.True(foundBottom);
+        Assert.True(foundRight);
+    }
+
+    [Fact]
+    public void LinearExtrude_TwistAboutSketchCenter_OrbitsThatPoint()
+    {
+        const double H = 2.0;
+        double twistRate = Math.PI / (2.0 * H);
+        var center = new Vec2D(1.0, 0.0);
+        var converter = MeshTestHelpers.MakeConverter();
+        var square = MeshTestHelpers.MakeSquareContourCCW(1.0);
+        var edges = new List<List<Vec2D>>();
+        var edgeNormals = new List<List<Vec2D>>();
+        var edgeNames = new List<string>();
+        for (int i = 0; i < square.Count - 1; i++)
+        {
+            var edge = new List<Vec2D> { square[i], square[i + 1] };
+            edges.Add(edge);
+            edgeNormals.Add(Extruder.WeightedNormals2D(edge));
+            edgeNames.Add("E" + i);
+        }
+        var contours = new List<List<List<Vec2D>>> { edges };
+        var contourNormals = new List<List<List<Vec2D>>> { edgeNormals };
+        var names = new List<List<string>> { edgeNames };
+        var triangles = new List<Tri>();
+        var vertices = new List<Vec3D>();
+        var normals = new List<Vec3D>();
+        var uv = new List<Vec2D>();
+        var groups = new List<int>();
+        var precise = new List<Rat3Hybrid>();
+
+        Extruder.GenerateExtrudedMesh(
+            converter, CoordinateSystem.Default, contours, contourNormals,
+            height: H, triangles, vertices, normals, uv, groups, precise,
+            names, "TwistCenter", out _, twistRatePerExtrudeDistance: twistRate,
+            twistCenter: center);
+
+        // (0.5, -0.5) relative to (1, 0) is (-0.5, -0.5); a +90° turn lands at (1.5, -0.5).
+        bool found = false;
+        foreach (var v in vertices)
+        {
+            if (Math.Abs(v.Z - H) < 1e-5 && Math.Abs(v.X - 1.5) < 1e-5 && Math.Abs(v.Y + 0.5) < 1e-5)
+            {
+                found = true;
+                break;
+            }
+        }
+        Assert.True(found);
+
+        // Bottom edge at (0.5, -0.5) relative to center (1, 0) has edge · (p − c) = -0.5.
+        double k = twistRate * 0.5;
+        double scale = 1.0 / Math.Sqrt(1.0 + k * k);
+        bool foundTilt = false;
+        for (int i = 0; i < vertices.Count; i++)
+        {
+            var v = vertices[i];
+            if (Math.Abs(v.Z) > 1e-5 || Math.Abs(v.X - 0.5) > 1e-5 || Math.Abs(v.Y + 0.5) > 1e-5)
+                continue;
+            var n = normals[i];
+            if (Math.Abs(n.X) < 1e-5 && Math.Abs(n.Y + scale) < 1e-5 && Math.Abs(n.Z + k * scale) < 1e-5)
+                foundTilt = true;
+        }
+        Assert.True(foundTilt);
     }
 
     [Fact]
@@ -617,5 +709,223 @@ public class ExtruderTests
         Assert.InRange(v0, L * 0.95, L * 1.08);
         Assert.InRange(v1, L * 0.95, L * 1.08);
         Assert.InRange(Math.Abs(v1 - v0), 0, 0.15);
+    }
+
+    [Fact]
+    public void ExtrudeAlongStraightGuide_TwistTiltsSideNormalsAlongTheTangent()
+    {
+        const double L = 3.0;
+        double twistRate = Math.PI / (2.0 * L);
+        var converter = MeshTestHelpers.MakeConverter();
+        var guide = MakeStraightGuide(new Vec3D(0, 0, 0), new Vec3D(0, 0, L), 2);
+        var (contours, contourNormals, names) = SquareEdges();
+        var triangles = new List<Tri>();
+        var vertices = new List<Vec3D>();
+        var normals = new List<Vec3D>();
+        var uv = new List<Vec2D>();
+        var groups = new List<int>();
+        var precise = new List<Rat3Hybrid>();
+
+        Extruder.GenerateExtrudeAlongCurve(
+            converter, CoordinateSystem.Default, contours, contourNormals,
+            guide, guide[0], guide[0].Z, triangles, vertices, normals, uv, groups, precise,
+            names, "TwistGuide", out _, twistRatePerExtrudeDistance: twistRate);
+
+        // Guide frame is X=(0,1,0), Y=(-1,0,0), Z=(0,0,1). Profile corner (0.5,-0.5)
+        // lands at (0.5, 0.5, 0). Bottom edge normal is normalize(1, 0, twistRate * x);
+        // right edge normal is normalize(0, 1, twistRate * y).
+        double k = twistRate * 0.5;
+        double scale = 1.0 / Math.Sqrt(1.0 + k * k);
+        bool foundBottom = false, foundRight = false;
+        for (int i = 0; i < vertices.Count; i++)
+        {
+            var v = vertices[i];
+            if (Math.Abs(v.X - 0.5) > 1e-5 || Math.Abs(v.Y - 0.5) > 1e-5 || Math.Abs(v.Z) > 1e-5)
+                continue;
+            var n = normals[i];
+            if (Math.Abs(n.X - scale) < 1e-5 && Math.Abs(n.Y) < 1e-5 && Math.Abs(n.Z - k * scale) < 1e-5)
+                foundBottom = true;
+            if (Math.Abs(n.X) < 1e-5 && Math.Abs(n.Y - scale) < 1e-5 && Math.Abs(n.Z + k * scale) < 1e-5)
+                foundRight = true;
+        }
+        Assert.True(foundBottom);
+        Assert.True(foundRight);
+    }
+
+    [Fact]
+    public void ExtrudeAlongArc_TwistScalesNormalByCurvature()
+    {
+        const double radius = 5.0;
+        const double twistRate = 0.25;
+        var converter = MeshTestHelpers.MakeConverter();
+        var guide = MakeArcGuide(radius, Math.PI, 64);
+        var (contours, contourNormals, names) = SquareEdges();
+        var triangles = new List<Tri>();
+        var vertices = new List<Vec3D>();
+        var normals = new List<Vec3D>();
+        var uv = new List<Vec2D>();
+        var groups = new List<int>();
+        var precise = new List<Rat3Hybrid>();
+
+        Extruder.GenerateExtrudeAlongCurve(
+            converter, CoordinateSystem.Default, contours, contourNormals,
+            guide, guide[0], guide[0].Z, triangles, vertices, normals, uv, groups, precise,
+            names, "ArcTwist", out _, twistRatePerExtrudeDistance: twistRate);
+
+        // Start station, twist angle 0. Frame Y points at the center, so profile point
+        // (0.5, -0.5) is at (0, 0.5, -0.5) and σ = 1 − py/radius.
+        // Bottom-edge normal is σ(-Y) + twistRate * 0.5 * T.
+        double sigma = 1.0 - (-0.5) / radius;
+        var raw = new Vec3D(twistRate * 0.5, 0, -sigma);
+        var expected = raw / raw.Length();
+        bool found = false;
+        for (int i = 0; i < vertices.Count; i++)
+        {
+            var v = vertices[i];
+            if (Math.Abs(v.X) > 1e-4 || Math.Abs(v.Y - 0.5) > 1e-4 || Math.Abs(v.Z + 0.5) > 1e-4)
+                continue;
+            var n = normals[i];
+            if (Math.Abs(n.X - expected.X) < 2e-3 && Math.Abs(n.Y) < 2e-3 && Math.Abs(n.Z - expected.Z) < 2e-3)
+                found = true;
+        }
+        Assert.True(found);
+    }
+
+    [Fact]
+    public void LinearExtrude_Twist_TopStationRotatesTheInPlaneNormalAndKeepsTheAxialPart()
+    {
+        const double H = 2.0;
+        double twistRate = Math.PI / (2.0 * H);
+        var mesh = ExtrudeSquareEdges(twistRate, H, default);
+        // θ = π/2 sends (0.5, -0.5) to (0.5, 0.5). The bottom-edge normal (0, -1)
+        // rotates to +X; its axial part stays twistRate * x and is not rotated away.
+        double k = twistRate * 0.5;
+        double scale = 1.0 / Math.Sqrt(1.0 + k * k);
+        bool foundBottom = false, foundRight = false, foundCap = false;
+        for (int i = 0; i < mesh.vertices.Count; i++)
+        {
+            var v = mesh.vertices[i];
+            var n = mesh.normals[i];
+            if (Math.Abs(v.Z - H) < 1e-5 && Math.Abs(v.X - 0.5) < 1e-5 && Math.Abs(v.Y - 0.5) < 1e-5)
+            {
+                if (Math.Abs(n.X - scale) < 1e-5 && Math.Abs(n.Y) < 1e-5 && Math.Abs(n.Z - k * scale) < 1e-5)
+                    foundBottom = true;
+                if (Math.Abs(n.X) < 1e-5 && Math.Abs(n.Y - scale) < 1e-5 && Math.Abs(n.Z + k * scale) < 1e-5)
+                    foundRight = true;
+            }
+            if (Math.Abs(v.Z) < 1e-5 && Math.Abs(v.X - 0.5) < 1e-5 && Math.Abs(v.Y + 0.5) < 1e-5 &&
+                Math.Abs(n.X) < 1e-6 && Math.Abs(n.Y) < 1e-6 && Math.Abs(n.Z + 1) < 1e-6)
+                foundCap = true;
+        }
+        Assert.True(foundBottom);
+        Assert.True(foundRight);
+        Assert.True(foundCap);
+    }
+
+    [Fact]
+    public void LinearExtrude_WithoutTwist_SideNormalsStayPerpendicularToTheAxis()
+    {
+        var mesh = ExtrudeSquareEdges(0, 2.0, default);
+        bool foundBottom = false, foundRight = false;
+        for (int i = 0; i < mesh.vertices.Count; i++)
+        {
+            var v = mesh.vertices[i];
+            if (Math.Abs(v.Z) > 1e-5 || Math.Abs(v.X - 0.5) > 1e-5 || Math.Abs(v.Y + 0.5) > 1e-5)
+                continue;
+            var n = mesh.normals[i];
+            if (Math.Abs(n.Z) > 1e-8 && Math.Abs(Math.Abs(n.Z) - 1) > 1e-6)
+                Assert.Fail("Untwisted side normal picked up an axial component: " + n);
+            if (Math.Abs(n.X) < 1e-6 && Math.Abs(n.Y + 1) < 1e-6 && Math.Abs(n.Z) < 1e-8)
+                foundBottom = true;
+            if (Math.Abs(n.X - 1) < 1e-6 && Math.Abs(n.Y) < 1e-6 && Math.Abs(n.Z) < 1e-8)
+                foundRight = true;
+        }
+        Assert.True(foundBottom);
+        Assert.True(foundRight);
+    }
+
+    [Fact]
+    public void ExtrudeAlongHelix_FrameTorsionTiltsSideNormalWithoutAuthoredTwist()
+    {
+        const double radius = 2.0;
+        const double pitch = 0.5;
+        double length = Math.Sqrt(radius * radius + pitch * pitch);
+        var guide = new List<CoordinateSystem>();
+        const int steps = 60;
+        const double phi0 = -0.3;
+        for (int i = 0; i <= steps; i++)
+        {
+            double phi = phi0 + 0.6 * i / steps;
+            var origin = new Vec3D(radius * Math.Cos(phi), radius * Math.Sin(phi), pitch * phi);
+            var tangent = new Vec3D(-radius * Math.Sin(phi), radius * Math.Cos(phi), pitch).Normalized();
+            var up = Vec3DOps.Cross(tangent, new Vec3D(0, 0, 1)).Normalized();
+            guide.Add(new CoordinateSystem(origin, Vec3DOps.Cross(up, tangent), up, tangent));
+        }
+
+        var converter = MeshTestHelpers.MakeConverter();
+        var (contours, contourNormals, names) = SquareEdges();
+        var triangles = new List<Tri>();
+        var vertices = new List<Vec3D>();
+        var normals = new List<Vec3D>();
+        var uv = new List<Vec2D>();
+        var groups = new List<int>();
+        var precise = new List<Rat3Hybrid>();
+        Extruder.GenerateExtrudeAlongCurve(
+            converter, CoordinateSystem.Default, contours, contourNormals,
+            guide, guide[0], guide[0].Z, triangles, vertices, normals, uv, groups, precise,
+            names, "HelixRoll", out _, twistRatePerExtrudeDistance: 0);
+
+        double lengthSquared = length * length;
+        double sigma = 1.0 - 0.5 * radius / lengthSquared;
+        var tangent0 = new Vec3D(0, radius / length, pitch / length);
+        var raw = sigma * new Vec3D(-1, 0, 0) + (pitch / lengthSquared) * 0.5 * tangent0;
+        var expected = raw / raw.Length();
+        var at = new Vec3D(radius - 0.5, -0.5 * pitch / length, 0.5 * radius / length);
+        bool found = false;
+        for (int i = 0; i < vertices.Count; i++)
+        {
+            if ((vertices[i] - at).Length() > 1e-4)
+                continue;
+            var n = normals[i];
+            if ((n - expected).Length() < 1e-3)
+                found = true;
+        }
+        Assert.True(found);
+    }
+
+    static (List<Vec3D> vertices, List<Vec3D> normals) ExtrudeSquareEdges(double twistRate, double height, Vec2D center)
+    {
+        var converter = MeshTestHelpers.MakeConverter();
+        var (contours, contourNormals, names) = SquareEdges();
+        var triangles = new List<Tri>();
+        var vertices = new List<Vec3D>();
+        var normals = new List<Vec3D>();
+        var uv = new List<Vec2D>();
+        var groups = new List<int>();
+        var precise = new List<Rat3Hybrid>();
+        Extruder.GenerateExtrudedMesh(
+            converter, CoordinateSystem.Default, contours, contourNormals,
+            height: height, triangles, vertices, normals, uv, groups, precise,
+            names, "Square", out _, twistRatePerExtrudeDistance: twistRate, twistCenter: center);
+        return (vertices, normals);
+    }
+
+    static (List<List<List<Vec2D>>> contours, List<List<List<Vec2D>>> normals, List<List<string>> names) SquareEdges()
+    {
+        var square = MeshTestHelpers.MakeSquareContourCCW(1.0);
+        var edges = new List<List<Vec2D>>();
+        var edgeNormals = new List<List<Vec2D>>();
+        var edgeNames = new List<string>();
+        for (int i = 0; i < square.Count - 1; i++)
+        {
+            var edge = new List<Vec2D> { square[i], square[i + 1] };
+            edges.Add(edge);
+            edgeNormals.Add(Extruder.WeightedNormals2D(edge));
+            edgeNames.Add("E" + i);
+        }
+        return (
+            new List<List<List<Vec2D>>> { edges },
+            new List<List<List<Vec2D>>> { edgeNormals },
+            new List<List<string>> { edgeNames });
     }
 }

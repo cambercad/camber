@@ -13,6 +13,32 @@ from camber.glview import pack_scene
 
 
 class RenderInputTests(unittest.TestCase):
+    def test_wheel_zoom_direction_and_cursor_anchor(self):
+        from camber.glview import Camera
+        import math
+        for ortho in (True, False):
+            camera = Camera()
+            camera.ortho = ortho
+            camera.eye = (0, 0, 10)
+            camera.center = (0, 0, 0)
+            camera.up = (0, 1, 0)
+            camera.zoom = 5
+            camera.width, camera.height = 800, 600
+            before = camera.zoom if ortho else math.dist(camera.eye, camera.center)
+            camera.zoom_at(1, 0, 0)
+            after = camera.zoom if ortho else math.dist(camera.eye, camera.center)
+            self.assertLess(after, before, "Wheel up must zoom in")
+            camera.zoom_at(-1, 0, 0)
+            restored = camera.zoom if ortho else math.dist(camera.eye, camera.center)
+            self.assertAlmostEqual(restored, before)
+            # The point under the cursor stays in place during orthographic zoom.
+            if ortho:
+                point = (1, 1, 0)
+                ndc = camera.project(point)
+                camera.zoom_at(1, *ndc)
+                for actual, expected in zip(camera.project(point), ndc):
+                    self.assertAlmostEqual(actual, expected)
+
     def test_color_patterns_preserve_names_and_override_in_order(self):
         scene = DisplayScene()
         scene.patches = [{"name": "fork:blade", "vertices": [(0, 0, 0), (1, 0, 0), (0, 1, 0)], "faces": [(0, 1, 2)]}]
@@ -120,22 +146,33 @@ print("captures complete", flush=True)
         block = part.cuboid((-5,-5,-5),(10,10,10),name="block")
         monitor = Viewer(visible=False,size=(64,64))
         created = []
+        released = []
 
         def create(*args,**kwargs):
             viewer = Viewer(*args,**kwargs)
             # Retain wrappers: correctness must not depend on garbage collection.
             created.append((viewer,viewer._dummy_depth,viewer._mesh_prog.id))
+            texture, program = viewer._dummy_depth, viewer._mesh_prog.id
+            close_window = viewer.window.close
+            def checked_close():
+                # Resource IDs are local to the owning context in pyglet 3.
+                self.assertFalse(viewer._gl.glIsTexture(texture))
+                self.assertFalse(viewer._gl.glIsProgram(program))
+                released.append(viewer)
+                close_window()
+            viewer.window.close = checked_close
             return viewer
 
         try:
             with tempfile.TemporaryDirectory() as tmp, patch("camber.host.Viewer",side_effect=create):
                 path = Path(tmp)/"capture.png"
                 def check_released():
-                    monitor.window.switch_to()
                     viewer,texture,program = created[-1]
-                    self.assertFalse(monitor._gl.glIsTexture(texture))
-                    self.assertFalse(monitor._gl.glIsProgram(program))
+                    self.assertIn(viewer, released)
+                    self.assertIsNone(viewer.window.context)
                     viewer.close()  # Repeated cleanup must be harmless.
+                    monitor.window.switch_to()
+                    self.assertTrue(monitor._gl.glIsProgram(monitor._mesh_prog.id))
 
                 render_views(block,path,views=["iso"],tile_size=(64,64))
                 check_released()
@@ -158,6 +195,7 @@ print("captures complete", flush=True)
         block = part.cuboid((-5,-5,-5),(10,10,10),name="block")
         monitor = Viewer(visible=False,size=(64,64))
         allocated = []
+        released = []
         compile_program = Viewer._compile
 
         def fail_second_program(viewer, *args):
@@ -165,6 +203,13 @@ print("captures complete", flush=True)
                 raise RuntimeError("shader compilation failed")
             program = compile_program(viewer, *args)
             allocated.append((viewer, program, program.id))
+            program_id = program.id
+            close_window = viewer.window.close
+            def checked_close():
+                self.assertFalse(viewer._gl.glIsProgram(program_id))
+                released.append(viewer)
+                close_window()
+            viewer.window.close = checked_close
             return program
 
         try:
@@ -177,7 +222,8 @@ print("captures complete", flush=True)
                 self.assertTrue(failed._closed)
                 self.assertIsNone(failed.window.context)
                 monitor.window.switch_to()
-                self.assertFalse(monitor._gl.glIsProgram(program_id))
+                self.assertIn(failed, released)
+                self.assertTrue(monitor._gl.glIsProgram(monitor._mesh_prog.id))
                 self.assertIsNone(program.id)
                 failed.close()
                 render_views(block,path,views=["iso"],tile_size=(64,64))

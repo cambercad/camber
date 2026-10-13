@@ -66,7 +66,10 @@ Not a certified thread form.")]
 
             string meshName = string.IsNullOrEmpty(name) ? "metricThreadNutNegative" : name;
             double rMaj = 0.5 * majorDiameter;
-            double outerRadius = rMaj + 0.002;
+            // Construction shells must remain distinct after coordinate quantization.
+            // These margins belong to discarded CSG helpers, not the thread form.
+            double clearance = ThreadHelperClearance;
+            double outerRadius = rMaj + 2 * clearance;
 
             AnchorMesh helixTooth;
             AnchorMesh hollowShell;
@@ -78,7 +81,7 @@ Not a certified thread form.")]
 
             var coreCylinder = CreateCylinder(
                 coordinateSystem.GetOffsetCS(-0.5 * pitch * coordinateSystem.Z),
-                rMaj + 0.001,
+                rMaj + clearance,
                 length + pitch,
                 maxDeviation,
                 meshName + "_nut_core");
@@ -86,11 +89,11 @@ Not a certified thread form.")]
             var fullThread = Boolean(coreCylinder, fullThreadBoltNegative, BooleanOp.Subtract, meshName + "_nut_core_minus_thread");
 
             double eps = 2 * Converter.SmallestUnit();
-            Vec3D cuboidSize = new Vec3D(2 * outerRadius + 0.001, 2 * outerRadius + 0.001, pitch + 0.001);
-            Vec3D offset = -(outerRadius + 0.0005) * (coordinateSystem.X + coordinateSystem.Y);
+            Vec3D cuboidSize = new Vec3D(2 * outerRadius + clearance, 2 * outerRadius + clearance, pitch + clearance);
+            Vec3D offset = -(outerRadius + .5 * clearance) * (coordinateSystem.X + coordinateSystem.Y);
 
             AnchorMesh startCutHelper = CreateCuboid(
-                coordinateSystem.GetOffsetCS((-pitch - 0.001 - eps) * coordinateSystem.Z + offset),
+                coordinateSystem.GetOffsetCS((-pitch - clearance - eps) * coordinateSystem.Z + offset),
                 cuboidSize,
                 meshName + "_nut_start_cut_helper");
             AnchorMesh endCutHelper = CreateCuboid(
@@ -209,7 +212,7 @@ Same threaded-plug solid as CreateMetricThreadForNutNegative. Not a certified th
                 baseName + "_HelixGuide");
 
             if (outerRadius < 0)
-                outerRadius = rMaj + Math.Max(2.0 * maxDeviation, 0.001);
+                outerRadius = rMaj + Math.Max(2.0 * maxDeviation, ThreadHelperClearance);
 
             hollowShell = CreateHollowCylinder(
                 coordinateSystem.GetOffsetCS(-pitch * coordinateSystem.Z),
@@ -231,11 +234,12 @@ Same threaded-plug solid as CreateMetricThreadForNutNegative. Not a certified th
             string meshName)
         {
             double eps = 2 * Converter.SmallestUnit();
-            Vec3D cuboidSize = new Vec3D(2 * outerRadius + 0.001, 2 * outerRadius + 0.001, pitch + 0.001);
-            Vec3D offset = -(outerRadius + 0.0005) * (coordinateSystem.X + coordinateSystem.Y);
+            double clearance = ThreadHelperClearance;
+            Vec3D cuboidSize = new Vec3D(2 * outerRadius + clearance, 2 * outerRadius + clearance, pitch + clearance);
+            Vec3D offset = -(outerRadius + .5 * clearance) * (coordinateSystem.X + coordinateSystem.Y);
 
             AnchorMesh startCutHelper = CreateCuboid(
-                coordinateSystem.GetOffsetCS((-pitch - 0.001 - eps) * coordinateSystem.Z + offset),
+                coordinateSystem.GetOffsetCS((-pitch - clearance - eps) * coordinateSystem.Z + offset),
                 cuboidSize,
                 meshName + "_start_cut_helper");
             AnchorMesh endCutHelper = CreateCuboid(
@@ -246,6 +250,8 @@ Same threaded-plug solid as CreateMetricThreadForNutNegative. Not a certified th
             AnchorMesh tmp = Boolean(solid, startCutHelper, BooleanOp.Subtract, meshName + "_start_cut");
             return Boolean(tmp, endCutHelper, BooleanOp.Subtract, meshName);
         }
+
+        private double ThreadHelperClearance => Math.Max(.001, 2 * Converter.SmallestUnit());
 
         private AnchorMesh CreateHollowCylinder(
             CoordinateSystem coordinateSystem,

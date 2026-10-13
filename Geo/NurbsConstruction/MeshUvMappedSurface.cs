@@ -64,6 +64,8 @@ namespace Geo.NurbsConstruction
                 return cap.Plane;
             if (surface is BSplineSurface direct)
                 return direct;
+            if (surface is LoftPointCap pointCap)
+                return pointCap.Surface;
             throw new InvalidOperationException($"Cannot tessellate NURBS surface type {surface.GetType().Name}");
         }
     }

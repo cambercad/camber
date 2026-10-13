@@ -1,12 +1,69 @@
 using Curves;
 using Geo;
 using GeoCore;
+using GeoSolver;
 
 namespace GeoTests;
 
 public class ConstrainedArcContourTests : IDisposable
 {
     public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
+
+    [Theory]
+    [InlineData(0, 180)]
+    [InlineData(90, -90)]
+    [InlineData(170, 440)]
+    [InlineData(-170, -440)]
+    public void InteriorArcPointsMatchTheDirectedCircleAndHaveFiniteDerivatives(double start, double end)
+    {
+        var arc = new CArc2D(new Vec2D(3, 4), 7, start*Math.PI/180, end*Math.PI/180);
+        foreach (double u in new[] { .25, .5, .75 })
+        {
+            var point = arc.Evaluate(u);
+            var actual = point.Evaluate();
+            var expected = arc.EvaluateVertex(u).Position;
+            Assert.InRange((actual-expected).Length(), 0, 1e-10);
+            foreach (var expr in new[] { point.Ex, point.Ey })
+            {
+                Assert.Equal(expr.Evaluate(), expr.Compile()(), 10);
+                var parameter = arc.CStartDir.Ex.Value;
+                var derivative = expr.PartialDerivative(parameter);
+                double initial = parameter.Value, h = 1e-6;
+                parameter.Value = initial+h;
+                double plus = expr.Evaluate();
+                parameter.Value = initial-h;
+                double minus = expr.Evaluate();
+                parameter.Value = initial;
+                Assert.InRange(Math.Abs(derivative.Compile()()-(plus-minus)/(2*h)), 0, 1e-5);
+                Assert.Equal(derivative.Evaluate(), expr.EvaluatePartialDerivative(parameter), 9);
+            }
+        }
+    }
+
+    [Fact]
+    public void CoincidentArcDirectionsDoNotProduceAnArtificialSemicircle()
+    {
+        var arc = new CArc2D(new Vec2D(3, 4), 7, 0, 0);
+        foreach (double u in new[] { .25, .5, .75 })
+            Assert.InRange((arc.Evaluate(u).Evaluate()-arc.EvaluateVertex(u).Position).Length(), 0, 1e-10);
+    }
+
+    [Fact]
+    public void SnappedSemicircleMidpointRemainsValidWhenTangencyIsAdded()
+    {
+        var api = new GeoAPI(new Box3D(new Vec3D(-50), new Vec3D(50)), .01);
+        var sketch = api.GetConstraintSketcher(DefaultPlanes.OriginXY, "snapped_slot");
+        sketch.SolveAfterEveryConstraint = false;
+        var axis = sketch.AddCLine(new Vec2D(18, 0), new Vec2D(30, 0), CurveFlags.HelperGeometry);
+        var side = sketch.AddCLine(new Vec2D(4, -2), new Vec2D(16, -2));
+        var arc = sketch.AddCArc(new Vec2D(16, -2), new Vec2D(18, 0), new Vec2D(16, 2));
+        sketch.SetCoincident(side.CEnd, arc.CStart);
+        sketch.SetCoincident(axis.CStart, arc.Evaluate(.5));
+        sketch.SetTangent(side, arc);
+        var result = sketch.SolveConstraintsDetailed();
+        Assert.True(result.Converged, result.Message);
+        Assert.InRange((arc.Evaluate(.5).Evaluate()-new Vec2D(18, 0)).Length(), 0, 1e-6);
+    }
 
 
     [Theory]

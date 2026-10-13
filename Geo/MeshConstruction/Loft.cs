@@ -19,12 +19,29 @@ namespace Geo
         Hermite
     }
 
+    public enum LoftPointClosure { Sharp, Rounded }
+
     /// <summary>
     /// Options for loft mesh generation between ordered profile sketches (single curve strip per sketch, no holes in v1).
     /// </summary>
     public sealed class LoftOptions
     {
+        /// <summary>Optional world-space point replacing the planar start cap.</summary>
+        public Vec3D? StartPoint { get; set; }
+        /// <summary>Optional world-space point replacing the planar end cap.</summary>
+        public Vec3D? EndPoint { get; set; }
+        /// <summary>Null chooses the existing planar cap, or rounded closure when StartPoint is supplied.</summary>
+        public LoftPointClosure? StartPointClosure { get; set; }
+        /// <summary>Null chooses the existing planar cap, or rounded closure when EndPoint is supplied.</summary>
+        public LoftPointClosure? EndPointClosure { get; set; }
         public LoftStyle Style { get; set; }
+        /// <summary>Exact longitudinal rails through corresponding profile construction knots, in section order.</summary>
+        public IReadOnlyList<Curve3D> Guides { get; set; }
+        /// <summary>Optional world-space derivative with respect to global V at the first section. Magnitude controls influence.</summary>
+        public Vec3D? StartTangent { get; set; }
+        /// <summary>Optional world-space derivative with respect to global V at the last section, directed along section order.</summary>
+        public Vec3D? EndTangent { get; set; }
+        internal bool HasShapeControls => Guides?.Count > 0 || StartTangent.HasValue || EndTangent.HasValue;
         /// <summary>
         /// Zero (default) uses tolerance-driven profile anchors without extra uniform samples.
         /// For <see cref="LoftStyle.Ruled"/> / <see cref="LoftStyle.SmoothCatmullRom"/>: minimum number of uniform u samples; the actual grid merges these with profile anchors per <see cref="LoftCorrespondenceMode"/>.
@@ -229,6 +246,9 @@ namespace Geo
             int baseGroupIndex,
             MeshOutput output)
         {
+            if (options.StartPointClosure.HasValue && !options.StartPoint.HasValue ||
+                options.EndPointClosure.HasValue && !options.EndPoint.HasValue)
+                throw new ArgumentException("A point closure style requires its corresponding start or end point.");
             if (options.FirstCurves != null)
             {
                 if (options.FirstCurves.Count != prepared.Count)
@@ -349,9 +369,31 @@ namespace Geo
             bool matchingVertices = options.CorrespondenceMode == LoftCorrespondenceMode.MatchingVertices;
             bool preparedMatchedCurves = prepared.All(p => p.CorrespondenceLocked && p.MatchedCurve != null);
             output.LoftSideSupportFactory = preparedMatchedCurves
-                ? BuildPreparedCurveLoftSupport(prepared, options.Style, out var polygonBreaks)
-                : BuildExactPolygonLoftSupport(prepared, options.Style, out polygonBreaks, matchingVertices);
+                ? BuildPreparedCurveLoftSupport(prepared, options, out var polygonBreaks)
+                : BuildExactPolygonLoftSupport(prepared, options, out polygonBreaks, matchingVertices);
 
+            if (options.HasShapeControls && output.LoftSideSupportFactory == null)
+                throw new ArgumentException("Controlled lofts require exact compatible section curves; use matched-vertex correspondence for curved multi-edge sections.");
+            if (options.StartPoint.HasValue || options.EndPoint.HasValue)
+            {
+                if (!options.CapEnds || !closedForCaps)
+                    throw new ArgumentException("Point closures require closed sections and capped loft ends.");
+                if (output.LoftSideSupportFactory?.Invoke() is not NURBS.BSplineSurface side)
+                    throw new ArgumentException("Point closures require exact compatible section curves; use matched-vertex correspondence for curved multi-edge sections.");
+                Vec3D Outward(int profile, int neighbor)
+                {
+                    var normal = systems[profile].Z.Normalized();
+                    return Vec3DOps.Dot(systems[profile].Origin - systems[neighbor].Origin, normal) < 0 ? -normal : normal;
+                }
+                double Orientation(int profile,Vec3D normal) =>
+                    (Polygon.IsPolygonCCW(polys[profile]) ? 1 : -1)*(Vec3DOps.Dot(systems[profile].Z,normal)<0 ? -1 : 1);
+                if (options.StartPoint.HasValue)
+                    output.StartPointCap = BuildPointCap(side, options.StartPoint.Value, Outward(0, 1), true, options.StartPointClosure ?? LoftPointClosure.Rounded, loftTessellationTolerance, Orientation(0,Outward(0,1)));
+                if (options.EndPoint.HasValue)
+                    output.EndPointCap = BuildPointCap(side, options.EndPoint.Value, Outward(pCount-1, pCount-2), false, options.EndPointClosure ?? LoftPointClosure.Rounded, loftTessellationTolerance, Orientation(pCount-1,Outward(pCount-1,pCount-2)));
+                polygonBreaks = (polygonBreaks ?? []).Concat(output.StartPointCap?.U ?? [])
+                    .Concat(output.EndPointCap?.U ?? []).Distinct().Order().ToArray();
+            }
             bool matchedCurves = prepared[0].MatchedCurve != null;
             int matchedCount = matchedCurves ? prepared[0].MatchedCurveNames.Count :
                 closedForCaps ? polys[0].Count : polys[0].Count - 1;
@@ -435,6 +477,15 @@ namespace Geo
                 BuildLoftGrid(profileWorld, options.Style, s, grid);
             }
 
+            bool varyingWeights = matchedCurves && prepared.Skip(1).Any(profile =>
+                profile.MatchedCurve.ControlPoints.Where((point,i) => point.W != prepared[0].MatchedCurve.ControlPoints[i].W).Any());
+            if (options.HasShapeControls || varyingWeights || output.StartPointCap != null || output.EndPointCap != null)
+            {
+                var support = output.LoftSideSupportFactory();
+                for (int r = 0; r < vRows; r++)
+                    for (int u = 0; u < m; u++)
+                        grid[r][u] = support.Evaluate(uColumns[u], rowVUniform != null ? rowVUniform[r] : (double)r/(grid.Length-1));
+            }
             SnapCreaseDuplicateColumnsInGrid(grid, vRows, uColumns, colKinds, tolU);
 
             int sideGroup = baseGroupIndex;
@@ -473,18 +524,19 @@ namespace Geo
             }
             var startRim = PreciseRim(0);
             var endRim = PreciseRim(pCount - 1);
-            var planarGrid = matchingVertices && !matchedCurves && !preparedMatchedCurves
+            var planarGrid = !options.HasShapeControls && matchingVertices && !matchedCurves && !preparedMatchedCurves
                 ? PreservePlanarMatchedSides(prepared, uColumns, rowVUniform, vRows, options.Style,
                     converter, startRim, endRim) : null;
             int baseVert = vertices.Count;
             EmitGridVertices(
                 grid, m, vRows, closedForCaps, colKinds.ToArray(),
                 output.LoftSideSupportFactory != null ? uColumns : null, profileTu2D, systems, pCount, s, rowVUniform, startRim, endRim, planarGrid,
-                vertices, normals, uv, precisePositions, converter);
+                vertices, normals, uv, precisePositions, converter,
+                options.HasShapeControls || varyingWeights || output.StartPointCap != null || output.EndPointCap != null);
 
             ApplyAnalyticLoftNormals(profileWorld, analyticStrips, systems, uColumns, colKinds,
                 profileTu2D, seamU0, closedForCaps, options.Style, rowVUniform, vRows, baseVert, normals,
-                matchingVertices || matchedCurves ? output.LoftSideSupportFactory() : null);
+                options.HasShapeControls || matchingVertices || matchedCurves ? output.LoftSideSupportFactory() : null);
 
             EmitSideQuads(m, vRows, baseVert, closedForCaps, precisePositions, triangles, triangleGroups, sideGroup, sideColumns);
 
@@ -495,11 +547,17 @@ namespace Geo
 
                 Vec3D nStart = -systems[0].Z.Normalized() * (Polygon.IsPolygonCCW(polys[0]) ? 1 : -1);
                 Vec3D nEnd = systems[pCount - 1].Z.Normalized() * (Polygon.IsPolygonCCW(polys[^1]) ? 1 : -1);
-                EmitPlanarCapFromSketch2D(
+                if (output.StartPointCap != null)
+                    EmitPointCap(output.StartPointCap, uColumns, startRim, startCapGroup, converter,
+                        vertices, normals, uv, precisePositions, triangles, triangleGroups);
+                else EmitPlanarCapFromSketch2D(
                     profileSketch2D[0], startRim, nStart, flipWinding: false, startCapGroup,
                     options.CapTriangulation,
                     converter, vertices, normals, uv, precisePositions, triangles, triangleGroups);
-                EmitPlanarCapFromSketch2D(
+                if (output.EndPointCap != null)
+                    EmitPointCap(output.EndPointCap, uColumns, endRim, endCapGroup, converter,
+                        vertices, normals, uv, precisePositions, triangles, triangleGroups);
+                else EmitPlanarCapFromSketch2D(
                     profileSketch2D[pCount - 1], endRim, nEnd, flipWinding: true, endCapGroup,
                     options.CapTriangulation,
                     converter, vertices, normals, uv, precisePositions, triangles, triangleGroups);

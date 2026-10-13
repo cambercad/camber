@@ -58,6 +58,8 @@ def show(obj, title="Camber", *, colors=None, checker=None):
 
 from .render import render_views
 from .inspection import section, Section, Measurement
+from . import modeling
+from .modeling import load_component
 
 __all__ = [
     "Part", "PartOperation", "AssemblyConstraint", "AssemblyConstraintDatum", "Sketch", "SketchCurve", "Solid", "Surface", "ProjectedSketch", "Frame", "Curve3D", "LoftOptions",
@@ -68,4 +70,5 @@ __all__ = [
     "RayHit", "triangulate", "signed_area", "is_ccw", "point_in_polygon",
     "convex_hull", "tessellate_bezier", "text_outlines",
     "set_progress_log", "progress_log_enabled",
+    "modeling", "load_component",
 ]

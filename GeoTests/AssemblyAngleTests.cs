@@ -60,4 +60,25 @@ public class AssemblyAngleTests : IDisposable
         Assert.InRange(Math.Abs(direction.X+.5),0,1e-12);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(3.141592653589793)]
+    public void PerpendicularMateEscapesCollinearStart(double start)
+    {
+        var api = new GeoAPI(new Box3D(new Vec3D(-50),new Vec3D(50)),.01);
+        var asm = api.GetAssembly("perpendicular");
+        asm.SolveAfterEveryConstraint = false;
+        var a = asm.AddPart(api.CreateCube(CoordinateSystem.Default,2,"a"),new Vec3D(0));
+        var b = asm.AddPart(api.CreateCube(CoordinateSystem.Default,2,"b"),new Vec3D(5,0,0),
+            new Quaternion(0,0,Math.Sin(start/2),Math.Cos(start/2)));
+        asm.FixPart(a);
+        asm.SetPerpendicular(a.AddAxisDatumAt(new Vec3D(0),new Vec3D(1,0,0)),
+                             b.AddAxisDatumAt(new Vec3D(0),new Vec3D(1,0,0)));
+        var result = asm.SolveConstraintsDetailed();
+        Assert.True(result.Converged,$"{result.Message}; SSE={result.SumOfSquaredErrors}");
+        var direction = TransformMath.TransformDirection(b.EvaluatePose(),new Vec3D(1,0,0));
+        Assert.InRange(Math.Abs(direction.X),0,1e-5);
+        Assert.InRange(Math.Abs(a.EvaluatePose().Orientation.W-1),0,1e-12);
+    }
+
 }

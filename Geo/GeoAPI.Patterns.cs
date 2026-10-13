@@ -53,7 +53,10 @@ public partial class GeoAPI
     // display or solve has materialized a different occurrence pose.
     internal AnchorMesh MirrorRigidRestBody(AnchorMesh source, string name = null)
     {
-        ValidatePatternSeed(source);
+        // Assembly imports are rebased body definitions, not registered part outputs.
+        // The assembly validates occurrence ownership before calling this method.
+        if (source == null) throw new ArgumentNullException(nameof(source));
+        source.EnsureCoplanarPostProcessed();
         var rest = source.SnapshotRigidDefinition(source.Name);
         return MirrorGeometry(rest, CoordinateSystem.Default, name);
     }

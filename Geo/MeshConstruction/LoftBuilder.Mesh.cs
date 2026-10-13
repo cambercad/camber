@@ -106,7 +106,7 @@ namespace Geo
             List<Vec3D> normals,
             List<Vec2D> uv,
             List<Rat3Hybrid> precise,
-            CoordinateConverter converter)
+            CoordinateConverter converter, bool preserveAnalyticPrecision = false)
         {
             int uVertCount = closedU ? m + 1 : m;
             for (int v = 0; v < vRows; v++)
@@ -122,7 +122,7 @@ namespace Geo
                         uu = closedU && u == m ? 1 : constructionU[g];
                     var pos = grid[v][g];
                     var exact = planarGrid?[v][g] ?? (v == 0 ? startRim[g] : v == vRows - 1 ? endRim[g] :
-                        MeshConstructionHelpers.ToPrecise(converter, pos));
+                        preserveAnalyticPrecision ? converter.ConvertExact(pos) : MeshConstructionHelpers.ToPrecise(converter, pos));
                     vertices.Add(converter.Convert(exact));
                     uv.Add(new Vec2D(uu, vv));
                     precise.Add(exact);

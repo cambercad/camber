@@ -1,11 +1,12 @@
 """Lightweight OpenGL viewer (pyglet).
 
 Phong meshes, joined screen-space curves, point sprites, and depth-peeled
-transparency. Install: pip install pyglet numpy
+transparency. Install: pip install "pyglet>=3.0.dev11,<4" numpy
 """
 
 import json
 import math
+import time
 
 from . import naming as _naming
 from . import pick as _pick
@@ -103,6 +104,114 @@ def _rodrigues(v, axis, angle):
     c = math.cos(angle)
     s = math.sin(angle)
     return _add(_add(_mul(v, c), _mul(_cross(axis, v), s)), _mul(axis, _dot(axis, v) * (1.0 - c)))
+
+
+def _basis(look, up_hint):
+    """Orthonormal (right, up, look), using the same recovery as Camera.frame."""
+    look = _norm3(look)
+    if look is None:
+        return None
+    right = _norm3(_cross(look, up_hint))
+    if right is None:
+        right = _norm3(_cross(look, (0.0, 1.0, 0.0))) or (1.0, 0.0, 0.0)
+    up = _norm3(_cross(right, look)) or (0.0, 0.0, 1.0)
+    return right, up, look
+
+
+def _basis_angle(a, b):
+    trace = _dot(a[0], b[0]) + _dot(a[1], b[1]) + _dot(a[2], b[2])
+    return math.acos(max(-1.0, min(1.0, (trace - 1.0) * 0.5)))
+
+
+def _canonical_up(direction):
+    """One upright hint. Quarter-turns of it are the other legal rolls."""
+    if abs(direction[2]) > 1.0 - 1e-10:
+        return (0.0, 1.0 if direction[2] > 0.0 else -1.0, 0.0)
+    return (0.0, 0.0, 1.0)
+
+
+def _quarter_frames(look, up_hint):
+    """Four frames that share ``look`` and differ by 90° of roll.
+
+    The canonical orientation is first, so an exact tie keeps the upright view.
+    Faces, edges and corners all use this set: none of them has a single roll.
+    """
+    canonical = _basis(look, up_hint)
+    if canonical is None:
+        return ()
+    right, up, look = canonical
+    return tuple(frame for frame in (
+        canonical,
+        _basis(look, right),
+        _basis(look, _mul(up, -1.0)),
+        _basis(look, _mul(right, -1.0)),
+    ) if frame is not None)
+
+
+def _quat_normalize(q):
+    length = math.sqrt(sum(component * component for component in q))
+    if length < 1e-18:
+        return (0.0, 0.0, 0.0, 1.0)
+    return tuple(component / length for component in q)
+
+
+def _quat_from_frame(right, up, look):
+    return _quat_from_axes(right, up, _mul(look, -1.0))
+
+
+def _frame_from_quat(q):
+    right, up, back = _axes_from_quat(q)
+    return right, up, _mul(back, -1.0)
+
+
+def _quat_from_axes(right, up, look):
+    """Quaternion (x, y, z, w) of the basis whose columns are the camera axes."""
+    m00, m10, m20 = right
+    m01, m11, m21 = up
+    m02, m12, m22 = look
+    trace = m00 + m11 + m22
+    if trace > 0.0:
+        scale = math.sqrt(trace + 1.0) * 2.0
+        return _quat_normalize((
+            (m21 - m12) / scale, (m02 - m20) / scale, (m10 - m01) / scale, 0.25 * scale))
+    if m00 > m11 and m00 > m22:
+        scale = math.sqrt(1.0 + m00 - m11 - m22) * 2.0
+        return _quat_normalize((
+            0.25 * scale, (m01 + m10) / scale, (m02 + m20) / scale, (m21 - m12) / scale))
+    if m11 > m22:
+        scale = math.sqrt(1.0 + m11 - m00 - m22) * 2.0
+        return _quat_normalize((
+            (m01 + m10) / scale, 0.25 * scale, (m12 + m21) / scale, (m02 - m20) / scale))
+    scale = math.sqrt(1.0 + m22 - m00 - m11) * 2.0
+    return _quat_normalize((
+        (m02 + m20) / scale, (m12 + m21) / scale, 0.25 * scale, (m10 - m01) / scale))
+
+
+def _axes_from_quat(q):
+    x, y, z, w = q
+    xx, yy, zz = x * x, y * y, z * z
+    xy, xz, yz = x * y, x * z, y * z
+    wx, wy, wz = w * x, w * y, w * z
+    return (
+        (1.0 - 2.0 * (yy + zz), 2.0 * (xy + wz), 2.0 * (xz - wy)),
+        (2.0 * (xy - wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz + wx)),
+        (2.0 * (xz + wy), 2.0 * (yz - wx), 1.0 - 2.0 * (xx + yy)),
+    )
+
+
+def _slerp(a, b, t):
+    """Shortest-arc blend. q and -q are the same rotation, so the long way is flipped."""
+    dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
+    if dot < 0.0:
+        b = (-b[0], -b[1], -b[2], -b[3])
+        dot = -dot
+    if dot > 0.9995:
+        return _quat_normalize(tuple(a[i] + t * (b[i] - a[i]) for i in range(4)))
+    theta = math.acos(min(1.0, dot))
+    sine = math.sin(theta)
+    start = math.sin((1.0 - t) * theta) / sine
+    end = math.sin(t * theta) / sine
+    return tuple(start * a[i] + end * b[i] for i in range(4))
 
 
 def _color_from_hsv(h, s, v):
@@ -244,7 +353,7 @@ def pack_scene(scene, colors=None):
     order = []
     seen = set()
     for patch in patches:
-        name = patch.get("name")
+        name = patch.get("color_name", patch.get("name"))
         if name and name not in seen:
             seen.add(name)
             order.append(name)
@@ -272,7 +381,7 @@ def pack_scene(scene, colors=None):
         pv = patch["vertices"]
         pn = patch.get("normals")
         pu = patch.get("uvs")
-        col = color_of.get(patch.get("name"), segment_color(0, 1))
+        col = color_of.get(patch.get("color_name", patch.get("name")), segment_color(0, 1))
         mesh_pos.extend(pv)
         if pn and len(pn) == len(pv):
             mesh_n.extend(pn)
@@ -585,6 +694,7 @@ class Camera:
         self.width = _WINDOW_W
         self.height = _WINDOW_H
         self.viewport = None  # top-left framebuffer rectangle, or the full window
+        self._turn = None
 
     @property
     def aspect(self):
@@ -613,13 +723,80 @@ class Camera:
         radius = 0.5 * _len(_sub(hi, lo))
         if radius < 1e-9:
             radius = 1.0
-        direction = _norm3((1.6, -1.8, 1.2))
+        direction = _norm3(_sub(self.eye, self.center)) or _norm3((1.6, -1.8, 1.2))
         dist = max(radius * 2.8, radius * 1.15 / math.tan(self.fov * 0.5))
         self.center = c
         self.zoom = radius * 1.15
         self.eye = _add(c, _mul(direction, dist))
         self.up = (0.0, 0.0, 1.0)
         self._clip(radius, dist)
+
+    def look_from(self, direction):
+        """Change orientation, preserving the view center, zoom and distance."""
+        if not all(math.isfinite(v) for v in direction):
+            raise ValueError("View direction must be finite and nonzero")
+        normal = _norm3(direction)
+        if normal is None:
+            raise ValueError("View direction must be finite and nonzero")
+        distance = max(_len(_sub(self.eye, self.center)), 1e-9)
+        self.eye = _add(self.center, _mul(normal, distance))
+        self.up = (0, 1 if normal[2] > 0 else -1, 0) if abs(normal[2]) > 1-1e-10 else (0, 0, 1)
+
+    def start_turn(self, direction, now=None):
+        """Blend toward ``direction`` over half a second.
+
+        ``direction`` is the eye offset, as with ``look_from``. Every cube
+        target — face, edge or corner — accepts any of the four quarter-turns
+        around that view axis. The nearest one wins, and the blend takes the
+        short arc.
+        """
+        if not all(math.isfinite(v) for v in direction):
+            raise ValueError("View direction must be finite and nonzero")
+        normal = _norm3(direction)
+        if normal is None:
+            raise ValueError("View direction must be finite and nonzero")
+        look, up, right = self.frame()
+        current = (right, up, look)
+        target_look = _mul(normal, -1.0)
+        best = None
+        best_angle = None
+        for candidate in _quarter_frames(target_look, _canonical_up(normal)):
+            angle = _basis_angle(current, candidate)
+            if best is None or angle < best_angle - 1e-8:
+                best = candidate
+                best_angle = angle
+        if best is None:
+            return
+        now = time.monotonic() if now is None else float(now)
+        # (right, up, look) has determinant -1. The rotation is (right, up, -look).
+        self._turn = [now, 0.5, _quat_from_frame(*current), _quat_from_frame(*best)]
+
+    def finish_turn(self):
+        """Schedule the active blend to land on its next step."""
+        if self._turn is not None:
+            self._turn[0] = time.monotonic() - self._turn[1]
+
+    def cancel_turn(self):
+        self._turn = None
+
+    def step_turn(self, now=None):
+        """Advance the blend. Returns whether this step changed the orientation."""
+        turn = self._turn
+        if turn is None:
+            return False
+        now = time.monotonic() if now is None else float(now)
+        elapsed = 0.0 if turn[1] <= 0.0 else min(1.0, max(0.0, (now - turn[0]) / turn[1]))
+        if elapsed <= 0.0:
+            return False
+        blend = elapsed * elapsed * (3.0 - 2.0 * elapsed)
+        rotation = turn[3] if elapsed >= 1.0 else _slerp(turn[2], turn[3], blend)
+        right, up, look = _frame_from_quat(rotation)
+        distance = max(_len(_sub(self.eye, self.center)), 1e-9)
+        self.up = up
+        self.eye = _add(self.center, _mul(look, -distance))
+        if elapsed >= 1.0:
+            self._turn = None
+        return True
 
     def _clip(self, radius, dist):
         self.near = max(1e-4, dist * 0.01)
@@ -646,7 +823,7 @@ class Camera:
     def zoom_at(self, wheel, ndc_x, ndc_y):
         if abs(wheel) < 1e-12:
             return
-        factor = math.pow(0.85, -wheel)
+        factor = math.pow(0.85, wheel)
         origin, direction = self.ray(ndc_x, ndc_y)
         look, up, right = self.frame()
         _ = up, right
@@ -696,6 +873,15 @@ class Camera:
             (z[0], z[1], z[2], -_dot(z, e)),
             (0.0, 0.0, 0.0, 1.0),
         )
+
+    def project(self, point):
+        """Project a world point to full-window NDC, matching the render matrices."""
+        world = (*point, 1.0)
+        view = tuple(sum(a*b for a,b in zip(row, world)) for row in self.view_matrix())
+        clip = tuple(sum(a*b for a,b in zip(row, view)) for row in self.proj_matrix())
+        if clip[3] <= 1e-12:
+            return None
+        return clip[0]/clip[3], clip[1]/clip[3]
 
     def proj_matrix(self):
         asp = self.aspect
@@ -1125,7 +1311,7 @@ def _import_gl(ui=True):
     except ImportError:
         raise ImportError(
             "The OpenGL viewer needs pyglet and numpy. Install with:\n"
-            "  pip install pyglet numpy"
+            '  pip install "pyglet>=3.0.dev11,<4" numpy'
         )
     return pyglet, np, UI
 

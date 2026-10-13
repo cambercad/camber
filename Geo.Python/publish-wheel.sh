@@ -12,7 +12,7 @@ set -euo pipefail
 
 RUNTIME="linux-x64"
 CONFIGURATION="Release"
-WHEEL_VERSION="0.1.7"
+WHEEL_VERSION="0.1.8"
 BOOTSTRAP=0
 
 while [[ $# -gt 0 ]]; do
@@ -59,6 +59,7 @@ if [[ "$ROOT" == /mnt/* ]] && [[ "${CAMBER_LINUX_RELAUNCHED:-0}" != "1" ]]; then
     --exclude 'Geo.Python/python_project_root/' \
     --exclude 'Geo.Python/_wheel_stage/' \
     --exclude 'Geo.Python/_wheel_venv/' \
+    --exclude 'Geo.Python/python/tests/tmp*/' \
     --exclude '.pytest_cache/' \
     --exclude '**/.pytest_cache/' \
     --exclude 'Geo.Python/**/__pycache__/' \

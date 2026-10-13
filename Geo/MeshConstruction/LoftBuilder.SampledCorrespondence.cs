@@ -303,10 +303,10 @@ public static partial class LoftBuilder
     }
 
     private static Func<INurbsSurface> BuildPreparedCurveLoftSupport(
-        IReadOnlyList<LoftPreparedProfile> profiles, LoftStyle style, out double[] breaks)
+        IReadOnlyList<LoftPreparedProfile> profiles, LoftOptions options, out double[] breaks)
     {
         var sections = SurfaceLoft.CompatibleSections(profiles.Select(p => p.MatchedCurve).ToArray());
         breaks = sections[0].Knots.Distinct().OrderBy(k => k).ToArray();
-        return () => NurbsSurfaceFactory.LoftFromProfileCurves(sections, style);
+        return CreateLoftSupportFactory(sections, options);
     }
 }

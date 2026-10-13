@@ -413,7 +413,7 @@ namespace GeoSolver
         /// <summary>
         /// Evaluates a point on the arc at the given uniform parameter.
         /// uniform=0 is the start point, uniform=1 is the end point.
-        /// Uses direction vector interpolation for robust constraint solving.
+        /// Interpolates the directed circular angle between the endpoint directions.
         /// </summary>
         public CVec2D Evaluate(double uniform)
         {
@@ -433,20 +433,19 @@ namespace GeoSolver
             }
             else
             {
-                // Intermediate point: compute angle by linear interpolation
-                // We need to compute the angle from the direction vectors
-                // This is less common, so we use a simpler approach
-            var t = Expr.Constant(uniform);
-                
-                // Linear interpolation of direction vectors (then normalize)
-                // This isn't perfect for arcs but works for intermediate sampling
-                var dirX = CStartDir.Ex + t * (CEndDir.Ex - CStartDir.Ex);
-                var dirY = CStartDir.Ey + t * (CEndDir.Ey - CStartDir.Ey);
-                var len = Expr.Sqrt(dirX * dirX + dirY * dirY);
-                
-                var x = CCenter.Ex + CRadius * dirX / len;
-                var y = CCenter.Ey + CRadius * dirY / len;
-            return new CVec2D(x, y);
+                // Interpolate the directed angle, not the chord. Opposite endpoint
+                // directions cancel at a semicircle's midpoint.
+                Expr startAngle = Expr.Atan2(CStartDir.Ey, CStartDir.Ex);
+                Expr cross = CStartDir.Ex * CEndDir.Ey - CStartDir.Ey * CEndDir.Ex;
+                Expr dot = CStartDir.Ex * CEndDir.Ex + CStartDir.Ey * CEndDir.Ey;
+                Expr sweep = Expr.Atan2(cross, dot);
+                Expr sign = Expr.Sign(sweep);
+                sweep = _isCounterClockwise
+                    ? sweep + Math.PI * (Expr.Abs(sign) - sign)
+                    : sweep - Math.PI * (Expr.Abs(sign) + sign);
+                Expr angle = startAngle + uniform * sweep;
+                return new CVec2D(CCenter.Ex + CRadius * Expr.Cos(angle),
+                                 CCenter.Ey + CRadius * Expr.Sin(angle));
             }
         }
 

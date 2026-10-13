@@ -10,6 +10,7 @@ from . import naming as _naming
 from . import pick as _pick
 from . import sketch_constraints_viz as _cons_viz
 from . import sketch_icons as _icons
+from . import sketch_curves as _curves
 
 _TOOLS = ("line", "polyline", "circle", "arc", "rectangle")
 _PLANE_NAMES = {"xy": "xy", "yz": "yz", "zx": "zx", "xz": "zx"}
@@ -24,7 +25,7 @@ _DIMENSION_ORANGE = _cons_viz.DIMENSION_COLOR
 _ARROW_PX_LEN = 8.0
 _ARROW_PX_WIDTH = 5.0
 _LABEL_SCALE = _cons_viz.LABEL_SCALE
-_GEOM_KINDS = ("line", "circle", "arc", "rectangle")
+_GEOM_KINDS = ("line", "circle", "arc", "rectangle", "curve_call")
 _PICK_ANY = _pick.MODE_ANY
 _PICK_POINTS = _pick.MODE_POINTS
 _PICK_LINES = _pick.MODE_LINES
@@ -87,6 +88,20 @@ _DIMENSION_SLOTS = {
         {"kind": "line", "label": "second line", "mode": _PICK_LINES},
     ),
 }
+_CONSTRAINT_SLOTS.update({
+    "point_on_line": _CONSTRAINT_SLOTS["midpoint"],
+    "point_on_circle": (_CONSTRAINT_SLOTS["midpoint"][0],
+                        {"kind": "circle", "label": "circle", "mode": _pick.MODE_FULL_CIRCLES}),
+    "tangent_circles": _CONSTRAINT_SLOTS["concentric"],
+})
+_DIMENSION_SLOTS.update({
+    "horizontal_distance": _DIMENSION_SLOTS["distance"],
+    "vertical_distance": _DIMENSION_SLOTS["distance"],
+    "distance_to_line": _CONSTRAINT_SLOTS["midpoint"],
+    "coincident_on_curve": (_CONSTRAINT_SLOTS["midpoint"][0],
+                            {"kind": "curve", "label": "line, circle or arc", "mode": _PICK_LINE_OR_CIRCLE}),
+})
+_ADDITIONAL_RELATIONS = {label: kind for kind, label in _icons.RELATION_LABELS.items()}
 
 
 def _sketch_registered_name(sketch):
@@ -194,7 +209,8 @@ def show_sketch(sketch, title="Camber", plane="xy"):
 
 def begin_sketch_session(
         ps, ui, part, plane="xy", name="", frame=None, emit_frame=False,
-        register_context=True, look_at=True, on_selection=None, existing_sketch=None):
+        register_context=True, look_at=True, on_selection=None, existing_sketch=None,
+        initial_actions=None, panel_title=None):
     """Attach sketch overlays to the current viewer. Does not show() or unshow()."""
     from .view import (
         _as_scene,
@@ -239,6 +255,9 @@ def begin_sketch_session(
             sketch_frame = None
         if sketch_frame is not None:
             frame = sketch_frame
+    if initial_actions is not None:
+        from copy import deepcopy
+        seed = deepcopy(initial_actions)
 
     bounds = _plane_bounds(scene, plane, frame, default=20.0)
     if seed:
@@ -264,7 +283,7 @@ def begin_sketch_session(
     _register_plane(ps, frame, bounds, plane_lift, viz)
     viz["origin"] = [_uv_to_world((0.0, 0.0), frame, point_lift)]
     if look_at:
-        _look_at_plane(ps, frame, extent)
+        _look_at_plane(ps, frame, extent, bounds)
 
     state = {
         "tool": "line",
@@ -305,18 +324,22 @@ def begin_sketch_session(
     }
 
     if existing_sketch is not None:
+        state["tool"] = "select"
         state["sketch"] = existing_sketch
         state["sketch_name"] = name or getattr(existing_sketch, "name", None) or ""
         state["actions"] = seed
-        state["solved"] = list(seed)
-        state["status"] = "Viewing sketch. Finish or close the window."
+        state["solved"] = list(existing_sketch._solved_actions() or [])
+        if initial_actions:
+            state["batches"] = [{"actions": list(seed), "curves": existing_sketch.curve_count,
+                                 "constraints": existing_sketch.constraint_count}]
+        state["status"] = "Select an item in the tree or viewport. Finish keeps changes; Cancel discards them."
     _ensure_live_sketch(state)
     _rebuild_pick_catalog(state, viz)
     _refresh_overlays(ps, state, frame, viz)
     _emit_selection(state)
 
     def tick():
-        _draw_ui(ui, state, plane, lambda: _look_at_plane(ps, frame, extent))
+        _draw_ui(ui, state, plane, lambda: _look_at_plane(ps, frame, extent, bounds), panel_title=panel_title)
         if state["selection_dirty"]:
             _rebuild_pick_catalog(state, viz)
             _refresh_overlays(ps, state, frame, viz)
@@ -330,6 +353,9 @@ def begin_sketch_session(
         try:
             _tick_sketch_input(ps, ui, state, frame, viz)
         finally:
+            wpp = _world_per_pixel(ps, ui)
+            if wpp != viz.get("glyph_wpp"):
+                _refresh_constraints(ps, state, frame, viz)
             _tick_sketch_draw(
                 ps, ui, viz, _cad_frame, _is_ortho, _world_per_pixel,
                 _curve_pick_verts, _diamond_batch_verts, _rect_batch_verts, _quad_batch_faces,
@@ -345,25 +371,33 @@ def begin_sketch_session(
         "emit_frame": emit_frame,
         "sketch_name": state["sketch_name"],
         "extent": extent,
+        "bounds": bounds,
+        "fit": lambda: _look_at_plane(ps, frame, extent, bounds),
     }
 
 
-def finalize_sketch_session(ps, session, part_var="part", sketch_var="sk"):
+def sketch_session_code(session, part_var="part", sketch_var="sk"):
+    """Generate source without closing the live editor or removing its graphics."""
+    state = session["state"]
+    return emit_sketch_python(
+        state["actions"],
+        part_var=part_var,
+        sketch_var=sketch_var,
+        plane=session.get("plane"),
+        name=state.get("sketch_name") or session.get("sketch_name") or "",
+        frame=session.get("frame") if session.get("emit_frame") else None,
+    )
+
+
+def finalize_sketch_session(ps, session, part_var="part", sketch_var="sk", *, copy=True):
     state = session["state"]
     part = session["part"]
     teardown_sketch_graphics(ps, session.get("viz"))
     sketch = state.get("sketch")
     code = None
     if state.get("done") == "finish":
-        code = emit_sketch_python(
-            state["actions"],
-            part_var=part_var,
-            sketch_var=sketch_var,
-            plane=session.get("plane"),
-            name=state.get("sketch_name") or session.get("sketch_name") or "",
-            frame=session.get("frame") if session.get("emit_frame") else None,
-        )
-        session["clipboard_copied"] = copy_to_clipboard(code)
+        code = sketch_session_code(session, part_var, sketch_var)
+        session["clipboard_copied"] = copy_to_clipboard(code) if copy else False
     if not state.get("keep_sketch"):
         _unregister_session_sketch(part, sketch)
         state["sketch"] = None
@@ -456,11 +490,38 @@ def _append_and_solve(state, new_actions):
             batch["constraints"] = after[1] - before[1]
         state.setdefault("batches", []).append(batch)
         _adopt_solved(state, commit=True)
+        state.pop("solve_error", None)
         return True
     except Exception as ex:
         del state["actions"][start:]
-        state["status"] = "Solve failed: " + str(ex)
+        try:
+            _restore_live_geometry(state)
+        except Exception as recovery:
+            state["live_invalid"] = True
+            state["edit_error"] = state["status"] = "Could not restore the sketch; cancel editing: " + getattr(recovery, "message", str(recovery))
+            return False
+        state["solve_error"] = getattr(ex, "message", str(ex))
+        state["status"] = "Could not solve this change; previous sketch retained."
         return False
+
+
+def _restore_live_geometry(state):
+    """Recover the last valid coordinates after a solver has moved them on failure."""
+    live = state["sketch"]
+    counts = _sketch_counts(live)
+    if counts is None or not _revert_live_batch(live, {"curves": counts[0], "constraints": counts[1]}, solve=False):
+        raise RuntimeError("Could not clear the failed sketch")
+    cursor = 0
+    for batch in state["batches"]:
+        size = len(batch["actions"])
+        before = _sketch_counts(live)
+        apply_actions(live, state["actions"], start=cursor, end=cursor+size, solve=False)
+        after = _sketch_counts(live)
+        batch.update(curves=after[0]-before[0], constraints=after[1]-before[1])
+        cursor += size
+    live.solve()
+    _adopt_solved(state, commit=False)
+    state["selection_dirty"] = True
 
 
 def teardown_sketch_graphics(ps, viz):
@@ -483,8 +544,10 @@ def _tick_sketch_input(ps, ui, state, frame, viz):
     if state["done"] is not None:
         return
     io = ui.GetIO()
+    state["ignore_snap"] = bool(getattr(io, "KeyAlt", False))
     want_ui = _want_mouse(ui)
     tick_cad_camera(ps, ui, io, want_ui)
+    state["snap_tolerance"] = _pick_tolerance(ps, ui, state)
     ray = None
     hover = None
     if not want_ui:
@@ -493,7 +556,7 @@ def _tick_sketch_input(ps, ui, state, frame, viz):
         state["tool"] == "select"
         or bool(state.get("pending_constraint"))
         or bool(state.get("pending_dimension"))
-    )
+    ) and not (state.get("profile_edit") or {}).get("pick")
     slot_exclude = None
     if state.get("pending_constraint") or state.get("pending_dimension"):
         slot_exclude = state.get("slots") or []
@@ -502,7 +565,7 @@ def _tick_sketch_input(ps, ui, state, frame, viz):
             state["hover_hit"] = _hit_at(
                 state, ray, _pick_tolerance(ps, ui, state), _pick_mode(state),
                 exclude=slot_exclude)
-        elif state["tool"] in _TOOLS:
+        elif state["tool"] in _TOOLS and not state["ignore_snap"]:
             state["hover_hit"] = _hit_at(
                 state, ray, _pick_tolerance(ps, ui, state), _PICK_POINTS)
         else:
@@ -549,6 +612,7 @@ def _tick_sketch_input(ps, ui, state, frame, viz):
         and not state.get("pending_constraint")
         and not state.get("pending_dimension")
         and state.get("dimension") is None
+        and not (state.get("profile_edit") or {}).get("pick")
     )
     if can_drag and _mouse_clicked(ui, 0) and ray is not None and not _mouse_double_clicked(ui, 0):
         if _hit_dimension_action(ps, ui, viz, ray, hover) < 0:
@@ -603,96 +667,346 @@ def _tick_sketch_input(ps, ui, state, frame, viz):
     _refresh_preview(ps, state, frame, viz)
 
 
-def _draw_ui(ui, state, plane, look_at_plane):
-    if not _icons.begin_palette(ui, "Sketch"):
-        _icons.end_palette(ui)
+def select_tree_action(state, index, *, edit=False, extend=False):
+    """Use the same named selection and editors as viewport interaction."""
+    actions = state.get("actions") or []
+    if not 0 <= index < len(actions):
         return
-    try:
-        ui.TextUnformatted("Sketch")
-    except Exception:
-        pass
-    name = (state.get("sketch_name") or "").strip()
-    head = (plane or "").strip()
-    if name and name != head:
-        head = (head + "  —  " + name) if head else name
-    status = (state.get("status") or "").strip()
-    line = (head + "  —  " + status) if head and status else (head or status)
-    _icons.wrapped_text(ui, line)
-    ui.Separator()
-    try:
-        ui.TextUnformatted("Curves")
-    except Exception:
-        pass
+    action = actions[index]
+    geometry = _geometry_actions(state)
+    curve_index = sum(_curves.curve_size(a) for a in actions[:index] if a["kind"] in _GEOM_KINDS)
+    targets = []
+    if action["kind"] in _GEOM_KINDS:
+        targets = [entry["name"] for entry in state.get("pick_catalog", [])
+                   if entry.get("ref") == ("curve", curve_index)]
+        if targets and (state.get("pending_constraint") or state.get("pending_dimension")):
+            _accept_slot(state, targets[0])
+            return
+    else:
+        for curve in action.get("curves", []):
+            name = curve if isinstance(curve, str) else _curve_display_name(geometry[curve], curve)
+            targets.append(_naming.qualify(state.get("sketch_name"), name))
+        from .sketch_emit import _public_point
+        for point in action.get("points", []):
+            name = _public_point(actions, point, sketch_name=state.get("sketch_name", ""))
+            if isinstance(name, str):
+                targets.append(_naming.qualify(state.get("sketch_name"), name))
+    state["tool"] = "select"
+    state["selected"] = list(dict.fromkeys((state.get("selected", []) if extend else []) + targets))
+    state["tree_action"] = index
+    state["selection_dirty"] = True
+    _emit_selection(state)
+    if edit:
+        state["edit_error"] = ""
+        state["dimension"] = None
+        state["pending_constraint"] = state["pending_dimension"] = None
+        state["slots"] = []
+        state["curve_edit"] = state["constraint_edit"] = None
+        if _cons_viz.is_dimension_action(action):
+            _begin_dimension_edit(state, index)
+        elif action["kind"] == "curve_call":
+            state["profile_edit"] = _curves.new_editor(action)
+            state["profile_edit"]["action_index"] = index
+        elif action["kind"] in _GEOM_KINDS:
+            state["curve_edit"] = {"index": curve_index, "handle": "", "fields": []}
+        else:
+            from copy import deepcopy
+            state["constraint_edit"] = {"index": index, "action": deepcopy(action)}
 
-    for i, (tool, label, drawer) in enumerate(_icons.CURVE_TOOLS):
-        if i % _icons.COLS != 0:
-            ui.SameLine()
-        if _icons.icon_button(ui, tool, label, drawer, state["tool"] == tool):
-            state["tool"] = tool
-            state["pending"] = []
-            state["pending_refs"] = []
-            state["pending_constraint"] = None
-            state["pending_dimension"] = None
-            state["dimension"] = None
-            state["slots"] = []
-            _clear_selection(state)
-            if tool == "select":
-                state["status"] = "Select: click to select; drag ends, mids, or radius handles"
+
+def draw_sketch_tree(ui, state):
+    """Contents of the model navigator while a sketch is being edited."""
+    ui.Heading(state.get("sketch_name") or "Sketch", 16)
+    ui.TextMuted("Sketch")
+    _, state["tree_filter"] = ui.InputText("Filter sketch", state.get("tree_filter", ""),
+                                          width=max(1, ui.GetContentRegionAvail()[0]), hint="Filter sketch")
+    ui.Separator()
+    query = state["tree_filter"].casefold()
+    if not query or query in "origin":
+        origin = _naming.qualify(state.get("sketch_name") or "", _naming.ORIGIN)
+        clicked, _ = ui.TreeNode("Origin##sketch_origin", leaf=True, selected=origin in state["selected"])
+        if clicked:
+            spec, _ = _active_slot_spec(state)
+            if spec is not None:
+                if spec["kind"] == "point":
+                    _accept_slot(state, origin)
+                else:
+                    state["status"] = "Select " + spec["label"]
             else:
-                state["status"] = "tool: " + tool
-            state["escape_armed"] = False
+                _select_at(state, origin, bool(ui.GetIO().KeyCtrl))
+        if ui.IsItemHovered():
+            ui.SetTooltip("Fixed sketch origin (0, 0). Use it to locate geometry with constraints or dimensions.")
+    selected_curves, _ = _selection_sets(state)
+    curve_index = 0
+    groups = {"Curves": [], "Constraints": [], "Dimensions": []}
+    for index, action in enumerate(state.get("actions") or []):
+        if action["kind"] in _GEOM_KINDS:
+            title = (next(label for label, (method, _) in _curves.CURVES.items() if method == action["method"])
+                     if action["kind"] == "curve_call" else _curve_display_name(action, curve_index))
+            selected = curve_index in selected_curves
+            curve_index += _curves.curve_size(action)
+            if action.get("construction"):
+                title += " (construction)"
+            group = "Curves"
+        else:
+            title = _icons.relation_label(action["kind"]) + " " + str(index+1)
+            selected = state.get("tree_action") == index
+            group = "Dimensions" if _cons_viz.is_dimension_action(action) else "Constraints"
+            if group == "Dimensions":
+                title += " — " + format(action["value"], ".6g") + ("°" if action["kind"] == "angle" else "")
+        if not query or query in title.casefold():
+            groups[group].append((index, title, selected))
+    for group, entries in groups.items():
+        _, expanded = ui.TreeNode(group + " (" + str(len(entries)) + ")##sketch_group", default_open=True,
+                                  force_open=bool(query))
+        if expanded:
+            for index, title, selected in entries:
+                clicked, _ = ui.TreeNode(title+"##sketch_action_"+str(index), depth=1, leaf=True, selected=selected)
+                edit = ui.IsItemHovered() and ui.IsMouseDoubleClicked(0)
+                if clicked or edit:
+                    select_tree_action(state, index, edit=edit, extend=bool(ui.GetIO().KeyCtrl))
+                if ui.IsItemHovered():
+                    ui.SetTooltip("Select to highlight. Double-click to edit.")
+    index = state.get("tree_action")
+    if index is not None and 0 <= index < len(state["actions"]) and state["actions"][index]["kind"] not in _GEOM_KINDS:
+        ui.Separator()
+        if ui.Button("Delete constraint##sketch_delete"):
+            _delete_constraint(state, index)
 
-    ui.Separator()
-    try:
-        ui.TextUnformatted("Constraints")
-    except Exception:
-        pass
-    for i, (tool, label, drawer) in enumerate(_icons.CONSTRAINT_TOOLS):
-        if i % _icons.COLS != 0:
-            ui.SameLine()
-        if _icons.icon_button(
-                ui, "con_" + tool, label, drawer,
-                state.get("pending_constraint") == tool):
-            _request_constraint(state, tool)
-    if state.get("pending_constraint") or state.get("pending_dimension"):
-        _icons.wrapped_text(ui, state.get("status") or "")
 
+def _draw_curve_editor(ui, state):
+    profile = state.get("profile_edit")
+    if profile is not None:
+        action = _curves.draw_editor(ui, profile)
+        if action is not None:
+            index = profile.get("action_index")
+            ok = _append_and_solve(state, [action]) if index is None else _replace_action(state, index, action)
+            if ok:
+                state["profile_edit"] = None
+                state["curve_edit"] = None
+                state["edit_error"] = ""
+                state["status"] = "Profile added" if index is None else "Profile updated"
+        if ui.Button("Cancel profile"):
+            state["profile_edit"] = None
+            state["curve_edit"] = None
+            state["edit_error"] = ""
+        return
+    request = state.get("curve_edit")
+    if request is None:
+        return
+    geometry = _geometry_actions(state)
+    index = request["index"]
+    if not 0 <= index < len(geometry):
+        state["curve_edit"] = None
+        return
+    action = geometry[index]
+    choices = {"line": {"Start": (0, "p0"), "End": (1, "p1")},
+               "circle": {"Center": (2, "center"), "Radius": (3, "radius")},
+               "arc": {"Start": (0, "start"), "Through point": (3, "mid"), "End": (1, "end")}}[action["kind"]]
     ui.Separator()
-    try:
-        ui.TextUnformatted("Dimensions")
-    except Exception:
-        pass
-    for i, (tool, label, drawer) in enumerate(_icons.DIMENSION_TOOLS):
-        if i % _icons.COLS != 0:
-            ui.SameLine()
-        if _icons.icon_button(
-                ui, "dim_" + tool, label, drawer,
-                state.get("pending_dimension") == tool):
-            _request_dimension(state, tool)
+    ui.Heading(_curve_display_name(action, index))
+    ui.TextMuted("Coordinates are in the sketch plane.", wrap=True)
+    _, handle = ui.ComboBox("Handle##curve_editor", request["handle"] or next(iter(choices)), tuple(choices),
+                            width=max(1, ui.GetContentRegionAvail()[0]))
+    role, key = choices[handle]
+    if handle != request["handle"]:
+        request["handle"] = handle
+        request["fields"] = [str(v) for v in (action[key] if key != "radius" else (action[key],))]
+    values, error, errors = [], "", {}
+    for axis, text in enumerate(request["fields"]):
+        ui.TextUnformatted("Radius" if key == "radius" else ("X", "Y")[axis])
+        _, text = ui.InputText("Coordinate##curve_editor_"+str(axis), text,
+                               width=max(1, ui.GetContentRegionAvail()[0]),
+                               error=request.get("errors", {}).get(axis, ""))
+        request["fields"][axis] = text
+        try:
+            value = float(text)
+            if not math.isfinite(value) or key == "radius" and value <= 0:
+                raise ValueError()
+            values.append(value)
+        except ValueError:
+            error = "Enter a positive radius" if key == "radius" else "Enter finite coordinates"
+            errors[axis] = error
+    request["errors"] = errors
+    _, construction = ui.Checkbox("Construction##curve_editor", request.get("construction", bool(action.get("construction"))))
+    request["construction"] = construction
+    if error:
+        ui.ValidationMessage(error)
+    if state.get("edit_error"):
+        ui.ValidationMessage(state["edit_error"])
+    if ui.Button("Apply##curve_editor", enabled=not error, primary=True):
+        uv = (action["center"][0]+values[0], action["center"][1]) if key == "radius" else tuple(values)
+        _, ok = _apply_handle_drag(state, index, role, uv)
+        if ok:
+            _set_curves_construction(state, [index], construction)
+            state["curve_edit"] = None
+            state["edit_error"] = ""
+        else:
+            state["edit_error"] = "Position conflicts with the sketch constraints. Previous geometry retained."
+    ui.SameLine()
+    if ui.Button("Cancel##curve_editor"):
+        state["curve_edit"] = None
+        state["edit_error"] = ""
+
+
+def _draw_constraint_editor(ui, state):
+    request = state.get("constraint_edit")
+    if request is None:
+        return
+    action = request["action"]
+    ui.Separator()
+    ui.Heading(action["kind"].capitalize())
+    from .sketch_emit import _public_point
+    preceding_curves = sum(_curves.curve_size(a) for a in state["actions"][:request["index"]] if a["kind"] in _GEOM_KINDS)
+    for field, point in (("curves", False), ("points", True)):
+        for index, value in enumerate(action.get(field, [])):
+            options = [entry["name"] for entry in state.get("pick_catalog", [])
+                       if entry["kind"] == (_pick.KIND_POINT if point else _pick.KIND_CURVE)
+                       and entry.get("source") == _pick.SOURCE_SKETCH
+                       and (entry.get("ref", (None,))[0] not in ("curve", "point")
+                            or entry["ref"][1] < preceding_curves)]
+            if point:
+                value = _public_point(state["actions"], value, sketch_name=state.get("sketch_name", ""))
+            elif isinstance(value, int):
+                value = _curve_display_name(_geometry_actions(state)[value], value)
+            shown = _naming.qualify(state.get("sketch_name"), value) if isinstance(value, str) else str(value)
+            ui.TextUnformatted(("Point " if point else "Curve ")+str(index+1))
+            changed, selected = ui.ComboBox("Reference##constraint_editor_"+field+str(index), shown,
+                                            options+[shown] if shown not in options else options,
+                                            width=max(1, ui.GetContentRegionAvail()[0]))
+            if changed:
+                action[field][index] = _local_entity_name(selected, state.get("sketch_name", ""))
+    if state.get("edit_error"):
+        ui.ValidationMessage(state["edit_error"])
+    if ui.Button("Apply##constraint_editor", primary=True):
+        if _replace_action(state, request["index"], action):
+            state["constraint_edit"] = None
+    ui.SameLine()
+    if ui.Button("Cancel##constraint_editor"):
+        state["constraint_edit"] = None
+        state["edit_error"] = ""
+
+
+def _draw_ui(ui, state, plane, look_at_plane, *, panel_title=None):
+    begin = ui.Begin if panel_title else _icons.begin_palette
+    end = ui.End if panel_title else lambda: _icons.end_palette(ui)
+    docked = panel_title is not None
+    if docked:
+        visible = begin(panel_title, flags=ui.ImGuiWindowFlags_NoScrollWithMouse | ui.ImGuiWindowFlags_NoScrollbar)
+    else:
+        visible = begin(ui, "Sketch")
+    if not visible:
+        end()
+        return
+    if docked:
+        spacing_y = ui._current.spacing[1]
+        footer = spacing_y * 2 + 34
+        ui.BeginChild("Sketch properties", height=max(1, ui.GetContentRegionAvail()[1] - footer))
+    else:
+        try:
+            ui.TextUnformatted("Sketch")
+        except Exception:
+            pass
+        name = (state.get("sketch_name") or "").strip()
+        head = (plane or "").strip()
+        if name and name != head:
+            head = (head + "  —  " + name) if head else name
+        status = (state.get("status") or "").strip()
+        line = (head + "  —  " + status) if head and status else (head or status)
+        _icons.wrapped_text(ui, line)
+        if state.get("solve_error") and ui.IsItemHovered():
+            ui.SetTooltip(state["solve_error"])
+    _draw_curve_editor(ui, state)
+    _draw_constraint_editor(ui, state)
+    if not docked and state.get("profile_edit") is None and state.get("curve_edit") is None and state.get("constraint_edit") is None:
+        ui.Separator()
+        _, relation = ui.ComboBox("Additional relation", state.get("additional_relation", "Point on line"),
+                                  tuple(_ADDITIONAL_RELATIONS), width=max(1, ui.GetContentRegionAvail()[0]))
+        state["additional_relation"] = relation
+        if ui.Button("Place relation"):
+            kind = _ADDITIONAL_RELATIONS[relation]
+            (_request_dimension if kind in _DIMENSION_SLOTS else _request_constraint)(state, kind)
+    if panel_title is None:
+        ui.Separator()
+        try:
+            ui.TextUnformatted("Curves")
+        except Exception:
+            pass
+
+        for i, (tool, label, drawer) in enumerate(_icons.CURVE_TOOLS):
+            if i % _icons.COLS != 0:
+                ui.SameLine()
+            if _icons.icon_button(ui, tool, label, drawer, state["tool"] == tool):
+                state["tool"] = tool
+                state["pending"] = []
+                state["pending_refs"] = []
+                state["pending_constraint"] = None
+                state["pending_dimension"] = None
+                state["dimension"] = None
+                state["slots"] = []
+                _clear_selection(state)
+                if tool == "select":
+                    state["status"] = "Select: click to select; drag ends, mids, or radius handles"
+                else:
+                    state["status"] = "tool: " + tool
+                state["escape_armed"] = False
+
+        ui.Separator()
+        try:
+            ui.TextUnformatted("Constraints")
+        except Exception:
+            pass
+        for i, (tool, label, drawer) in enumerate(_icons.CONSTRAINT_TOOLS):
+            if i % _icons.COLS != 0:
+                ui.SameLine()
+            if _icons.icon_button(
+                    ui, "con_" + tool, label, drawer,
+                    state.get("pending_constraint") == tool):
+                _request_constraint(state, tool)
+        if state.get("pending_constraint") or state.get("pending_dimension"):
+            _icons.wrapped_text(ui, state.get("status") or "")
+
+        ui.Separator()
+        try:
+            ui.TextUnformatted("Dimensions")
+        except Exception:
+            pass
+        for i, (tool, label, drawer) in enumerate(_icons.DIMENSION_TOOLS):
+            if i % _icons.COLS != 0:
+                ui.SameLine()
+            if _icons.icon_button(
+                    ui, "dim_" + tool, label, drawer,
+                    state.get("pending_dimension") == tool):
+                _request_dimension(state, tool)
 
     if state["dimension"] is not None:
         request = state["dimension"]
         focus = bool(state.pop("dimension_focus", False))
-        changed, value, apply_clicked, cancel_clicked = _icons.dimension_editor(
+        changed, value, apply_clicked, cancel_clicked, valid = _icons.dimension_editor(
             ui, request.get("kind"), request["value"], focus=focus)
+        request["valid"] = valid
         if changed:
             request["value"] = float(value)
         if apply_clicked:
             _commit_dimension(state)
         if cancel_clicked:
             state["dimension"] = None
+            state["edit_error"] = ""
+        if state.get("edit_error"):
+            ui.ValidationMessage(state["edit_error"])
 
-    ui.Separator()
-    try:
-        ui.TextUnformatted("View")
-    except Exception:
-        pass
-    if _icons.icon_button(ui, "fit", "Fit", _icons.draw_normal, False):
-        if look_at_plane is not None:
-            look_at_plane()
-    ui.SameLine()
-    if _icons.icon_button(ui, "undo", "Undo", _icons.draw_undo, False):
-        _undo_pending_or_action(state)
+    if panel_title is None:
+        ui.Separator()
+        try:
+            ui.TextUnformatted("View")
+        except Exception:
+            pass
+        if _icons.icon_button(ui, "fit", "Fit", _icons.draw_normal, False):
+            if look_at_plane is not None:
+                look_at_plane()
+        ui.SameLine()
+        if _icons.icon_button(ui, "undo", "Undo", _icons.draw_undo, False):
+            _undo_pending_or_action(state)
 
     _draw_construction_toggle(ui, state)
 
@@ -704,15 +1018,28 @@ def _draw_ui(ui, state, plane, look_at_plane):
     except Exception:
         if ui.Button("Snap grid: " + ("on" if state["snap_grid"] else "off")):
             state["snap_grid"] = not state["snap_grid"]
+    ui.TextMuted("Hold Alt to bypass snapping")
 
-    ui.Separator()
-    if _icons.action_button(ui, "Finish", button_id="sketch_finish", primary=True):
-        state["done"] = "finish"
-    ui.SameLine()
-    if _icons.action_button(ui, "Cancel", button_id="sketch_cancel"):
-        state["done"] = "cancel"
+    editing = any(state.get(k) is not None for k in ("curve_edit", "profile_edit", "constraint_edit", "dimension"))
+    can_finish = not editing and not state.get("edit_error") and not state.get("live_invalid")
+    if docked:
+        ui.EndChild()
+        ui.Separator()
+        width = max(1, (ui.GetContentRegionAvail()[0] - ui._current.spacing[0]) / 2)
+        if ui.Button("OK##sketch_ok", width=width, height=32, primary=True, enabled=can_finish):
+            state["done"] = "finish"
+        ui.SameLine()
+        if ui.Button("Cancel##sketch_cancel", width=width, height=32):
+            state["done"] = "cancel"
+    else:
+        ui.Separator()
+        if _icons.action_button(ui, "Finish", button_id="sketch_finish", primary=True, enabled=can_finish):
+            state["done"] = "finish"
+        ui.SameLine()
+        if _icons.action_button(ui, "Cancel", button_id="sketch_cancel"):
+            state["done"] = "cancel"
 
-    _icons.end_palette(ui)
+    end()
 
 
 def _handle_keys(ui, state):
@@ -726,6 +1053,9 @@ def _handle_keys(ui, state):
         return
 
     def down(name, *alts):
+        if hasattr(ui, "IsKeyPressed"):
+            symbol = ord(name.lower()) if len(name) == 1 else getattr(ui, "ImGuiKey_"+name)
+            return ui.IsKeyPressed(symbol, modifiers=0)
         pressed = False
         for alt in alts:
             if _key_down(ui, io, alt):
@@ -763,6 +1093,8 @@ def _handle_keys(ui, state):
     elif down("Enter", "Enter", "\r"):
         if state.get("dimension") is not None:
             _commit_dimension(state)
+        elif state.get("curve_edit") or state.get("profile_edit") or state.get("constraint_edit") or state.get("edit_error") or state.get("live_invalid"):
+            state["status"] = "Apply or cancel the edit before finishing"
         elif state["tool"] == "polyline" and len(state["pending"]) > 0:
             state["pending"] = []
             state["pending_refs"] = []
@@ -770,7 +1102,12 @@ def _handle_keys(ui, state):
         else:
             state["done"] = "finish"
     elif down("Escape", "Escape", "\x1b"):
-        if state["pending"]:
+        if state.get("curve_edit") or state.get("profile_edit") or state.get("constraint_edit"):
+            state["curve_edit"] = state["profile_edit"] = state["constraint_edit"] = None
+            state["edit_error"] = ""
+            state["escape_armed"] = False
+            state["status"] = "Cancelled edit"
+        elif state["pending"]:
             state["pending"] = []
             state["pending_refs"] = []
             state["escape_armed"] = False
@@ -919,33 +1256,15 @@ def _finish_handle_drag(state, ray, select_if_click, tolerance=None):
         _select_at(state, _hit_at(state, ray, tolerance, _pick_mode(state)), False)
 
 
-def _native_try_drag(sketch, curve_index, role, uv):
-    native = getattr(sketch, "_n", None) if sketch is not None else None
-    if native is None:
-        return None
-    for name in ("try_drag_sketch_point", "TryDragSketchPoint"):
-        fn = getattr(native, name, None)
-        if fn is None:
-            continue
-        try:
-            return int(fn(int(curve_index), int(role), float(uv[0]), float(uv[1]))) != 0
-        except Exception:
-            continue
-    return None
-
-
 def _apply_handle_drag(state, curve_index, role, uv):
     live = state.get("sketch")
-    native_ok = _native_try_drag(live, curve_index, role, uv)
-    if native_ok is True:
-        _adopt_solved(state, commit=True)
-        return True, True
-    if native_ok is False:
+    action = _curve_action(state, curve_index)
+    if action is None or not action.get("name"):
         return True, False
     try_drag = getattr(live, "_try_drag_point", None) if live is not None else None
     if try_drag is not None:
         try:
-            if try_drag(curve_index, role, uv):
+            if try_drag(action["name"], role, uv):
                 _adopt_solved(state, commit=True)
                 return True, True
             return True, False
@@ -1013,10 +1332,24 @@ def _commit_solved_to_actions(state):
                 if previous.get(key):
                     action[key] = previous[key]
         merged.append(action)
-    state["actions"] = merged + rest
+    if any(a["kind"] == "rectangle" for a in state["actions"]):
+        state["actions"] = merged + rest
+    else:
+        # Keep chronological batch boundaries intact when adopting solved coordinates.
+        updates = iter(merged)
+        adopted = []
+        for action in state["actions"]:
+            if action["kind"] == "curve_call":
+                action["display"] = [next(updates) for _ in range(_curves.curve_size(action))]
+                adopted.append(action)
+            else:
+                adopted.append(next(updates) if action["kind"] in _GEOM_KINDS else action)
+        state["actions"] = adopted
 
 
 def _set_curve_tool(state, tool):
+    state["curve_edit"] = state["constraint_edit"] = None
+    state["edit_error"] = ""
     state["tool"] = tool
     state["pending"] = []
     state["pending_refs"] = []
@@ -1027,9 +1360,13 @@ def _set_curve_tool(state, tool):
     _clear_selection(state)
     state["status"] = "tool: " + tool
     state["escape_armed"] = False
+    state["profile_edit"] = _curves.new_editor() if tool == "profile" else None
 
 
 def _on_point(state, uv, ref=None):
+    if state.get("profile_edit") is not None:
+        _curves.accept_point(state["profile_edit"], uv)
+        return []
     state["escape_armed"] = False
     pending = state["pending"]
     refs = state.setdefault("pending_refs", [])
@@ -1146,15 +1483,21 @@ def _handle_name_for(action, role, geoms):
 
 
 def _recorded_geometry(actions):
-    return [a for a in actions if a.get("kind") in ("line", "circle", "arc")]
+    out = []
+    for action in actions:
+        if action.get("kind") == "curve_call":
+            out.extend(action.get("display", []))
+        elif action.get("kind") in ("line", "circle", "arc"):
+            out.append(action)
+    return out
 
 
 def _recorded_curve_count(actions):
     count = 0
     for action in actions:
         kind = action.get("kind")
-        if kind in ("line", "circle", "arc"):
-            count += 1
+        if kind in ("line", "circle", "arc", "curve_call"):
+            count += _curves.curve_size(action)
         elif kind == "rectangle":
             count += 4
     return count
@@ -1288,6 +1631,7 @@ def _pick_mode(state):
 
 
 def _slot_status(kind, specs, filled, prefix):
+    prefix = _icons.relation_label(prefix)
     if not specs:
         return prefix
     if len(filled) >= len(specs):
@@ -1297,6 +1641,8 @@ def _slot_status(kind, specs, filled, prefix):
 
 
 def _begin_slots(state, kind, is_dimension):
+    state["curve_edit"] = state["constraint_edit"] = None
+    state["edit_error"] = ""
     state["tool"] = "select"
     state["pending"] = []
     state["pending_refs"] = []
@@ -1419,14 +1765,14 @@ def _finish_constraint_slots(state):
     action = _action_from_slots(state, kind, state["slots"])
     if action is None or not _append_and_solve(state, [action]):
         if action is None:
-            state["status"] = "Could not apply " + kind
+            state["status"] = "Could not apply " + _icons.relation_label(kind).lower()
         state["slots"] = []
         _clear_selection(state)
         return
     state["slots"] = []
     _clear_selection(state)
     state["pending_constraint"] = None
-    state["status"] = kind + " solved — click next or Esc"
+    state["status"] = _icons.relation_label(kind) + " solved — click next or Esc"
     state["selection_dirty"] = True
 
 
@@ -1434,14 +1780,14 @@ def _finish_dimension_slots(state):
     kind = state["pending_dimension"]
     request = _dimension_from_slots(state, kind, state["slots"])
     if request is None:
-        state["status"] = "Could not read " + kind
+        state["status"] = "Could not read " + _icons.relation_label(kind).lower()
         state["slots"] = []
         _clear_selection(state)
         return
     state["dimension"] = request
     state["pending_dimension"] = None
     state["slots"] = []
-    state["status"] = "Enter " + kind + " dimension"
+    state["status"] = "Enter " + _icons.relation_label(kind).lower()
 
 
 def _action_from_slots(state, kind, slots):
@@ -1457,6 +1803,13 @@ def _action_from_slots(state, kind, slots):
     elif kind in ("parallel", "perpendicular"):
         if len(curves) == 2 and all(_curve_kind(state, i) == "line" for i in curves):
             return {"kind": kind, "curves": curves}
+    elif kind == "tangent_circles":
+        if len(curves) == 2 and all(_curve_kind(state, i) in ("circle", "arc") for i in curves):
+            return {"kind": kind, "curves": curves}
+    elif kind in ("point_on_line", "point_on_circle"):
+        expected = ("line",) if kind == "point_on_line" else ("circle",)
+        if len(points) == 1 and len(curves) == 1 and _curve_kind(state, curves[0]) in expected:
+            return {"kind": kind, "points": points, "curves": curves}
     elif kind == "tangent":
         line = [i for i in curves if _curve_kind(state, i) == "line"]
         circular = [i for i in curves if _curve_kind(state, i) in ("circle", "arc")]
@@ -1506,6 +1859,16 @@ def _dimension_from_slots(state, kind, slots):
         value = action["radius"] if action["kind"] == "circle" else _arc_radius(action)
     elif kind == "distance" and len(points) == 2:
         value = _dist(_point_position(state, points[0]), _point_position(state, points[1]))
+    elif kind in ("horizontal_distance", "vertical_distance") and len(points) == 2:
+        axis = 0 if kind == "horizontal_distance" else 1
+        value = _point_position(state, points[1])[axis] - _point_position(state, points[0])[axis]
+    elif kind == "coincident_on_curve" and len(points) == len(curves) == 1:
+        value = .5
+    elif kind == "distance_to_line" and len(points) == len(curves) == 1:
+        point = _point_position(state, points[0])
+        line = _curve_action(state, curves[0])
+        dx, dy = line["p1"][0] - line["p0"][0], line["p1"][1] - line["p0"][1]
+        value = abs(dx*(point[1]-line["p0"][1]) - dy*(point[0]-line["p0"][0])) / math.hypot(dx, dy)
     elif kind == "angle" and len(curves) == 2 and all(_curve_kind(state, i) == "line" for i in curves):
         a = _curve_action(state, curves[0])
         b = _curve_action(state, curves[1])
@@ -1528,29 +1891,30 @@ def _constraint_hint(kind):
     spec, specs = None, _CONSTRAINT_SLOTS.get(kind)
     if specs:
         return _slot_status(kind, specs, [], kind)
-    return "Select entities for " + kind
+    return "Select entities for " + _icons.relation_label(kind).lower()
 
 
 def _dimension_hint(kind):
     specs = _DIMENSION_SLOTS.get(kind)
     if specs:
         return _slot_status(kind, specs, [], kind)
-    return "Select entities for " + kind
+    return "Select entities for " + _icons.relation_label(kind).lower()
 
 
 def _commit_dimension(state):
     request = state["dimension"]
-    if request is None or request["value"] <= 0.0:
-        state["status"] = "Dimension must be positive"
+    if request is None or not request.get("valid", True) or _icons.dimension_error(request["kind"], request["value"]):
+        state["status"] = "Invalid dimension value" if request is None else _icons.dimension_error(request["kind"], request["value"]) or "Invalid dimension value"
+        state["edit_error"] = state["status"]
         return
     edit_index = request.get("edit_index")
     if edit_index is not None:
         ok = _update_dimension(state, int(edit_index), float(request["value"]))
-        state["dimension"] = None
-        state["selected"] = []
-        state["selection_dirty"] = True
         if ok:
-            state["status"] = request["kind"] + " updated"
+            state["dimension"] = None
+            state["selected"] = []
+            state["selection_dirty"] = True
+            state["status"] = _icons.relation_label(request["kind"]) + " updated"
         return
     action = {
         "kind": request["kind"],
@@ -1563,7 +1927,7 @@ def _commit_dimension(state):
     state["selected"] = []
     state["selection_dirty"] = True
     if ok:
-        state["status"] = action["kind"] + " solved"
+        state["status"] = _icons.relation_label(action["kind"]) + " solved"
 
 
 def _begin_dimension_edit(state, action_index):
@@ -1587,7 +1951,7 @@ def _begin_dimension_edit(state, action_index):
     }
     state["dimension_focus"] = True
     state["escape_armed"] = False
-    state["status"] = "Edit " + action["kind"] + " dimension"
+    state["status"] = "Edit " + _icons.relation_label(action["kind"]).lower()
     return True
 
 
@@ -1645,35 +2009,87 @@ def _update_dimension(state, action_index, value):
     if not _cons_viz.is_dimension_action(action):
         state["status"] = "Could not update dimension"
         return False
-    action["value"] = float(value)
+    replacement = dict(action, value=float(value))
+    return _replace_action(state, action_index, replacement)
+
+
+def _replace_action(state, action_index, replacement, *, insert=False, record_undo=True, batch_hint=None):
+    """Replay the affected live batches, restoring the previous sketch on failure."""
+    from copy import deepcopy
+    previous = deepcopy(state["actions"])
+    old_action = None if insert else deepcopy(previous[action_index])
+    replacement_actions = [] if replacement is None else [deepcopy(replacement)]
     live = state.get("sketch")
     if live is None:
+        state["actions"][action_index:action_index if insert else action_index+1] = replacement_actions
         return True
     batch_index, start = _batch_covering(state, action_index)
+    if batch_hint is not None:
+        batch_index = batch_hint
+        start = sum(len(batch["actions"]) for batch in state["batches"][:batch_index])
     if batch_index is None:
-        state["status"] = "Updated record; live sketch kept"
-        return True
+        state["edit_error"] = state["status"] = "This constraint cannot be edited in the live sketch"
+        return False
     tail = state["batches"][batch_index:]
+    previous_tail = deepcopy(tail)
     for batch in reversed(tail):
-        if not _revert_live_batch(live, batch):
-            state["status"] = "Could not update live dimension"
+        if not _revert_live_batch(live, batch, solve=False):
+            state["edit_error"] = state["status"] = "Could not update the live sketch"
             return False
-    cursor = start
-    try:
-        for batch in tail:
-            n = len(batch.get("actions") or ())
+    state["actions"][action_index:action_index if insert else action_index+1] = replacement_actions
+    delta = len(replacement_actions) - (0 if insert else 1)
+    counts = [len(batch.get("actions") or ()) for batch in tail]
+    counts[0] += delta
+
+    def replay(actions, batch_counts):
+        cursor = start
+        for batch, n in zip(tail, batch_counts):
             before = _sketch_counts(live)
-            apply_actions(live, state["actions"], start=cursor, end=cursor + n)
+            apply_actions(live, actions, start=cursor, end=cursor+n, solve=False)
             after = _sketch_counts(live)
             if before is not None and after is not None:
-                batch["curves"] = after[0] - before[0]
-                batch["constraints"] = after[1] - before[1]
+                batch["curves"] = after[0]-before[0]
+                batch["constraints"] = after[1]-before[1]
+            batch["actions"] = list(actions[cursor:cursor+n])
             cursor += n
+        live.solve()
+
+    try:
+        replay(state["actions"], counts)
         _adopt_solved(state, commit=True)
+        state["selection_dirty"] = True
+        state["edit_error"] = ""
+        if record_undo:
+            state.setdefault("edit_undo", []).append({"index": action_index, "action": old_action,
+                                                      "deleted": replacement is None,
+                                                      "batches": len(state["batches"]), "batch": batch_index})
         return True
     except Exception as ex:
-        state["status"] = "Solve failed: " + str(ex)
+        state["actions"] = previous
+        try:
+            for batch, old_batch in zip(tail, previous_tail):
+                batch.clear()
+                batch.update(old_batch)
+            _restore_live_geometry(state)
+        except Exception as recovery:
+            state["live_invalid"] = True
+            state["edit_error"] = state["status"] = "Could not restore this edit; cancel sketch editing: " + str(recovery)
+            return False
+        state["edit_error"] = state["status"] = "Solve failed; previous sketch retained: " + str(ex)
+        state["selection_dirty"] = True
         return False
+
+
+def _delete_constraint(state, index):
+    if not 0 <= index < len(state["actions"]) or state["actions"][index]["kind"] in _GEOM_KINDS:
+        return False
+    if not _replace_action(state, index, None):
+        return False
+    state["tree_action"] = None
+    state["constraint_edit"] = state["dimension"] = None
+    _clear_selection(state)
+    state["status"] = "Constraint deleted"
+    return True
 
 
 def _batch_covering(state, action_index):
@@ -1686,7 +2102,7 @@ def _batch_covering(state, action_index):
     return None, None
 
 
-def _revert_live_batch(live, batch):
+def _revert_live_batch(live, batch, *, solve=True):
     remove_constraint = getattr(live, "remove_last_constraint", None)
     remove_curve = getattr(live, "remove_last_curve", None)
     if remove_constraint is None or remove_curve is None:
@@ -1695,12 +2111,17 @@ def _revert_live_batch(live, batch):
         remove_constraint()
     for _ in range(max(int(batch.get("curves") or 0), 0)):
         remove_curve()
-    if batch.get("constraints") and getattr(live, "solve", None) is not None:
+    if solve and batch.get("constraints") and getattr(live, "solve", None) is not None:
         live.solve()
     return True
 
 
 def _undo_pending_or_action(state, rebuild_live=None):
+    if state.get("curve_edit") or state.get("profile_edit") or state.get("constraint_edit"):
+        state["curve_edit"] = state["profile_edit"] = state["constraint_edit"] = None
+        state["edit_error"] = ""
+        state["status"] = "Cancelled edit"
+        return
     if state["pending"]:
         state["pending"].pop()
         refs = state.get("pending_refs")
@@ -1730,6 +2151,16 @@ def _undo_pending_or_action(state, rebuild_live=None):
         state["status"] = "cleared constraint"
         return
     batches = state.get("batches") or []
+    edits = state.get("edit_undo") or []
+    if edits and edits[-1]["batches"] == len(batches):
+        edit = edits[-1]
+        if _replace_action(state, edit["index"], edit["action"], insert=edit["deleted"],
+                           record_undo=False, batch_hint=edit["batch"]):
+            edits.pop()
+            state["tree_action"] = None
+            _clear_selection(state)
+            state["status"] = "Undid sketch edit"
+        return
     if not batches:
         return
     batch = batches.pop()
@@ -1764,6 +2195,7 @@ def _hit_at(state, ray, tolerance, mode=None, exclude=None):
 
 
 def _select_at(state, name, extend):
+    state["tree_action"] = None
     selected = state["selected"]
     accumulating = extend or bool(state.get("pending_constraint") or state.get("pending_dimension"))
     if not name:
@@ -1886,6 +2318,8 @@ def _arc_radius(action):
 
 
 def _snap_ref(uv, state):
+    if state.get("ignore_snap"):
+        return uv, None
     hit = state.get("hover_hit")
     if hit:
         entry = _catalog_entry(state, hit)
@@ -1927,6 +2361,8 @@ def _name_for_uv(state, uv):
 
 
 def _snap(uv, state):
+    if state.get("ignore_snap"):
+        return uv
     x, y = uv
     pts = list(state["pending"])
     pts.append((0.0, 0.0))
@@ -1935,7 +2371,7 @@ def _snap(uv, state):
     for item in state.get("part_points") or ():
         pts.append(item[0])
     best = None
-    best_d = state["grid"] * 0.35
+    best_d = state.get("snap_tolerance", 1e-6)
     for p in pts:
         d = _dist(uv, p)
         if d < best_d:
@@ -1955,7 +2391,7 @@ def _pick_tolerance(ps, ui, state):
     from .view import _world_per_pixel
     wpp = _world_per_pixel(ps, ui)
     pixel = _pick.PICK_PX * wpp if wpp is not None and wpp > 0.0 else 0.0
-    return max(pixel, state["grid"] * 0.2, 1e-6)
+    return max(pixel, 1e-6)
 
 
 def _pick_ray_and_uv(ps, ui, frame, lift=0.0):
@@ -2015,12 +2451,13 @@ def _register_context(ps, scene, names):
             pass
 
 
-def _look_at_plane(ps, frame, extent):
+def _look_at_plane(ps, frame, extent, bounds=None):
     e = max(extent, 1.0)
     try:
         from .view import _cad_commit
 
-        origin = _xyz(frame.origin)
+        origin = (_uv_to_world(((bounds[0]+bounds[1])*0.5, (bounds[2]+bounds[3])*0.5), frame, 0)
+                  if bounds is not None else _xyz(frame.origin))
         normal = _xyz(frame.z)
         up = _xyz(frame.y)
         eye = (
@@ -2056,10 +2493,6 @@ def _register_plane(ps, frame, bounds, lift, viz):
         mesh.set_selection_mode("faces_only")
     except Exception:
         pass
-    viz["x_nodes"] = [verts[0], verts[1], verts[3], verts[2]]
-    viz["x_edges"] = [(0, 1), (2, 3)]
-    viz["y_nodes"] = [verts[0], verts[3], verts[1], verts[2]]
-    viz["y_edges"] = [(0, 1), (2, 3)]
     origin_lift = viz.get("point_lift", lift)
     viz["origin"] = [_uv_to_world((0, 0), frame, origin_lift)]
 
@@ -2072,7 +2505,11 @@ def _refresh_overlays(ps, state, frame, viz):
 
 
 def _refresh_constraints(ps, state, frame, viz):
-    overlay = _cons_viz.build_constraint_overlay(state.get("actions"), _geometry_actions(state))
+    from .view import _world_per_pixel
+    wpp = _world_per_pixel(ps, None)
+    viz["glyph_wpp"] = wpp
+    overlay = _cons_viz.build_constraint_overlay(state.get("actions"), _geometry_actions(state),
+                                                glyph_size=8*wpp if wpp else None)
     lift = viz["lift"]
     cons_nodes, cons_edges = _segs_to_nodes_edges(overlay.cons_segs, frame, lift)
     dim_nodes, dim_edges = _segs_to_nodes_edges(overlay.dim_segs, frame, lift)
@@ -2134,7 +2571,7 @@ def _refresh_preview(ps, state, frame, viz, hover=None):
     tool = state["tool"]
     drawing = tool in _TOOLS
     if drawing and hover is not None:
-        hover = _snap(hover, state) if state["snap_grid"] or pending else hover
+        hover = _snap_ref(hover, state)[0]
         pending = pending + [hover]
     nodes, edges = _preview_polylines_from(pending, tool, frame, lift)
     points = [_uv_to_world(p, frame, point_lift) for p in pending]
@@ -2419,6 +2856,10 @@ def _tick_sketch_draw(
     cam = (look, up, right, edge_r, point_r, sel_edge, wpp)
     if viz.get("cam") != cam or not viz.get("meshes_ready"):
         viz["cam"] = cam
+        # Origin axes have a constant screen size, independently of plane bounds.
+        axes = _origin_axes(viz["frame"], viz["point_lift"], 32.0 * wpp)
+        for key, nodes, edges in axes:
+            viz[key + "_nodes"], viz[key + "_edges"] = nodes, edges
         layers = (
             ("x", viz.get("x_nodes") or [], viz.get("x_edges") or [], (0.90, 0.12, 0.10), edge_r, axis_pull),
             ("y", viz.get("y_nodes") or [], viz.get("y_edges") or [], (0.10, 0.72, 0.22), edge_r, axis_pull),
@@ -2436,7 +2877,7 @@ def _tick_sketch_draw(
             )
         _sync_point_mesh(
             ps, viz, "origin", viz.get("origin") or [], _CURVE_BLUE,
-            right, up, point_r, point_pull, rect_batch_verts, quad_batch_faces,
+            right, up, geom_point, point_pull, diamond_batch_verts, quad_batch_faces,
         )
         _sync_point_mesh(
             ps, viz, "geom_pts", viz.get("geom_points") or [], _CURVE_BLUE,
@@ -2455,7 +2896,31 @@ def _tick_sketch_draw(
             wpp * _ARROW_PX_WIDTH, cons_pull,
         )
         viz["meshes_ready"] = True
+    _draw_origin_labels(ps, ui, viz)
     _draw_constraint_labels(ps, ui, viz)
+
+
+def _origin_axes(frame, lift, length):
+    """Short positive X/Y lines anchored at the actual sketch origin."""
+    origin = _uv_to_world((0, 0), frame, lift)
+    result = []
+    for key, end in (("x", (length, 0)), ("y", (0, length))):
+        nodes = [origin, _uv_to_world(end, frame, lift)]
+        result.append((key, nodes, [(0, 1)]))
+    return result
+
+
+def _draw_origin_labels(ps, ui, viz):
+    dl = _foreground_draw_list(ui)
+    if dl is None:
+        return
+    for key, rgb in (("x", (.90, .12, .10)), ("y", (.10, .72, .22))):
+        nodes = viz.get(key + "_nodes") or []
+        if len(nodes) < 2:
+            continue
+        screen = _world_to_screen(ps, ui, nodes[1])
+        if screen is not None:
+            _draw_scaled_label(dl, None, 12, (screen[0]+5, screen[1]-7), _icons._rgba(rgb), key.upper())
 
 
 def _sync_arrow_mesh(ps, viz, arrows, look, length, width, pull):
@@ -2681,6 +3146,14 @@ def _world_to_screen(ps, ui, world):
         _cad_frame, _is_ortho, _pick_viewport, _camera_fov_aspect,
         _vsub, _vlen, _dot,
     )
+    camera = getattr(ps, "camera", None)
+    project = getattr(camera, "project", None)
+    if callable(project):
+        ndc = project(world)
+        if ndc is None:
+            return None
+        width, height = _pick_viewport(ps, ui)
+        return (ndc[0]+1)*width*0.5, (1-ndc[1])*height*0.5
     pos, center, look, up, right = _cad_frame(ps)
     if pos is None or center is None or look is None or up is None or right is None:
         return None

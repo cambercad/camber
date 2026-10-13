@@ -66,6 +66,8 @@ namespace GeoSolver.Kinematics
             Position = position;
             RotationVector = rotationVector;
             Rest = CQuaternion.Frozen(NormalizeQuaternion(restOrientation));
+            foreach (Param p in Position)
+                p.ScaleKind = ParamScaleKind.Translation;
             MarkRotationParameters();
         }
 

@@ -33,19 +33,20 @@ namespace Geo.NurbsConstruction
 
         public static BSplineCurve ArcToBSpline(Arc2D arc, CoordinateSystem frame)
         {
-            var center = frame.PointTo3D(arc.Center);
             // Arc2D stores a signed span (CW fillets have AngleEnd < AngleStart).
             // Wrapping a negative sweep into (0, 2π] skins a complementary pipe.
             double sweep = arc.AngleEnd - arc.AngleStart;
-            var axis = sweep < 0 ? -frame.Z : frame.Z;
-            var startDir = frame.PointTo3D(arc.StartPosition) - center;
-            double endParam = Math.Abs(sweep) / (2 * Math.PI);
-            if (endParam < 1e-15)
+            if (Math.Abs(sweep)/(2*Math.PI) < 1e-15)
                 return LineToBSpline(new Line2D(arc.StartPosition, arc.EndPosition), frame);
-            if (endParam > 1.0)
-                endParam = 1.0;
-            var circle = new BSplineCircle(center, axis, arc.Radius, startDir, start: 0, end: endParam);
-            return circle.GetNativeParamRangeCurve();
+            // Build the arc directly. Trimming a full circle just beyond a
+            // quadrant creates a microscopic tail knot; compatible-section
+            // insertion can then create machine-width degenerate spans.
+            var result = EllipseToBSpline(new Ellipse2D(arc.Center,new Vec2D(arc.Radius,0),
+                arc.Radius,arc.AngleStart,arc.AngleEnd),frame);
+            var control=(Vec4D[])result.ControlPoints.Clone();
+            control[0]=new Vec4D(frame.PointTo3D(arc.StartPosition),1);
+            control[^1]=new Vec4D(frame.PointTo3D(arc.EndPosition),1);
+            return new BSplineCurve(result.Degree,control,(double[])result.Knots.Clone(),result.ClosedCurve);
         }
 
         public static BSplineCurve CircleToBSpline(Circle2D circle, CoordinateSystem frame)

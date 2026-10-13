@@ -37,6 +37,7 @@ namespace GeoSolver
         public const int OpMulSinCosP = 27;
         public const int OpSqrtSumSqC = 28;
         public const int OpDivPSqC = 29;
+        public const int OpATan2 = 30;
 
         private readonly int[] _code;
         private readonly double[] _consts;
@@ -154,6 +155,12 @@ namespace GeoSolver
                         case OpCos:
                             *sp = Math.Cos(*sp);
                             break;
+                        case OpATan2:
+                            {
+                                double x = *sp--;
+                                *sp = Math.Atan2(*sp, x);
+                                break;
+                            }
                         case OpASin:
                             {
                                 double a = *sp;
@@ -419,6 +426,9 @@ namespace GeoSolver
                         return;
                     case ExprType.ACos:
                         EmitUnary(e, OpACos);
+                        return;
+                    case ExprType.ATan2:
+                        EmitBinary(e, OpATan2);
                         return;
                     default:
                         PushUnary(OpLoadConst, AddConst(0));

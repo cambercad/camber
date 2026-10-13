@@ -168,11 +168,15 @@ class _ViewerInspection:
         self.viewer = viewer
         self.measurements = source._measurements if isinstance(source, Section) else []
         self.open = not isinstance(source, Section)
-        self.axis = "Off"
+        self.axis = "Z"
         self.normal = (0.0, 0.0, 1.0)
         self.offset = 0.0
+        self.azimuth = 0.0
+        self.elevation = 90.0
         self.reverse = False
         self.error = ""
+        self.section_error = ""
+        self._section_initialized = False
         self._geometry = {}
         self._visible = ()
 
@@ -196,10 +200,17 @@ class _ViewerInspection:
     def set_section(self, normal, offset, *, reverse=False):
         normal = _point(normal)
         length = math.hypot(*normal)
-        if length == 0 or not math.isfinite(offset):
+        if length == 0 or not math.isfinite(length) or not math.isfinite(offset):
             raise ValueError("section needs a nonzero normal and finite offset")
         self.normal = tuple(c/length for c in normal)
         self.offset, self.reverse = float(offset)/length, bool(reverse)
+        horizontal = math.hypot(*self.normal[:2])
+        if horizontal > 1e-15:
+            self.azimuth = math.degrees(math.atan2(self.normal[1], self.normal[0]))
+        self.elevation = math.degrees(math.atan2(self.normal[2], horizontal))
+        self.axis = next((axis for i, axis in enumerate("XYZ")
+                          if self.normal == tuple(float(j == i) for j in range(3))), "Custom")
+        self._section_initialized = True
         self._update_plane()
 
     def _update_plane(self):
@@ -212,71 +223,130 @@ class _ViewerInspection:
                   for p in product(*zip(lo, hi))]
         return min(values), max(values)
 
+    def _orient_section(self, normal, origin=None):
+        """Rotate about the model center, retaining the signed section position."""
+        lo, hi = self.viewer.get_bounding_box()
+        center = tuple((a+b)*.5 for a, b in zip(lo, hi))
+        position = self.offset-sum(a*b for a, b in zip(self.normal, center)) \
+            if self.viewer.section_plane is not None else 0.0
+        normal = _point(normal)
+        length = math.hypot(*normal)
+        if length == 0 or not math.isfinite(length):
+            raise ValueError("section needs a nonzero normal")
+        normal = tuple(c/length for c in normal)
+        offset = sum(a*b for a, b in zip(normal, origin if origin is not None else center))
+        self.set_section(normal, offset + (position if origin is None else 0), reverse=self.reverse)
+
+    def _draw_section(self, ui, selected_plane):
+        enabled = self.viewer.section_plane is not None
+        changed, enabled = ui.Checkbox("Enable cross section", enabled)
+        if changed:
+            if enabled:
+                if self._section_initialized:
+                    self._update_plane()
+                else:
+                    self._orient_section(self.normal)
+            else:
+                self.viewer.section_plane = None
+        if not enabled:
+            ui.TextUnformatted("Enable to reveal the inside of the model.")
+            return
+        ui.TextUnformatted("Plane normal")
+        changed, axis = ui.ComboBox("Normal axis", self.axis, ("X", "Y", "Z", "Custom"))
+        if changed:
+            if axis != "Custom":
+                self._orient_section(tuple(float(i == "XYZ".index(axis)) for i in range(3)))
+            self.axis = axis
+        if ui.Button("Align to view"):
+            self._orient_section(self.viewer.camera.frame()[0])
+            self.section_error = ""
+        ui.SameLine()
+        if ui.Button("Use selected face"):
+            context = selected_plane()
+            if context is None:
+                self.section_error = "Select one planar face first."
+            else:
+                frame = context["frame"]
+                self._orient_section(tuple(frame.z), tuple(frame.origin))
+                self.section_error = ""
+        if self.section_error:
+            ui.TextUnformatted(self.section_error)
+        ui.TextUnformatted("Azimuth (degrees)")
+        changed_a, azimuth = ui.SliderFloat("##section_azimuth", self.azimuth, -180, 180, width=190)
+        ui.SameLine()
+        ui.PushItemWidth(80)
+        typed_a, azimuth = ui.InputDouble("##section_azimuth_value", azimuth, fmt="%.4g")
+        ui.PopItemWidth()
+        ui.TextUnformatted("Elevation (degrees)")
+        changed_e, elevation = ui.SliderFloat("##section_elevation", self.elevation, -90, 90, width=190)
+        ui.SameLine()
+        ui.PushItemWidth(80)
+        typed_e, elevation = ui.InputDouble("##section_elevation_value", elevation, fmt="%.4g")
+        ui.PopItemWidth()
+        if changed_a or changed_e or typed_a or typed_e:
+            azimuth = (azimuth+180) % 360-180
+            elevation = max(-90, min(90, elevation))
+            a, e = math.radians(azimuth), math.radians(elevation)
+            self._orient_section((math.cos(e)*math.cos(a), math.cos(e)*math.sin(a), math.sin(e)))
+            self.azimuth, self.elevation, self.axis = azimuth, elevation, "Custom"
+        ui.Separator()
+        lo, hi = self._limits()
+        center = (lo+hi)*.5
+        position = self.offset-center
+        ui.TextUnformatted("Position (model units; center = 0)")
+        if hi > lo:
+            changed, position = ui.SliderFloat("##section_position", position,
+                                               min(lo-center, position), max(hi-center, position), width=190)
+            if changed:
+                self.offset = position+center
+                self._update_plane()
+            ui.SameLine()
+        ui.PushItemWidth(80)
+        changed, position = ui.InputDouble("##section_position_value", position, fmt="%.6g")
+        ui.PopItemWidth()
+        if changed:
+            self.offset = position+center
+            self._update_plane()
+        changed, self.reverse = ui.Checkbox("Keep opposite side", self.reverse)
+        if changed:
+            self._update_plane()
+        _, self.viewer.section_fill = ui.Checkbox("Fill cut faces (closed solids)", self.viewer.section_fill)
+
     def draw(self, ui, selected, selected_plane):
         if not self.open:
             return
         width, height = self.viewer.window.get_size()
         ui.SetNextWindowPos((max(12, width-338), 45), 4)
-        ui.SetNextWindowSize((326, min(470, height-65)), 4)
+        ui.SetNextWindowSize((326, min(530, height-65)), 4)
         expanded, self.open = ui.Begin("Inspect (I)", self.open)
-        if expanded:
-            ui.TextUnformatted("Ctrl-click two points, edges or faces")
-            if ui.Button("Measure minimum distance", enabled=len(selected) == 2):
-                try:
-                    self.measure_selected(selected)
-                    self.error = ""
-                except ValueError as error:
-                    self.error = str(error)
-            if self.error:
-                ui.TextWrapped(self.error)
-            if self.measurements:
-                measurement = self.measurements[-1]
-                ui.TextUnformatted(f"Distance: {measurement.length:.8g} model units")
-                delta = tuple(b-a for a, b in zip(measurement.start, measurement.end))
-                ui.TextUnformatted("ΔX / ΔY / ΔZ: " + " / ".join(f"{d:.6g}" for d in delta))
-                if ui.Button("Clear measurements"):
-                    self.measurements.clear()
-            ui.TextWrapped("Curved geometry follows the model tessellation tolerance.")
-            ui.Separator()
-            changed, axis = ui.ComboBox("Section", self.axis,
-                                       ("Off", "X", "Y", "Z", "View", "Selected face"))
-            if changed:
-                normal, origin = None, None
-                if axis in ("X", "Y", "Z"):
-                    normal = tuple(float(i == "XYZ".index(axis)) for i in range(3))
-                elif axis == "View":
-                    normal = self.viewer.camera.frame()[0]
-                elif axis == "Selected face":
-                    context = selected_plane()
-                    if context is None:
-                        self.error = "Select one planar face for the section plane"
-                    else:
-                        normal, origin = tuple(context["frame"].z), tuple(context["frame"].origin)
-                if axis == "Off":
-                    self.axis, self.viewer.section_plane = axis, None
-                elif normal is not None:
-                    self.axis = axis
-                    self.set_section(normal, 0, reverse=self.reverse)
-                    lo, hi = self._limits()
-                    self.offset = sum(a*b for a, b in zip(normal, origin)) if origin else (lo+hi)*.5
-                    self._update_plane()
-                    self.error = ""
-            if self.axis != "Off":
-                lo, hi = self._limits()
-                if hi > lo:
-                    changed, value = ui.SliderFloat("Position", self.offset, lo, hi, width=200)
-                    if changed:
-                        self.offset = value
-                        self._update_plane()
-                changed, value = ui.InputDouble("Offset", self.offset)
-                if changed:
-                    self.offset = value
-                    self._update_plane()
-                changed, self.reverse = ui.Checkbox("Reverse kept side", self.reverse)
-                if changed:
-                    self._update_plane()
-                _, self.viewer.section_fill = ui.Checkbox("Fill section (closed solids)", self.viewer.section_fill)
+        if expanded and ui.BeginTabBar("inspection"):
+            if ui.BeginTabItem("Measure"):
+                self._draw_measurements(ui, selected)
+                ui.EndTabItem()
+            if ui.BeginTabItem("Cross section"):
+                self._draw_section(ui, selected_plane)
+                ui.EndTabItem()
+            ui.EndTabBar()
         ui.End()
+
+    def _draw_measurements(self, ui, selected):
+        ui.TextUnformatted("Ctrl-click two points, edges or faces")
+        if ui.Button("Measure minimum distance", enabled=len(selected) == 2):
+            try:
+                self.measure_selected(selected)
+                self.error = ""
+            except ValueError as error:
+                self.error = str(error)
+        if self.error:
+            ui.TextWrapped(self.error)
+        if self.measurements:
+            measurement = self.measurements[-1]
+            ui.TextUnformatted(f"Distance: {measurement.length:.8g} model units")
+            delta = tuple(b-a for a, b in zip(measurement.start, measurement.end))
+            ui.TextUnformatted("ΔX / ΔY / ΔZ: " + " / ".join(f"{d:.6g}" for d in delta))
+            if ui.Button("Clear measurements"):
+                self.measurements.clear()
+        ui.TextUnformatted("Curved geometry uses the model tolerance.")
 
 
 def _draw_annotations(viewer):

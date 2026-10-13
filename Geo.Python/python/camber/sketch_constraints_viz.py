@@ -15,24 +15,28 @@ DIMENSION_COLOR = (1.0, 0.5, 0.0)
 KIND_CONS = "cons"
 KIND_DIM = "dim"
 
-_GEOM_KINDS = ("line", "circle", "arc", "rectangle")
+_GEOM_KINDS = ("line", "circle", "arc", "rectangle", "curve_call")
 _MINIMUM_OFFSET = 0.01
 _OFFSET_PERCENT = 0.05
 _GOLDEN_RATIO = 1.61803398875
 
 
-DIMENSION_KINDS = ("length", "radius", "distance", "angle")
-LABEL_SCALE = 2.25
+DIMENSION_KINDS = ("length", "radius", "distance", "angle", "horizontal_distance", "vertical_distance", "distance_to_line", "coincident_on_curve")
+LABEL_SCALE = 1.0
 
 
 class ConstraintOverlay(object):
-    def __init__(self):
+    def __init__(self, glyph_size=None):
+        self.glyph_size = glyph_size
         self.cons_segs = []
         self.dim_segs = []
         self.arrows = []
         self.labels = []
         self.hit_segs = []
         self.action_index = -1
+
+    def size(self, fallback):
+        return self.glyph_size if self.glyph_size is not None else fallback
 
     def cons_seg(self, a, b):
         self.cons_segs.append((a, b))
@@ -46,9 +50,9 @@ class ConstraintOverlay(object):
         self.labels.append((text, xy, kind, self.action_index))
 
 
-def build_constraint_overlay(actions, curves):
+def build_constraint_overlay(actions, curves, *, glyph_size=None):
     """Return glyphs for recorded constraint actions using solved curve geometry."""
-    overlay = ConstraintOverlay()
+    overlay = ConstraintOverlay(glyph_size)
     index = 0
     for action_index, action in enumerate(actions or ()):
         kind = action.get("kind")
@@ -203,6 +207,38 @@ def _visualize_action(overlay, action, curves, index):
         _viz_radius(overlay, curves, action, index)
     elif kind == "angle":
         _viz_angle(overlay, curves, action, index)
+    elif kind in ("horizontal_distance", "vertical_distance"):
+        a, b = (point_xy(point, curves) for point in action["points"])
+        if kind == "horizontal_distance":
+            projected = (b[0], a[1])
+        else:
+            projected = (a[0], b[1])
+        overlay.dim_seg(b, projected)
+        offset = overlay.size(.5) * (2 + index % 4)
+        _distance_2d(overlay, a, projected, action["value"], (0, offset), index)
+    elif kind == "distance_to_line":
+        point = point_xy(action["points"][0], curves)
+        line = _curve(curves, action["curves"][0])
+        a, b = _line_ends(line)
+        dx, dy = b[0]-a[0], b[1]-a[1]
+        t = ((point[0]-a[0])*dx + (point[1]-a[1])*dy) / (dx*dx + dy*dy)
+        foot = (a[0] + t*dx, a[1] + t*dy)
+        _distance_2d(overlay, point, foot, action["value"], (0, overlay.size(.5) * (2 + index % 4)), index)
+    elif kind in ("point_on_line", "point_on_circle", "coincident_on_curve"):
+        point = point_xy(action["points"][0], curves)
+        if kind == "coincident_on_curve":
+            position = _vadd(point, (overlay.size(.5)*2, -overlay.size(.5)*2))
+            overlay.label("u=" + format_length(action["value"]), position, KIND_DIM)
+            overlay.dim_seg(point, position)
+        else:
+            _cons_label(overlay, "PoL" if kind == "point_on_line" else "PoC", point, 1, index)
+    elif kind == "tangent_circles":
+        a, b = (_curve(curves, curve) for curve in action["curves"])
+        center_a, radius_a = _circular(a)
+        center_b, _ = _circular(b)
+        dx, dy = center_b[0]-center_a[0], center_b[1]-center_a[1]
+        length = math.hypot(dx, dy)
+        _cons_label(overlay, "T", (center_a[0]+dx*radius_a/length, center_a[1]+dy*radius_a/length), radius_a, index)
 
 
 def _viz_hv(overlay, curves, action, index, symbol):
@@ -234,7 +270,7 @@ def _viz_coincident(overlay, curves, action, index):
 
 def _viz_fix(overlay, curves, action, index):
     anchor = point_xy(action["points"][0], curves)
-    _cons_label(overlay, "PoP", anchor, 0.0, index)
+    _cons_label(overlay, "F" if overlay.glyph_size is not None else "PoP", anchor, 0.0, index)
 
 
 def _viz_parallel(overlay, curves, action, index):
@@ -258,7 +294,7 @@ def _viz_perpendicular(overlay, curves, action, index):
         apex = _mid(_mid(s1, e1), _mid(s2, e2))
     u = _unit_toward(apex, _mid(s1, e1), _vsub(e1, s1))
     v = _unit_toward(apex, _mid(s2, e2), _vsub(e2, s2))
-    size = max(_MINIMUM_OFFSET * 6.0, min(len1, len2) * 0.14)
+    size = overlay.size(max(_MINIMUM_OFFSET * 6.0, min(len1, len2) * 0.14))
     a = _vadd(apex, _vmul(u, size))
     corner = _vadd(a, _vmul(v, size))
     c = _vadd(apex, _vmul(v, size))
@@ -294,7 +330,7 @@ def _viz_concentric(overlay, curves, action, index):
     _ = index
     center, r1 = _circular(_curve(curves, action["curves"][0]))
     _center2, r2 = _circular(_curve(curves, action["curves"][1]))
-    r_mark = max(_MINIMUM_OFFSET * 5.0, min(r1, r2) * 0.12)
+    r_mark = overlay.size(max(_MINIMUM_OFFSET * 5.0, min(r1, r2) * 0.12)) * (0.5 if overlay.glyph_size is not None else 1)
     _ring(overlay, center, r_mark, 24)
     _ring(overlay, center, r_mark * 1.7, 24)
     c = r_mark * 0.55
@@ -329,7 +365,7 @@ def _viz_tangent_line_circle(overlay, line, circular):
         return
     rad = _vmul(rad, 1.0 / r_len)
     tang = (-rad[1], rad[0])
-    mark = max(_MINIMUM_OFFSET * 5.0, _line_len(line) * 0.08)
+    mark = overlay.size(max(_MINIMUM_OFFSET * 5.0, _line_len(line) * 0.08))
     overlay.cons_seg(_vadd(contact, _vmul(tang, -mark)), _vadd(contact, _vmul(tang, mark)))
     overlay.cons_seg(
         _vadd(contact, _vmul(rad, -mark * 0.55)),
@@ -447,6 +483,9 @@ def _distance_2d(overlay, p1, p2, distance, anchor_offset, index):
     direction = _vsub(p2, p1)
     length = _len(direction)
     if length < 1e-10:
+        position = _vadd(p1, anchor_offset)
+        overlay.label(format_length(distance), position, KIND_DIM)
+        overlay.dim_seg(p1, position)
         return
     direction = _vmul(direction, 1.0 / length)
     perp = (-direction[1], direction[0])
@@ -464,7 +503,13 @@ def _distance_2d(overlay, p1, p2, distance, anchor_offset, index):
 
 
 def _cons_label(overlay, text, anchor, average_length, index):
-    pos = _vadd(anchor, label_offset(index, average_length))
+    offset = label_offset(index, average_length)
+    if overlay.glyph_size is not None:
+        offset = _vmul(_unit(offset), overlay.glyph_size * 1.8)
+    pos = _vadd(anchor, offset)
+    if overlay.glyph_size is not None and text in ("PoP", "PoL", "PoC", "?"):
+        _ring(overlay, pos, overlay.glyph_size * .35, 16)
+        return
     overlay.label(text, pos, KIND_CONS)
     overlay.cons_seg(anchor, pos)
 
@@ -478,7 +523,9 @@ def _parallel_marks(overlay, line):
     direction = _vmul(direction, 1.0 / length)
     normal = (-direction[1], direction[0])
     mid = _mid(start, end)
-    half = max(_MINIMUM_OFFSET * 4.0, length * 0.07)
+    if overlay.glyph_size is not None:
+        mid = _vadd(mid, _vmul(normal, overlay.glyph_size * 1.8))
+    half = overlay.size(max(_MINIMUM_OFFSET * 4.0, length * 0.07)) * (0.5 if overlay.glyph_size is not None else 1)
     slash = _unit((_vadd(_vmul(direction, 0.55), normal)))
     slash = _vmul(slash, half)
     sep = half * 0.55

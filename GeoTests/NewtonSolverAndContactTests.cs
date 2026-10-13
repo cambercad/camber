@@ -6,6 +6,55 @@ namespace GeoTests;
 
 public class NewtonSolverAndContactTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void OpenContactDoesNotRelaxDistanceEqualityConvergence(bool sparse)
+    {
+        var x = new Param(3.00001);
+        var distance = new DistanceBetweenPoints3d(
+            new CVec3D(Expr.Parameter(x), Expr.Constant(0), Expr.Constant(0)),
+            CVec3D.Constant(new Vec3D(0)), 3);
+        var contact = new ContactHalfSpace3d(CVec3D.Constant(new Vec3D(0, 0, 1)),
+            new CPlane3D(CVec3D.Constant(new Vec3D(0)), CVec3D.Constant(new Vec3D(0, 0, 1))));
+        var expressions = new List<Expr>();
+        distance.GenerateEquations(expressions, 10);
+        contact.GenerateEquations(expressions, 10);
+        var equations = new EquationContainer(expressions, applySketchReductions: false,
+            residualTolerances: new[] { NewtonSolver.CONVERGE_TOLERANCE, NewtonSolver.ResidualTolerance(true) });
+        var result = NewtonSolver.NewtonSolveDetailed(equations,
+            nonNegativeParams: new HashSet<Param> { contact.Lambda }, lengthScale: 10, forceSparse: sparse);
+        Assert.True(result.Converged, result.Message);
+        Assert.InRange(Math.Abs(expressions[0].Evaluate()), 0, NewtonSolver.CONVERGE_TOLERANCE);
+        Assert.InRange(Math.Abs(x.Value - 3), 0, 1e-8);
+        Assert.InRange(Math.Abs(expressions[1].Evaluate()), 0, NewtonSolver.ResidualTolerance(true));
+    }
+
+    [Fact]
+    public void EqualityKeepsItsToleranceWhenReductionIntroducesContactMultiplier()
+    {
+        var x = new Param(1e-6);
+        var y = new Param(1.0000004);
+        var contact = new ContactHalfSpace3d(
+            new CVec3D(Expr.Constant(0), Expr.Constant(0), Expr.Parameter(y)),
+            new CPlane3D(CVec3D.Constant(new Vec3D(0)), CVec3D.Constant(new Vec3D(0, 0, 1))));
+        contact.Lambda.Value = x.Value;
+        var equality = Expr.Pow2(Expr.Parameter(x)) + Expr.Pow2(Expr.Parameter(y)) - Expr.Constant(1);
+        var expressions = new List<Expr> { equality };
+        contact.GenerateEquations(expressions, 1);
+        expressions.Add(Expr.Parameter(x) - Expr.Parameter(contact.Lambda));
+        var equations = new EquationContainer(expressions, residualTolerances:
+            new[] { NewtonSolver.CONVERGE_TOLERANCE, NewtonSolver.ResidualTolerance(true), NewtonSolver.CONVERGE_TOLERANCE });
+        Assert.Equal(2, equations.NumEquations);
+        Assert.Equal(NewtonSolver.CONVERGE_TOLERANCE, equations.ResidualTolerance(0));
+        Assert.Equal(NewtonSolver.ResidualTolerance(true), equations.ResidualTolerance(1));
+        var result = NewtonSolver.NewtonSolveDetailed(equations,
+            nonNegativeParams: new HashSet<Param> { contact.Lambda });
+        equations.UpdateSubstituedParameters();
+        Assert.True(result.Converged, result.Message);
+        Assert.InRange(Math.Abs(equality.Evaluate()), 0, NewtonSolver.CONVERGE_TOLERANCE);
+    }
+
     private sealed class TransformRecorder : IUpdateTransform
     {
         public Transform Last;

@@ -1376,7 +1376,7 @@ def _cad_zoom(ps, ui, io, wheel):
     pos, center, look, up, right = _cad_frame(ps)
     if pos is None:
         return
-    factor = math.pow(0.85, -wheel)
+    factor = math.pow(0.85, wheel)
     hit = _zoom_anchor(ps, io, pos, center, look)
     if _is_ortho(ps):
         ps.set_vertical_fov_degrees(min(170.0, max(1.0, _view_fov_deg(ps) * factor)))
@@ -1464,6 +1464,34 @@ def _scene_aabb(ps):
     return None, None
 
 
+def _clip_fitted_view(cam, center, look, corners):
+    """Keep the fitted AABB between the near and far planes.
+
+    Orthographic zoom does not depend on eye distance, so a view that was
+    framed while looking down a short axis can be turned toward a long one
+    without the silhouette changing — until the ends fall through the clip
+    planes. Dolly out along the current look until the whole box sits in front
+    of the camera, then place the planes around it.
+    """
+    dist = _dot(_vsub(center, cam.eye), look)
+    if dist < 1e-6:
+        dist = 1e-6
+        cam.eye = _vsub(center, _vmul(look, dist))
+    offsets = [_dot(_vsub(corner, center), look) for corner in corners]
+    front, back = min(offsets), max(offsets)
+    nearest = dist + front
+    farthest = dist + back
+    span = max(back - front, 1e-6)
+    gap = max(span * 0.25, 1e-3)
+    if nearest < gap * 0.999:
+        dist += gap - nearest
+        cam.eye = _vsub(center, _vmul(look, dist))
+        nearest = gap
+        farthest = dist + back
+    cam.near = max(1e-4, nearest * 0.5)
+    cam.far = max(cam.near + 1e-2, farthest + span)
+
+
 def _fit_view(ps):
     """Recenter and zoom to the scene AABB. Keep the current camera rotation."""
     pos, _, look, up, right = _cad_frame(ps)
@@ -1494,6 +1522,7 @@ def _fit_view(ps):
         new_pos = _vsub(center, _vmul(look, dist))
         _cad_commit(ps, new_pos, center, up)
         cam.zoom = max(need_h, 1e-6)
+        _clip_fitted_view(cam, center, look, corners)
         _OVERLAY["cam"] = None
         return
     if _is_ortho(ps):
@@ -1517,6 +1546,8 @@ def _fit_view(ps):
         dist = max(dist, 1e-6) * margin
     new_pos = _vsub(center, _vmul(look, dist))
     _cad_commit(ps, new_pos, center, up)
+    if cam is not None:
+        _clip_fitted_view(cam, center, look, corners)
     _OVERLAY["cam"] = None
 
 
@@ -1590,6 +1621,12 @@ def _window_height(ps, ui):
 
 def _world_per_pixel(ps, ui):
     """World units spanned by one pixel at the look-at plane (perspective and ortho)."""
+    camera = getattr(ps, "camera", None)
+    if camera is not None:
+        _, logical_height = ps.get_window_size()
+        viewport_height = camera.viewport[3] if camera.viewport else camera.height
+        logical_viewport_height = viewport_height * logical_height / max(camera.height, 1)
+        return 2 * camera.view_scale / max(logical_viewport_height, 1)
     prev = _OVERLAY["wpp"]
     pos, center, look, up, right = _cad_frame(ps)
     if pos is None:
@@ -1738,6 +1775,12 @@ def camera_ray(ps, ui, screen=None):
     if screen is None:
         return None, None
     mx, my = float(screen[0]), float(screen[1])
+    camera = getattr(ps, "camera", None)
+    if camera is not None and callable(getattr(camera, "ray", None)):
+        width, height = _pick_viewport(ps, ui)
+        if width < 2 or height < 2:
+            return None, None
+        return camera.ray(2*mx/width-1, 1-2*my/height)
     pos, center, look, up, right = _cad_frame(ps)
     if pos is None or center is None or look is None or up is None or right is None:
         return None, None

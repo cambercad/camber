@@ -151,6 +151,12 @@
                 ((point.Z * sourceUnit + ExactRational(source.offset.Z) - ExactRational(offset.Z)) / targetUnit));
         }
 
+        /// <summary>Represent an analytic world point in this lattice without integer rounding.</summary>
+        public Rat3Hybrid ConvertExact(in Vec3D point) => new(
+            (ExactRational(point.X)-ExactRational(offset.X))/exactToOriginalScaling,
+            (ExactRational(point.Y)-ExactRational(offset.Y))/exactToOriginalScaling,
+            (ExactRational(point.Z)-ExactRational(offset.Z))/exactToOriginalScaling);
+
         /// <summary>Whether both converters have the same exact scale and world origin.</summary>
         public bool HasSameLattice(CoordinateConverter other) =>
             offset.X == other.offset.X && offset.Y == other.offset.Y && offset.Z == other.offset.Z &&

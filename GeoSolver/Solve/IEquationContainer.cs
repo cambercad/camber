@@ -6,6 +6,7 @@
         int NumParameters { get; }
         int NumEquations { get; }
         double Evaluate(int i);
+        double ResidualTolerance(int i) => NewtonSolver.CONVERGE_TOLERANCE;
         double EvaluatJacobian(int i, int j);
         Param GetParameter(int i);
 

@@ -9,11 +9,40 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 
 import pyglet
 
-from camber.gui import UI
+from camber.gui import UI, MenuItem
 
 
 window = pyglet.window.Window(1280, 760, caption="Control Gallery", resizable=True)
 ui = UI(window)
+
+
+def context_menu():
+    if ui.IsMouseReleased(1):
+        ui.OpenContextMenu("gallery")
+    items = [MenuItem("Open…", icon="↗", shortcut="Ctrl+O"),
+             MenuItem("Save", icon="↓", shortcut="Ctrl+S"), None,
+             MenuItem("Rename…", icon="✎", shortcut="F2"),
+             MenuItem("Delete", icon="×", shortcut="Delete", enabled=False), None,
+             MenuItem("Dark theme", checked=ui.theme_name == "dark"),
+             MenuItem("Copy name", icon="⧉"), None, MenuItem("Confirmation dialog…"),
+             MenuItem("Export", children=(MenuItem("Mesh", children=("OBJ", "STL")), "STEP"))]
+    choice = ui.ContextMenu("gallery", items)
+    if choice == (6,):
+        ui.set_theme("light" if ui.theme_name == "dark" else "dark")
+    elif choice == (9,):
+        ui.OpenMessageBox("Confirm action", "Apply this demonstration action?",
+                          ("Apply", "Cancel"), default="Cancel")
+    elif choice is not None:
+        branch = items
+        for index in choice:
+            item = branch[index]
+            item = MenuItem(item) if isinstance(item, str) else item
+            branch = item.children
+        output.append(item.label + " selected from context menu.")
+    response = ui.MessageBox("Confirm action")
+    if response is not None:
+        output.append("Confirmation: " + response)
+
 ui.insets = (0, 72, 0, 28)
 ui.dock_panel("Tests", "left", fraction=.165)
 ui.dock_panel("Output", "bottom", fraction=.31)
@@ -30,6 +59,8 @@ checked = [True]
 switched = [False]
 radio = ["Balanced"]
 choice = ["Medium"]
+material = ["Steel"]
+radius = [2.5]
 list_selection = [1]
 tree_selection = ["Dashboard"]
 notes = ["A compact editor with wrapping and multiple lines."]
@@ -68,7 +99,7 @@ Emil Becker|17504|637-5589 Dolor Road|Austria|Innsbruck""".splitlines()]
 
 sections = {
     "Input": ("Buttons", "Text", "Text area", "Checkboxes", "Switches",
-              "Radio buttons", "Choices", "Lists", "Sliders"),
+              "Radio buttons", "Choices", "Numbers", "Properties", "Dialogs", "Lists", "Sliders"),
     "Display": ("Progress", "Tabs", "Tree views", "Data grid"),
     "Workspace": ("Docking", "Scrolling"),
 }
@@ -97,7 +128,20 @@ def on_draw():
     ui.new_frame()
 
     if panel("##title", (0, 0, window.width, 36), ui.theme["content"], scroll=False):
-        ui.Text("Control Gallery")
+        action = ui.MenuBar("Gallery", [
+            MenuItem("File", children=("Confirmation…", None,
+                     MenuItem("Export", children=("OBJ", "STL", "STEP")))),
+            MenuItem("View", children=("Properties", MenuItem("Dark theme", checked=ui.theme_name == "dark"))),
+        ], width=180)
+        if action == (0, 0):
+            ui.OpenMessageBox("Confirm action", "Apply this demonstration action?", ("Apply", "Cancel"), default="Cancel")
+        elif action == (1, 0):
+            selected[0] = "Properties"
+            view_mode[0] = "Controls"
+        elif action == (1, 1):
+            ui.set_theme("light" if ui.theme_name == "dark" else "dark")
+        elif action is not None:
+            output.append("Menu action: " + str(action))
         ui.SameLine()
         if ui.TabButton("Controls", view_mode[0] == "Controls", 96, 24):
             view_mode[0] = "Controls"
@@ -155,7 +199,8 @@ def on_draw():
         bar = ui.GetForegroundDrawList()
         bar.AddRectFilled((0, window.height-28), (window.width, window.height), ui.theme["title"])
         bar.AddTextAligned((10, window.height-14), ui.theme["muted"],
-                           "Control Gallery  ·  Scroll the grid  ·  Select a row")
+                           "Control Gallery  ·  Scroll the grid  ·  Right-click for actions")
+        context_menu()
         ui.render()
         return
 
@@ -249,6 +294,25 @@ def on_draw():
                                                      ("Small", "Medium", "Large", "Extra large"), 200)
                     if changed:
                         output.append("Display size: " + choice[0])
+                    ui.Text("Material (choose or type)")
+                    _, material[0] = ui.EditableComboBox("Material", material[0],
+                                                        ("Steel", "Aluminium", "Titanium"), 220)
+                elif selected[0] == "Numbers":
+                    ui.Text("Radius; Ctrl-click steps by 1 instead of 0.1")
+                    _, radius[0] = ui.InputDouble("Radius", radius[0], step=.1, fast_step=1)
+                elif selected[0] == "Properties":
+                    if ui.PropertyGroup("Geometry"):
+                        _, radius[0] = ui.Property("Radius", radius[0], step=.1, fast_step=1)
+                        _, plain[0] = ui.Property("Name", plain[0])
+                    if ui.PropertyGroup("Appearance"):
+                        _, checked[0] = ui.Property("Visible", checked[0])
+                        _, material[0] = ui.Property("Material", material[0],
+                                                     options=("Steel", "Aluminium", "Titanium"), editable=True)
+                        ui.Property("Renderer", "OpenGL", read_only=True)
+                elif selected[0] == "Dialogs":
+                    if ui.Button("Confirm action…"):
+                        ui.OpenMessageBox("Confirm action", "Apply this demonstration action?",
+                                          ("Apply", "Cancel"), default="Cancel")
                 elif selected[0] == "Lists":
                     ui.Text("Choose a material")
                     list_selection[0] = ui.ListBox("Materials", ("Aluminium", "Steel", "Titanium", "Copper"),
@@ -309,8 +373,9 @@ def on_draw():
     bar = ui.GetForegroundDrawList()
     bar.AddRectFilled((0, window.height-28), (window.width, window.height), ui.theme["title"])
     bar.AddTextAligned((10, window.height-14), ui.theme["muted"],
-                       "Control Gallery  ·  Drag tabs to dock  ·  Drag dividers to resize")
+                       "Control Gallery  ·  Drag tabs to dock  ·  Right-click for actions")
     del output[:-200]
+    context_menu()
     ui.render()
 
 

@@ -98,4 +98,36 @@ public class AssemblyMirrorTests : IDisposable
         Assert.Throws<ArgumentException>(()=>parent.Mirror(part,CoordinateSystem.Default));
         Assert.Empty(parent.GetParts());Assert.Empty(parent.GetMateRecords());
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ImportedBodyDefinitionMirrorsInDirectAndNestedAssemblies(bool nested)
+    {
+        var source = new GeoAPI(new Box3D(new Vec3D(-30), new Vec3D(80)), .001);
+        var body = source.CreateCuboid(new CoordinateSystem(new Vec3D(1, 2, 3)), new Vec3D(1, 2, 4), "imported");
+        var api = Api();
+        var root = api.GetAssembly("parent");
+        var owner = nested ? api.GetAssembly("child") : root;
+        var seed = owner.AddPart(source, body, new Vec3D(7, -5, 9));
+        owner.FixPart(seed);
+        Assert.True(owner.SolveConstraintsDetailed().Converged);
+        var plane = new CoordinateSystem(new Vec3D(0, 0, 2));
+        var before = WorldPoints(owner, seed);
+        if (nested)
+        {
+            var occurrence = root.AddSubAssembly(owner, new Vec3D(0));
+            root.FixSubAssembly(occurrence);
+            var reflected = root.Mirror(occurrence, plane, "mirrored_child");
+            Assert.True(root.SolveConstraintsDetailed().Converged);
+            AssertPoints(before.Select(p => Reflect(p, plane)), WorldPoints(root, reflected.GetParts()[0]));
+        }
+        else
+        {
+            var reflected = root.Mirror(seed, plane, "mirrored_body");
+            Assert.True(root.SolveConstraintsDetailed().Converged);
+            AssertPoints(before.Select(p => Reflect(p, plane)), WorldPoints(root, reflected));
+        }
+        AssertPoints(before, WorldPoints(owner, seed));
+    }
 }

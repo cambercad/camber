@@ -6,6 +6,33 @@ public class AssemblyPatternTests : IDisposable
     public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
 
     private static GeoAPI Api() => new(new Box3D(new Vec3D(-100),new Vec3D(100)),.01);
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PatternsReuseForeignComponentsConvertedDefinition(bool circular)
+    {
+        var source = new GeoAPI(new Box3D(new Vec3D(-10), new Vec3D(10)), .01);
+        var mesh = source.CreateCube(CoordinateSystem.Default, 1, "foreign_pin");
+        var api = Api();
+        var assembly = api.GetAssembly("foreign_pattern");
+        assembly.SolveAfterEveryConstraint = false;
+        var seed = assembly.AddPart(source, mesh, new Vec3D(2, 0, 0));
+        assembly.FixPart(seed);
+        var copies = circular
+            ? assembly.PatternCircular(seed, 4, CoordinateSystem.Default)
+            : assembly.PatternLinear(seed, 4, new Vec3D(0, 2, 0));
+        Assert.NotSame(mesh, seed.Mesh);
+        Assert.All(copies, part => Assert.Same(seed.Mesh, part.Mesh));
+        var solve = assembly.SolveConstraintsDetailed();
+        Assert.True(solve.Converged, solve.Message);
+        for (int i = 0; i < copies.Count; i++)
+        {
+            var expected = circular
+                ? new Vec3D(2 * Math.Cos(i * Math.PI / 2), 2 * Math.Sin(i * Math.PI / 2), 0)
+                : new Vec3D(2, 2 * i, 0);
+            Assert.InRange((copies[i].EvaluatePose().Position - expected).Length(), 0, 1e-6);
+        }
+    }
     [Fact]
     public void LinearCopiesFollowSeedMotionThroughRecordedMates()
     {

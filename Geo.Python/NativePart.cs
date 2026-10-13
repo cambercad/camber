@@ -139,10 +139,11 @@ public class NativePart
     }
 
     public NativeSolid Extrude(NativeSketch sketch, double height, double maxDeviation,
-        double twistRatePerExtrudeDistance, string name, double taperAngle)
+        double twistRatePerExtrudeDistance, string name, double taperAngle,
+        double twistCenterX = double.NaN, double twistCenterY = double.NaN)
     {
         var result = _inner.Extrude(sketch.Native, height, maxDeviation,
-            NativeUtil.EmptyToNull(name), twistRatePerExtrudeDistance, taperAngle);
+            NativeUtil.EmptyToNull(name), twistRatePerExtrudeDistance, taperAngle, TwistCenter(twistCenterX, twistCenterY));
         string details = $"height={height:G6}";
         if (taperAngle != 0) details += $", taperAngle={taperAngle:G6} rad";
         if (twistRatePerExtrudeDistance != 0)
@@ -150,9 +151,19 @@ public class NativePart
         return Track(result, "Extrude", new[] { sketch.Native.Name }, details: details);
     }
 
-    public NativeSolid ExtrudeTwoSides(NativeSketch sketch, double heightPositive, double heightNegative, double maxDeviation, double twistRatePerExtrudeDistance, string name)
+    public NativeSolid ExtrudeTwoSides(NativeSketch sketch, double heightPositive, double heightNegative, double maxDeviation, double twistRatePerExtrudeDistance, string name,
+        double twistCenterX = double.NaN, double twistCenterY = double.NaN)
     {
-        return Track(_inner.ExtrudeTwoSides(sketch.Native, heightPositive, heightNegative, maxDeviation, NativeUtil.EmptyToNull(name), twistRatePerExtrudeDistance), "Extrude", new[] { sketch.Native.Name }, details: $"+Z={heightPositive:G6}, -Z={heightNegative:G6}");
+        return Track(_inner.ExtrudeTwoSides(sketch.Native, heightPositive, heightNegative, maxDeviation, NativeUtil.EmptyToNull(name), twistRatePerExtrudeDistance, TwistCenter(twistCenterX, twistCenterY)), "Extrude", new[] { sketch.Native.Name }, details: $"+Z={heightPositive:G6}, -Z={heightNegative:G6}");
+    }
+
+    static Vec2D? TwistCenter(double x, double y)
+    {
+        if (double.IsNaN(x) && double.IsNaN(y))
+            return null;
+        if (!double.IsFinite(x) || !double.IsFinite(y))
+            throw new ArgumentException("Twist center must be a finite point on the sketch plane.");
+        return new Vec2D(x, y);
     }
 
     public NativeSolid ExtrudeUntilNext(NativeSketch sketch, NativeSolid target, double maxDeviation, string name)
@@ -345,10 +356,26 @@ public class NativePart
         return Track(_inner.ExtrudeAlongSketch(profile.Native, guide.Native, maxDeviation, NativeUtil.EmptyToNull(name)), "Sweep", new[] { profile.Native.Name, guide.Native.Name });
     }
 
-    public NativeSolid Loft(NativeSketchList sketches, NativeLoftOptions options, double maxDeviation, string name, string firstCurves)
+    public NativeSolid Loft(NativeSketchList sketches, NativeLoftOptions options, double maxDeviation, string name,
+        string firstCurves, NativeCurveList guides, string startTangent, string endTangent,
+        string startPoint, string endPoint, int startClosure, int endClosure)
     {
         LoftOptions loftOptions = options == null ? LoftOptions.Default : options.ToLoftOptions();
         if (!string.IsNullOrEmpty(firstCurves)) loftOptions.FirstCurves = firstCurves.Split('|');
+        static Vec3D? Vector(string packed)
+        {
+            if (string.IsNullOrEmpty(packed)) return null;
+            var points = NativePack.ReadPoints3(packed);
+            if (points.Count != 1) throw new ArgumentException("Expected one XYZ vector.");
+            return points[0];
+        }
+        loftOptions.Guides = guides?.Items;
+        loftOptions.StartTangent = Vector(startTangent);
+        loftOptions.EndTangent = Vector(endTangent);
+        loftOptions.StartPoint = Vector(startPoint);
+        loftOptions.EndPoint = Vector(endPoint);
+        loftOptions.StartPointClosure = startClosure == -1 ? null : (LoftPointClosure)startClosure;
+        loftOptions.EndPointClosure = endClosure == -1 ? null : (LoftPointClosure)endClosure;
         return Track(_inner.Loft(sketches.Items, loftOptions, NativeUtil.EmptyToNull(name), maxDeviation), "Loft", sketches.Items.Select(sketch => sketch.Name));
     }
 
@@ -1714,11 +1741,15 @@ public class NativeSketch
     {
         if (points == null || points.Count < 2)
             return;
-        for (int i = 1; i < points.Count; i++)
+        // One row per native curve keeps the dump's indices identical to sketch indices.
+        // These samples are for display; the source retains the analytical definition.
+        sb.Append("P\t").Append(name);
+        for (int i = 0; i < points.Count; i++)
         {
-            sb.Append(SketchCurveDump.Line(name, points[i - 1].X, points[i - 1].Y, points[i].X, points[i].Y));
-            sb.Append('\n');
+            sb.Append('\t').Append(points[i].X.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+            sb.Append('\t').Append(points[i].Y.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
         }
+        sb.Append('\n');
     }
 
     public void AddNaca4DigitAirfoil(
@@ -1798,6 +1829,27 @@ public class NativeSolid
 
     public int PatchCount => MeshSelectableNames.Patches(Native).Count;
     public string PatchNameAt(int index) => NameAt(MeshSelectableNames.Patches(Native), index);
+    public NativeFrame FaceFrame(string faceName, int inward)
+    {
+        Native.EnsureCoplanarPostProcessed();
+        if (OwnerApi == null)
+            throw new InvalidOperationException("Face frames require the owning Part coordinate system.");
+        var frame = AssemblyDatumResolver.ResolvePlaneFrame(Native, faceName, OwnerApi.Converter);
+        if (inward != 0)
+            frame = new CoordinateSystem(frame.Origin, frame.X, -frame.Y, -frame.Z);
+        return new NativeFrame(frame);
+    }
+
+    public string Point(string anchorName)
+    {
+        Native.EnsureCoplanarPostProcessed();
+        Native.ValidateEntityReference(anchorName);
+        if (!Native.TryGetPointOnEdge(anchorName, out var point))
+            throw new ArgumentException($"Point '{anchorName}' was not found on mesh '{Native.Name}'.");
+        return string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"{point.X:R} {point.Y:R} {point.Z:R}");
+    }
+
     public NativeFrame PatchFrameAt(int index)
     {
         string selected = PatchNameAt(index);

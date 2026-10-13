@@ -178,6 +178,81 @@ class LiveSketchKeepsConstraintsTests(unittest.TestCase):
 
 @unittest.skipUnless(_NATIVE_AVAILABLE, "requires the installed camber native module")
 class NativeSequentialConstraintTests(unittest.TestCase):
+    def test_named_drag_after_fixed_bezier_moves_only_the_requested_line(self):
+        part = Part(vec3(-50), vec3(50), tolerance=.01)
+        actions = [
+            {"kind": "curve_call", "method": "add_bezier",
+             "arguments": {"control_points": [(0, 0), (3, 4), (6, 0)]}},
+            {"kind": "line", "name": "guide", "p0": (12, 0), "p1": (20, 0)},
+        ]
+        state = self._state(part, actions, "mixed_drag")
+        before = state["sketch"]._solved_actions()[0]
+        self.assertEqual((True, True), sketch_ui._apply_handle_drag(state, 1, 0, (12, 3)))
+        curves = state["sketch"]._solved_actions()
+        self.assertEqual(before, curves[0])
+        self.assertAlmostEqual(12, curves[1]["p0"][0], places=6)
+        self.assertAlmostEqual(3, curves[1]["p0"][1], places=6)
+        self.assertEqual("guide", curves[1]["name"])
+
+    def test_translated_semicircle_midpoint_snap_keeps_its_radius(self):
+        part = Part(vec3(-50), vec3(50), tolerance=.01)
+        sketch = part.sketch("xy", constrained=True)
+        sketch.solve_after_every_constraint = False
+        axis = sketch.add_line((18, 0), (30, 0), construction=True)
+        side = sketch.add_line((4, -2), (16, -2))
+        arc = sketch.add_arc(side @ 1, axis @ 0, (16, 2))
+        sketch.tangent(side, arc).solve()
+        solved = sketch._solved_actions()[-1]
+        self.assertAlmostEqual(2, sketch_ui._arc_radius(solved), places=7)
+        self.assertAlmostEqual(18, sketch.eval_xy(arc @ .5)[0], places=7)
+        self.assertAlmostEqual(0, sketch.eval_xy(arc @ .5)[1], places=7)
+
+    def test_dimension_edit_and_delete_undo_preserve_seed_geometry(self):
+        from copy import deepcopy
+        part = Part(vec3(-20), vec3(20), tolerance=.01)
+        state = self._state(part, [
+            {"kind": "line", "name": "Line1", "p0": (0, 0), "p1": (10, 0)},
+            {"kind": "horizontal", "curves": ["Line1"]},
+            {"kind": "length", "curves": ["Line1"], "value": 10},
+        ], "editable_seed")
+        state["pending"] = []
+        state["batches"] = [{"actions": deepcopy(state["actions"]), "curves": 1,
+                             "constraints": state["sketch"].constraint_count}]
+        self.assertTrue(sketch_ui._update_dimension(state, 2, 12), state.get("edit_error"))
+        sketch_ui._undo_pending_or_action(state)
+        self.assertEqual(1, state["sketch"].curve_count)
+        self.assertAlmostEqual(10, sketch_ui._dist(state["sketch"].eval_xy("Line1@1.000"), state["sketch"].eval_xy("Line1@0.000")))
+        count = state["sketch"].constraint_count
+        self.assertTrue(sketch_ui._delete_constraint(state, 2))
+        self.assertEqual(count-1, state["sketch"].constraint_count)
+        sketch_ui._undo_pending_or_action(state)
+        self.assertEqual(count, state["sketch"].constraint_count)
+        self.assertEqual(10, state["actions"][2]["value"])
+
+    def test_failed_solve_restores_coordinates_even_if_solver_moved_them(self):
+        from copy import deepcopy
+        from unittest.mock import patch
+        part = Part(vec3(-20), vec3(20), tolerance=.01)
+        state = self._state(part, [{"kind": "line", "name": "Line1", "p0": (0, 0), "p1": (10, 0)}], "recovery")
+        state["batches"] = [{"actions": deepcopy(state["actions"]), "curves": 1, "constraints": 0}]
+        live = state["sketch"]
+        solve = live.solve
+        def moved_then_failed():
+            live._try_drag_point(0, 0, (4, 7))
+            raise ValueError("Simulated solver failure after geometry movement")
+        calls = 0
+        def fail_once():
+            nonlocal calls
+            calls += 1
+            return moved_then_failed() if calls == 1 else solve()
+        with patch.object(live, "solve", side_effect=fail_once):
+            self.assertFalse(sketch_ui._append_and_solve(state, [{"kind": "horizontal", "curves": ["Line1"]}]))
+        self.assertFalse(state.get("live_invalid"))
+        self.assertEqual(0, live.constraint_count)
+        self.assertAlmostEqual(0, live.eval_xy("Line1@0.000")[0])
+        self.assertAlmostEqual(0, live.eval_xy("Line1@0.000")[1])
+        self.assertAlmostEqual(10, live.eval_xy("Line1@1.000")[0])
+
     def _state(self, part, actions, name):
         catalog = build_sketch_pick_catalog(actions, [], _Frame(), 0.0, 0.0, "Sketch1")
         state = {
@@ -240,6 +315,19 @@ class NativeSequentialConstraintTests(unittest.TestCase):
             self.assertIs(creates[0], live)
         finally:
             sketch_ui._create_constraint_sketch = original
+
+    def test_clickable_origin_is_a_named_fixed_constraint_anchor(self):
+        part = Part(vec3(-20.0), vec3(20.0), tolerance=0.01)
+        state = self._state(part, [
+            {"kind": "line", "p0": (2.0, 3.0), "p1": (8.0, 3.0)},
+        ], "origin_anchor")
+        origin = next(e for e in state["pick_catalog"] if naming.is_origin_name(e["name"]))
+        hit = sketch_ui._hit_at(state, ((0, 0, 10), (0, 0, -1)), .1, sketch_ui._PICK_POINTS)
+        self.assertEqual(origin["name"], hit)
+        self._finish(state, "coincident", ["Line1@0.000", "origin"])
+        self.assertAlmostEqual(0, state["solved"][0]["p0"][0], places=5)
+        self.assertAlmostEqual(0, state["solved"][0]["p0"][1], places=5)
+        self.assertIn("origin", state["actions"][-1]["points"])
 
     def test_horizontal_then_vertical_keeps_both(self):
         part = Part(vec3(-20.0), vec3(20.0), tolerance=0.01)

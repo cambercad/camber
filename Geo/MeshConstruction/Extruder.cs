@@ -26,9 +26,10 @@ namespace Geo
         }
 
         /// <summary>
-        /// Largest distance from the sketch origin to any profile vertex in the XY plane (twist axis for linear extrude).
+        /// Largest distance from <paramref name="center"/> to any profile vertex in the XY plane.
+        /// That radius is the twist axis used for linear-extrude subdivision.
         /// </summary>
-        private static double MaxProfileRadiusXY(List<ContourData> contourDatas)
+        private static double MaxProfileRadiusXY(List<ContourData> contourDatas, Vec2D center = default)
         {
             double r2max = 0;
             foreach (var cd in contourDatas)
@@ -37,13 +38,78 @@ namespace Geo
                 {
                     foreach (var p in seg)
                     {
-                        double r2 = p.X * p.X + p.Y * p.Y;
+                        double dx = p.X - center.X;
+                        double dy = p.Y - center.Y;
+                        double r2 = dx * dx + dy * dy;
                         if (r2 > r2max)
                             r2max = r2;
                     }
                 }
             }
             return Math.Sqrt(r2max);
+        }
+
+        /// <summary>
+        /// Rotate <paramref name="point"/> about <paramref name="center"/> in the sketch plane (RH, X toward Y).
+        /// </summary>
+        private static Vec2D RotateAbout(Vec2D point, Vec2D center, double angle)
+        {
+            double x = point.X - center.X;
+            double y = point.Y - center.Y;
+            double c = Math.Cos(angle);
+            double s = Math.Sin(angle);
+            return new Vec2D(center.X + c * x - s * y, center.Y + s * x + c * y);
+        }
+
+        /// <summary>
+        /// Unit side normal of a linearly twisted extrusion.
+        /// A profile point <c>p</c> follows <c>R(θ)(p − c) + c</c> with <c>θ = twistRate · (z − zBottom)</c>.
+        /// The length-weighted profile normal stays in XY after that rotation; its Z component is
+        /// <c>twistRate · Σ (edge · (p − c))</c> over the edges incident to the vertex, the same weights as <see cref="WeightedNormals2D"/>.
+        /// </summary>
+        private static Vec3D TwistedWallNormal(List<Vec2D> segment, int index, Vec2D center, double theta, double twistRate)
+        {
+            if (!TryAccumulateProfileNormal(segment, index, center, out double hx, out double hy, out double zCoeff))
+                return new Vec3D(0, 0, 0);
+            double c = Math.Cos(theta);
+            double s = Math.Sin(theta);
+            double nx = c * hx - s * hy;
+            double ny = s * hx + c * hy;
+            double nz = twistRate * zCoeff;
+            double len = Math.Sqrt(nx * nx + ny * ny + nz * nz);
+            if (len < 1e-14)
+                return new Vec3D(0, 0, 0);
+            return new Vec3D(nx / len, ny / len, nz / len);
+        }
+
+        /// <summary>
+        /// Length-weighted profile normal <c>(hx, hy)</c> and <c>zCoeff = Σ edge · (p − center)</c>
+        /// at one contour vertex. The swept normal is this vector in the section plane plus
+        /// <c>rollRate * zCoeff</c> along the guide tangent.
+        /// </summary>
+        private static bool TryAccumulateProfileNormal(List<Vec2D> segment, int index, Vec2D center,
+            out double hx, out double hy, out double zCoeff)
+        {
+            hx = 0;
+            hy = 0;
+            zCoeff = 0;
+            if (index > 0)
+                AccumulateTwistEdge(segment[index - 1], segment[index], segment[index], center, ref hx, ref hy, ref zCoeff);
+            if (index + 1 < segment.Count)
+                AccumulateTwistEdge(segment[index], segment[index + 1], segment[index], center, ref hx, ref hy, ref zCoeff);
+            return hx * hx + hy * hy > 1e-28;
+        }
+
+        private static void AccumulateTwistEdge(Vec2D from, Vec2D to, Vec2D at, Vec2D center,
+            ref double hx, ref double hy, ref double zCoeff)
+        {
+            double dx = to.X - from.X;
+            double dy = to.Y - from.Y;
+            if (dx * dx + dy * dy < 1e-16)
+                return;
+            hx += dy;
+            hy -= dx;
+            zCoeff += dx * (at.X - center.X) + dy * (at.Y - center.Y);
         }
 
         /// <summary>
@@ -338,11 +404,11 @@ namespace Geo
             List<int> triangleGroups, List<Rat3Hybrid> precisePositions,
             List<List<string>> contourNames, string extrudeName,
             out Dictionary<int, string> triangleGroupToName, double twistRatePerExtrudeDistance = 0,
-            double maxDeviation = double.PositiveInfinity, int baseGroupIndex = 0)
+            double maxDeviation = double.PositiveInfinity, int baseGroupIndex = 0, Vec2D twistCenter = default)
         {
             return GenerateExtrudedMesh(converter, location, contours, contourNormals,
                 height, 0, triangles, vertices, normals, uv, triangleGroups, precisePositions,
-                contourNames, extrudeName, out triangleGroupToName, twistRatePerExtrudeDistance, maxDeviation, baseGroupIndex);
+                contourNames, extrudeName, out triangleGroupToName, twistRatePerExtrudeDistance, maxDeviation, baseGroupIndex, twistCenter);
         }
 
         /// <summary>
@@ -354,7 +420,7 @@ namespace Geo
             List<List<List<Vec2D>>> contours, List<List<List<Vec2D>>> contourNormals,
             double heightPositive, double heightNegative,
             MeshOutput output, MeshNaming naming, double twistRatePerExtrudeDistance = 0,
-            double maxDeviation = double.PositiveInfinity, int baseGroupIndex = 0)
+            double maxDeviation = double.PositiveInfinity, int baseGroupIndex = 0, Vec2D twistCenter = default)
         {
             var reversalInfo = MeshConstructionHelpers.GetContourReversalInfo(contours);
             var orientedContours = MeshConstructionHelpers.ApplyReversalToContours(contours, reversalInfo);
@@ -366,7 +432,7 @@ namespace Geo
 
             var res = GenerateExtrudedMesh(converter, orientedContours, orientedNormals, bottomZ, topZ,
                 output.Triangles, output.Vertices, output.Normals, output.UVs, output.TriangleGroups,
-                output.PrecisePositions, twistRatePerExtrudeDistance, maxDeviation, baseGroupIndex);
+                output.PrecisePositions, twistRatePerExtrudeDistance, maxDeviation, baseGroupIndex, twistCenter);
 
             PopulateExtrudeNaming(naming, orientedContours, reversalInfo, baseGroupIndex);
             output.TransformToWorldSpace(converter, location);
@@ -383,12 +449,12 @@ namespace Geo
             List<int> triangleGroups, List<Rat3Hybrid> precisePositions,
             List<List<string>> contourNames, string extrudeName,
             out Dictionary<int, string> triangleGroupToName, double twistRatePerExtrudeDistance = 0,
-            double maxDeviation = double.PositiveInfinity, int baseGroupIndex = 0)
+            double maxDeviation = double.PositiveInfinity, int baseGroupIndex = 0, Vec2D twistCenter = default)
         {
             var output = new MeshOutput();
             var naming = new MeshNaming { ContourNames = contourNames, OperationName = extrudeName };
             var res = GenerateExtrudedMesh(converter, location, contours, contourNormals,
-                heightPositive, heightNegative, output, naming, twistRatePerExtrudeDistance, maxDeviation, baseGroupIndex);
+                heightPositive, heightNegative, output, naming, twistRatePerExtrudeDistance, maxDeviation, baseGroupIndex, twistCenter);
             output.AppendTo(triangles, vertices, normals, uv, triangleGroups, precisePositions);
             triangleGroupToName = naming.TriangleGroupToName;
             return res;
@@ -526,7 +592,7 @@ namespace Geo
             double curveTotalLength = arcLengths[arcLengths.Count - 1];
 
             var (crossSectionVertices, crossSectionNormals, crossSectionUVs) =
-                GenerateAllCrossSections(contourDatas, allVertices, arcLengths, curveTotalLength, twistRatePerExtrudeDistance);
+                GenerateAllCrossSections(contourDatas, allVertices, arcLengths, curveTotalLength, twistRatePerExtrudeDistance, isClosedLoop);
 
             // UV scaling for end caps
             MinMax(contourDatas, out Vec2D min, out Vec2D max);
@@ -697,7 +763,7 @@ namespace Geo
 
         private static (List<List<Vec3D>> verts, List<List<Vec3D>> norms, List<List<Vec2D>> uvs) GenerateAllCrossSections(
             List<ContourData> contourDatas, List<CoordinateSystem> guideVertices,
-            List<double> arcLengths, double totalLength, double twistRatePerExtrudeDistance)
+            List<double> arcLengths, double totalLength, double twistRatePerExtrudeDistance, bool closedGuide)
         {
             var crossSectionVertices = new List<List<Vec3D>>();
             var crossSectionNormals = new List<List<Vec3D>>();
@@ -713,10 +779,12 @@ namespace Geo
                 var sectionNorms = new List<Vec3D>();
                 var sectionUVs = new List<Vec2D>();
 
+                GuideFrameMotion(guideVertices, arcLengths, i, closedGuide, out double guideRoll, out Vec3D tangentDerivative);
                 foreach (var contourData in contourDatas)
                 {
                     var (verts, norms, uvs) = GenerateCrossSectionAtCurveVertex(
-                        contourData, guideVertices[i], normalizedArcLength, arcLengths[i], twistRatePerExtrudeDistance);
+                        contourData, guideVertices[i], normalizedArcLength, arcLengths[i], twistRatePerExtrudeDistance,
+                        guideRoll, tangentDerivative);
                     sectionVerts.AddRange(verts);
                     sectionNorms.AddRange(norms);
                     sectionUVs.AddRange(uvs);
@@ -927,7 +995,8 @@ namespace Geo
         /// </summary>
         private static int GenerateExtrudedMesh(CoordinateConverter converter, List<List<List<Vec2D>>> contours, List<List<List<Vec2D>>> contourNormals, double bottomZ, double topZ,
             List<Tri> triangles, List<Vec3D> vertices, List<Vec3D> normals, List<Vec2D> uv, List<int> triangleGroups, List<Rat3Hybrid> precisePositions,
-            double twistRatePerExtrudeDistance = 0, double maxDeviation = double.PositiveInfinity, int baseGroupIndex = 0)
+            double twistRatePerExtrudeDistance = 0, double maxDeviation = double.PositiveInfinity, int baseGroupIndex = 0,
+            Vec2D twistCenter = default)
         {
             int triangleBegin = triangles.Count;
             foreach (var c in contours)
@@ -941,7 +1010,7 @@ namespace Geo
 
             var contourDatas = PrepareContourData(contours, contourNormals, baseGroupIndex);
 
-            double rMax = MaxProfileRadiusXY(contourDatas);
+            double rMax = MaxProfileRadiusXY(contourDatas, twistCenter);
             int segmentCount = LinearTwistSegmentCountForMaxDeviation(extrudeSpan, twistRatePerExtrudeDistance, rMax, maxDeviation);
 
             Vec2D min, max;
@@ -970,7 +1039,7 @@ namespace Geo
             {
                 foreach (var v in contourData.ContourDuplicateFree)
                 {
-                    Vec2D vr = Vec2DOps.Rotated(v, topTwistAngle);
+                    Vec2D vr = RotateAbout(v, twistCenter, topTwistAngle);
                     Vec3D vertex = new Vec3D(vr.X, vr.Y, topZ);
                     vertices.Add(vertex);
                     uv.Add(new Vec2D((v.X - min.X) * scaling, (v.Y - min.Y) * scaling));
@@ -1005,13 +1074,18 @@ namespace Geo
                         for (int i = 0; i < segment.Count; ++i)
                         {
                             var v = segment[i];
-                            Vec2D vr = Vec2DOps.Rotated(v, theta);
+                            Vec2D vr = RotateAbout(v, twistCenter, theta);
                             Vec3D vertex = new Vec3D(vr.X, vr.Y, z);
                             vertices.Add(vertex);
                             uv.Add(new Vec2D(uvBottomSegment[i].X, t));
-                            var n = normalSegment[i];
-                            Vec2D nr = Vec2DOps.Rotated(n, theta);
-                            normals.Add(new Vec3D(nr.X, nr.Y, 0.0));
+                            if (Math.Abs(twistRatePerExtrudeDistance) < 1e-20)
+                            {
+                                var n = normalSegment[i];
+                                Vec2D nr = Vec2DOps.Rotated(n, theta);
+                                normals.Add(new Vec3D(nr.X, nr.Y, 0.0));
+                            }
+                            else
+                                normals.Add(TwistedWallNormal(segment, i, twistCenter, theta, twistRatePerExtrudeDistance));
                             Int3 intPos = converter.Convert(vertex);
                             precisePositions.Add(new Rat3Hybrid(intPos.X, intPos.Y, intPos.Z));
                         }
@@ -1255,14 +1329,71 @@ namespace Geo
         /// <summary>
         /// Generates a cross-section at a specific curve vertex
         /// </summary>
+        /// <summary>
+        /// Guide-frame roll <c>X' · Y</c> and tangent derivative <c>T'</c>, both per unit polyline length.
+        /// Straight guides yield zeros. A curved guide's own roll (helix torsion) adds to any authored twist.
+        /// </summary>
+        private static void GuideFrameMotion(List<CoordinateSystem> frames, List<double> arcLengths, int index, bool closed,
+            out double roll, out Vec3D tangentDerivative)
+        {
+            roll = 0;
+            tangentDerivative = new Vec3D(0, 0, 0);
+            int n = frames.Count;
+            if (n < 2)
+                return;
+
+            int i0, i1;
+            double ds;
+            if (closed && n >= 3)
+            {
+                i0 = (index - 1 + n) % n;
+                i1 = (index + 1) % n;
+                double back = index == 0
+                    ? (frames[0].Origin - frames[n - 1].Origin).Length()
+                    : arcLengths[index] - arcLengths[index - 1];
+                double forward = index == n - 1
+                    ? (frames[0].Origin - frames[n - 1].Origin).Length()
+                    : arcLengths[index + 1] - arcLengths[index];
+                ds = back + forward;
+            }
+            else if (index == 0)
+            {
+                i0 = 0;
+                i1 = 1;
+                ds = arcLengths[1] - arcLengths[0];
+            }
+            else if (index == n - 1)
+            {
+                i0 = n - 2;
+                i1 = n - 1;
+                ds = arcLengths[n - 1] - arcLengths[n - 2];
+            }
+            else
+            {
+                i0 = index - 1;
+                i1 = index + 1;
+                ds = arcLengths[i1] - arcLengths[i0];
+            }
+            if (ds < 1e-15)
+                return;
+
+            var frame = frames[index];
+            Vec3D dX = (frames[i1].X - frames[i0].X) * (1.0 / ds);
+            Vec3D dT = (frames[i1].Z - frames[i0].Z) * (1.0 / ds);
+            roll = Vec3DOps.Dot(dX, frame.Y);
+            tangentDerivative = dT - frame.Z * Vec3DOps.Dot(dT, frame.Z);
+        }
+
         private static (List<Vec3D> vertices, List<Vec3D> normals, List<Vec2D> uvs) GenerateCrossSectionAtCurveVertex(
             ContourData contourData, CoordinateSystem curveVertex, double normalizedArcLength,
-            double arcLength, double twistRatePerExtrudeDistance)
+            double arcLength, double twistRatePerExtrudeDistance, double guideRoll, Vec3D tangentDerivative)
         {
             double twistAngle = arcLength * twistRatePerExtrudeDistance;
             CoordinateSystem frame = Math.Abs(twistAngle) < 1e-20
                 ? curveVertex
                 : CurveFrameWithTwistAboutZ(curveVertex, twistAngle);
+            double roll = twistRatePerExtrudeDistance + guideRoll;
+            bool tilted = Math.Abs(roll) >= 1e-12;
 
             var vertices = new List<Vec3D>();
             var normals = new List<Vec3D>();
@@ -1283,8 +1414,23 @@ namespace Geo
                     Vec3D worldPos = frame.PointTo3D(contourPoint);
                     vertices.Add(worldPos);
 
-                    // Transform 2D normal to 3D using the curve vertex frame
-                    Vec3D worldNormal = frame.DirectionTo3D(contourNormal);
+                    Vec3D worldNormal;
+                    if (!tilted || !TryAccumulateProfileNormal(segment, i, default, out double hx, out double hy, out double zCoeff))
+                    {
+                        // No authored twist and no frame roll: curvature only scales this normal.
+                        worldNormal = frame.DirectionTo3D(contourNormal);
+                    }
+                    else
+                    {
+                        // N = σ (length-weighted profile normal) + roll (edge · p) T.
+                        // σ = 1 − offset · T' is 1 on a straight guide and accounts for bending.
+                        Vec3D inPlane = frame.DirectionTo3D(new Vec2D(hx, hy));
+                        Vec3D offset = frame.DirectionTo3D(contourPoint);
+                        double sigma = 1.0 - Vec3DOps.Dot(offset, tangentDerivative);
+                        worldNormal = inPlane * sigma + frame.Z * (roll * zCoeff);
+                        double len = worldNormal.Length();
+                        worldNormal = len < 1e-14 ? frame.DirectionTo3D(contourNormal) : worldNormal / len;
+                    }
                     normals.Add(worldNormal);
 
                     // UV coordinates: u from contour arc length, v from curve arc length

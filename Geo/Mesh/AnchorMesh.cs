@@ -65,6 +65,7 @@ namespace Geo
         private bool _rigidDisplayNormalsCurrent;
         private Dictionary<string, SurfaceMetaData> _rigidRestMeta;
         private CoordinateConverter _rigidConverter;
+        private Dictionary<GroupEdge, LineStrip3D> _rigidRestEdges;
         private bool _rigidConverterSet;
 
         /// <summary>Set by <see cref="GeoAPI"/> at registration to replace any other registered mesh with the same name.</summary>
@@ -852,6 +853,9 @@ namespace Geo
         }
 
         public LineStrip3D GetEdge(int groupIdA, int groupIdB, int edgeIndex)
+            => GetEdgeCore(groupIdA, groupIdB, edgeIndex, false);
+
+        private LineStrip3D GetEdgeCore(int groupIdA, int groupIdB, int edgeIndex, bool localGeometry)
         {
             // Find all GroupEdges between these two groups
             var matchingEdges = new List<GroupEdge>();
@@ -872,7 +876,7 @@ namespace Geo
                 var ge = matchingEdges[edgeIndex];
                 // Each GroupEdge should now have exactly one LineStrip3D
                 if (ge.LineStrips3D.Count > 0)
-                    return ge.LineStrips3D[0];
+                    return EdgeGeometry(ge, localGeometry);
             }
 
             return null;
@@ -916,6 +920,13 @@ namespace Geo
 
         public bool TryGetPointOnSurface(string name, out Vec3D point, out Vec3D normal,
             out Vec2D uv, out Vec3D tangentX, out Vec3D tangentY)
+            => TryGetPointOnSurfaceCore(name, out point, out normal, out uv, out tangentX, out tangentY, false);
+
+        internal bool TryGetLocalPointOnSurface(string name, out Vec3D point)
+            => TryGetPointOnSurfaceCore(name, out point, out _, out _, out _, out _, true);
+
+        private bool TryGetPointOnSurfaceCore(string name, out Vec3D point, out Vec3D normal,
+            out Vec2D uv, out Vec3D tangentX, out Vec3D tangentY, bool localGeometry)
         {
             point = default;
             if (!EntityNaming.TryParseSurfacePointAddress(name, out var address))
@@ -937,16 +948,26 @@ namespace Geo
                 return false;
             }
 
-            UVSurface surface = GetSurfacePatch(groupId);
+            UVSurface surface;
+            if (localGeometry)
+                TryGetLocalSurface(address.PatchName, out surface);
+            else
+                surface = GetSurfacePatch(groupId);
             return surface.Evaluate(address.UniformX, address.UniformY, out point, out normal, out uv, out tangentX, out tangentY);
         }
 
 
         public bool TryGetPointOnEdge(string name, out Vec3D point)
+            => TryGetPointOnEdgeCore(name, out point, false);
+
+        internal bool TryGetLocalPointOnEdge(string name, out Vec3D point)
+            => TryGetPointOnEdgeCore(name, out point, true);
+
+        private bool TryGetPointOnEdgeCore(string name, out Vec3D point, bool localGeometry)
         {
             point = default;
             if (TryResolveEdgePointAddress(name, out var address))
-                return TryEvaluateEdgePoint(address, out point);
+                return TryEvaluateEdgePoint(address, out point, localGeometry);
             return false;
         }
 
@@ -957,14 +978,14 @@ namespace Geo
             return EntityNaming.TryParseLegacyEdgePointAddress(name, extendedNameToGroupId.Keys, out address);
         }
 
-        private bool TryEvaluateEdgePoint(EntityNaming.EdgePointAddress address, out Vec3D point)
+        private bool TryEvaluateEdgePoint(EntityNaming.EdgePointAddress address, out Vec3D point, bool localGeometry = false)
         {
             point = default;
             if (!extendedNameToGroupId.TryGetValue(address.PatchA, out int groupIdA) ||
                 !extendedNameToGroupId.TryGetValue(address.PatchB, out int groupIdB))
                 return false;
 
-            LineStrip3D edge = GetEdge(groupIdA, groupIdB, address.EdgeIndex);
+            LineStrip3D edge = GetEdgeCore(groupIdA, groupIdB, address.EdgeIndex, localGeometry);
             if (edge == null)
                 return false;
             point = edge.EvaluateUniform(address.Uniform);
@@ -972,6 +993,15 @@ namespace Geo
         }
 
         public bool TryGetEdge(string name, out LineStrip3D result)
+            => TryGetEdgeCore(name, out result, false);
+
+        internal bool TryGetLocalEdge(string name, out LineStrip3D result)
+            => TryGetEdgeCore(name, out result, true);
+
+        private LineStrip3D EdgeGeometry(GroupEdge edge, bool localGeometry)
+            => localGeometry && _rigidBodyActive ? _rigidRestEdges[edge] : edge.LineStrips3D[0];
+
+        private bool TryGetEdgeCore(string name, out LineStrip3D result, bool localGeometry)
         {
             ValidateEntityReference(name);
             name = name.Trim();
@@ -986,7 +1016,7 @@ namespace Geo
                     continue;
                 if (ge.LineStrips3D.Count > 0)
                 {
-                    result = ge.LineStrips3D[0];
+                    result = EdgeGeometry(ge, localGeometry);
                     return true;
                 }
             }
@@ -1145,6 +1175,22 @@ namespace Geo
                 _rigidRestLocal[i] = Mesh.Positions[i];
 
             _rigidRestMeta = SurfaceMetaData.CloneDictionary(surfaceMetaData);
+            // Edge addresses retain their original phase when display poses change.
+            // Capture exact body-local strips once rather than undoing world transforms.
+            _rigidRestEdges = GroupEdges.ToDictionary(edge => edge, edge =>
+            {
+                // Some display edges only carry floating coordinates. Reconstruct their
+                // exact strip from mesh indices, retaining the established phase and winding.
+                var local = new GroupEdge(edge.Name, edge.GroupIdA, edge.GroupIdB,
+                    edge.EdgeSegments, null, null, edge.PreferLexClosedLoopStart)
+                {
+                    ClosedLoopZeroFrame = edge.ClosedLoopZeroFrame,
+                    PreferredClosedLoopStartVertex = edge.PreferredClosedLoopStartVertex,
+                    PreferredClosedLoopNextVertex = edge.PreferredClosedLoopNextVertex
+                };
+                local.UpdateExactPositions(Mesh.Positions, Mesh.PrecisionPositions);
+                return new LineStrip3D(local.LineStripsExact[0].Select(point => converter.Convert(point)).ToList());
+            });
             _rigidBodyActive = true;
         }
 
@@ -1270,12 +1316,19 @@ namespace Geo
         }
 
         public bool TryGetPlaneFromPatch(string patchName, out PlaneSurfaceParams plane)
+            => TryGetPlaneFromPatchCore(patchName, false, out plane);
+
+        internal bool TryGetLocalPlaneFromPatch(string patchName, out PlaneSurfaceParams plane)
+            => TryGetPlaneFromPatchCore(patchName, true, out plane);
+
+        private bool TryGetPlaneFromPatchCore(string patchName, bool localGeometry, out PlaneSurfaceParams plane)
         {
             plane = null;
             string localName = ResolveLocalPatchName(patchName);
             if (localName == null)
                 return false;
-            if (surfaceMetaData.TryGetValue(localName, out SurfaceMetaData meta) &&
+            var metadata = localGeometry && _rigidBodyActive ? _rigidRestMeta : surfaceMetaData;
+            if (metadata.TryGetValue(localName, out SurfaceMetaData meta) &&
                 meta.SurfaceType == SurfaceType.Planar &&
                 meta.PlaneParams != null)
             {
@@ -1283,7 +1336,7 @@ namespace Geo
                 return true;
             }
 
-            if (!TryGetSurface(localName, out UVSurface surface) || !surface.IsPlanar())
+            if (!TryGetSurfaceCore(localName, out UVSurface surface, localGeometry, false) || !surface.IsPlanar())
                 return false;
 
             Vec3D center = surface.ApproximatePlanarSurfaceCenter(out Vec3D normal, out _, out _);

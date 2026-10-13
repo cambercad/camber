@@ -27,7 +27,7 @@ public partial class Assembly
             for(int i=1;i<placements.Count;i++)
             {
                 var target=TransformMath.Compose(placements[i],original);
-                var instance=AddPart(seed.Mesh,target.Position,target.Orientation);
+                var instance=AddDefinition(seed.Mesh,target.Position,target.Orientation);
                 BindPatternPlacement(seed,instance);
                 result.Add(instance);
             }

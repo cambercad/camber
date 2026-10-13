@@ -50,7 +50,8 @@ namespace Geo.NurbsConstruction
             double twistRatePerExtrudeDistance,
             IEnumerable<Vec2D> allProfilePoints,
             List<List<List<Vec2D>>> contour,
-            List<List<string>> contourNames)
+            List<List<string>> contourNames,
+            Vec2D twistCenter = default)
         {
             var segmentPolylines = ExtractNamedSegments(contour, contourNames);
             // The extruder normalizes winding on copies. Use that same ordering
@@ -61,7 +62,7 @@ namespace Geo.NurbsConstruction
                     foreach (string segment in contourNames[loop])
                         if (segmentPolylines.TryGetValue(segment, out var points)) points.Reverse();
             return BuildExtrudeMetadataCore(curveMeta, sketchFrame, heightPositive, heightNegative,
-                operationName, twistRatePerExtrudeDistance, allProfilePoints, segmentPolylines);
+                operationName, twistRatePerExtrudeDistance, allProfilePoints, segmentPolylines, twistCenter);
         }
 
         private static Dictionary<string, SurfaceMetaData> BuildExtrudeMetadataCore(
@@ -72,7 +73,8 @@ namespace Geo.NurbsConstruction
             string operationName,
             double twistRatePerExtrudeDistance,
             IEnumerable<Vec2D> allProfilePoints,
-            Dictionary<string, List<Vec2D>> segmentPolylines)
+            Dictionary<string, List<Vec2D>> segmentPolylines,
+            Vec2D twistCenter)
         {
             var result = new Dictionary<string, SurfaceMetaData>();
             bool hasTwist = Math.Abs(twistRatePerExtrudeDistance) > 1e-15;
@@ -111,11 +113,12 @@ namespace Geo.NurbsConstruction
                 var profile = BuildProfileCurve(curve2d, bottomFrame, segmentPolylines, kv.Key);
                 if (hasTwist)
                 {
-                    var frames = BuildTwistedFrames(bottomFrame, extrudeDir, extrudeLength, twistRatePerExtrudeDistance);
-                    var bottomFrameCopy = bottomFrame;
+                    var axisPoint = bottomFrame.PointFromCoordSysToWorld(new Vec3D(twistCenter.X, twistCenter.Y, 0));
+                    var centerFrame = new CoordinateSystem(axisPoint, bottomFrame.X, bottomFrame.Y, bottomFrame.Z);
+                    var frames = BuildTwistedFrames(centerFrame, extrudeDir, extrudeLength, twistRatePerExtrudeDistance);
                     result[sideName] = new SurfaceMetaData(surfaceType, () =>
                     {
-                        var surface = NurbsSurfaceFactory.SweepProfileAlongFrames(profile, bottomFrameCopy, frames);
+                        var surface = NurbsSurfaceFactory.SweepProfileAlongFrames(profile, centerFrame, frames);
                         return NurbsSurfaceFactory.WrapForMeshUv(surface, profile);
                     }, ParametricRange.UnitSquare);
                     continue;
@@ -314,7 +317,8 @@ namespace Geo.NurbsConstruction
             LoftOptions options,
             string operationName,
             Func<INurbsSurface> loftSideSupportFactory,
-            IReadOnlyDictionary<string, ParametricRange> sideDomains = null)
+            IReadOnlyDictionary<string, ParametricRange> sideDomains = null,
+            INurbsSurface startPointCap = null, INurbsSurface endPointCap = null)
         {
             var result = new Dictionary<string, SurfaceMetaData>();
             if (sketches == null || sketches.Count < 2)
@@ -366,10 +370,12 @@ namespace Geo.NurbsConstruction
                 var lastPoints = CollectSketchProfilePoints(lastSketch, maxDeviation);
                 NurbsSurfaceFactory.ProfileBoundingBox(firstPoints, out var uvMin0, out var uvMax0);
                 NurbsSurfaceFactory.ProfileBoundingBox(lastPoints, out var uvMin1, out var uvMax1);
-                result[EntityNaming.LoftStartCap(operationName)] =
-                    BuildPlanarCapMeta(firstSketch.CoordinateSystem, uvMin0, uvMax0);
-                result[EntityNaming.LoftEndCap(operationName)] =
-                    BuildPlanarCapMeta(lastSketch.CoordinateSystem, uvMin1, uvMax1);
+                result[EntityNaming.LoftStartCap(operationName)] = startPointCap != null
+                    ? new SurfaceMetaData(SurfaceType.Unknown, startPointCap, ParametricRange.UnitSquare)
+                    : BuildPlanarCapMeta(firstSketch.CoordinateSystem, uvMin0, uvMax0);
+                result[EntityNaming.LoftEndCap(operationName)] = endPointCap != null
+                    ? new SurfaceMetaData(SurfaceType.Unknown, endPointCap, ParametricRange.UnitSquare)
+                    : BuildPlanarCapMeta(lastSketch.CoordinateSystem, uvMin1, uvMax1);
             }
 
             return result;
