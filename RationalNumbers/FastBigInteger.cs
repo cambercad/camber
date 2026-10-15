@@ -542,6 +542,68 @@ public readonly struct FastBigInteger : IEquatable<FastBigInteger>, IComparable<
         return new FastBigInteger(result, negative, owned);
     }
 
+    /// <summary>
+    /// Compares <c>a * b</c> with <c>c * d</c> exactly without materializing either product on the heap.
+    /// Rational comparison (cross multiplication) uses this.
+    /// </summary>
+    public static int CompareProducts(in FastBigInteger a, in FastBigInteger b, in FastBigInteger c, in FastBigInteger d)
+    {
+        int leftSign = a.Sign * b.Sign, rightSign = c.Sign * d.Sign;
+        if (leftSign != rightSign) return leftSign < rightSign ? -1 : 1;
+        if (leftSign == 0) return 0;
+        int na = a.Length, nb = b.Length, nc = c.Length, nd = d.Length;
+        // Two-word operands multiply without allocation already; very large products are
+        // faster in the runtime's multiplication than in a schoolbook loop.
+        if (a.limbs == null && b.limbs == null && c.limbs == null && d.limbs == null
+            || na >= 12 && nb >= 12 || nc >= 12 && nd >= 12)
+            return (a * b).CompareTo(c * d);
+
+        // A product of an x-bit and a y-bit value has x+y-1 or x+y bits.
+        long leftBits = (long)na * 64 - BitOperations.LeadingZeroCount(a.Limb(na - 1))
+            + (long)nb * 64 - BitOperations.LeadingZeroCount(b.Limb(nb - 1));
+        long rightBits = (long)nc * 64 - BitOperations.LeadingZeroCount(c.Limb(nc - 1))
+            + (long)nd * 64 - BitOperations.LeadingZeroCount(d.Limb(nd - 1));
+        int magnitude;
+        if (leftBits <= rightBits - 2) magnitude = -1;
+        else if (rightBits <= leftBits - 2) magnitude = 1;
+        else
+        {
+            int leftLength = na + nb, rightLength = nc + nd;
+            Span<ulong> left = leftLength <= 64 ? stackalloc ulong[leftLength] : new ulong[leftLength];
+            Span<ulong> right = rightLength <= 64 ? stackalloc ulong[rightLength] : new ulong[rightLength];
+            MultiplyMagnitudesInto(a, na, b, nb, left);
+            MultiplyMagnitudesInto(c, nc, d, nd, right);
+            leftLength = TrimmedLength(left, leftLength);
+            rightLength = TrimmedLength(right, rightLength);
+            magnitude = CompareLimbs(left, leftLength, right, rightLength);
+        }
+        return leftSign < 0 ? -magnitude : magnitude;
+    }
+
+    private static void MultiplyMagnitudesInto(in FastBigInteger a, int na, in FastBigInteger b, int nb, Span<ulong> result)
+    {
+        Span<ulong> xs = na <= 32 ? stackalloc ulong[na] : new ulong[na];
+        Span<ulong> ys = nb <= 32 ? stackalloc ulong[nb] : new ulong[nb];
+        CopyLimbs(a, xs);
+        CopyLimbs(b, ys);
+        result.Clear();
+        for (int i = 0; i < na; i++)
+        {
+            ulong carry = 0, x = xs[i];
+            for (int j = 0; j < nb; j++)
+            {
+                ulong high = MultiplyLimb(x, ys[j], out ulong low);
+                ulong sum = result[i + j] + low;
+                ulong overflow = sum < low ? 1UL : 0;
+                ulong next = sum + carry;
+                if (next < sum) overflow++;
+                result[i + j] = next;
+                carry = high + overflow;
+            }
+            result[i + nb] = carry;
+        }
+    }
+
     private static FastBigInteger GcdUpTo128(ulong x0, ulong x1, ulong y0, ulong y1)
     {
         if ((x0 | x1) == 0) return FromMagnitude(((UInt128)y1 << 64) | y0, false);

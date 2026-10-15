@@ -309,8 +309,8 @@ public struct BigRational : IComparable<BigRational>, IComparable, IEquatable<Bi
 
     public static int Compare(BigRational x, BigRational y)
     {
-        return (x.numerator * y.EffectiveDenominator).CompareTo(
-            y.numerator * x.EffectiveDenominator);
+        return FastBigInteger.CompareProducts(x.numerator, y.EffectiveDenominator,
+            y.numerator, x.EffectiveDenominator);
     }
 
     public static bool operator ==(BigRational x, BigRational y) => Compare(x, y) == 0;

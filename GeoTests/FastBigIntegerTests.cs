@@ -232,4 +232,39 @@ public class FastBigIntegerTests
                 FastBigInteger.GreatestCommonDivisor(new FastBigInteger(a), new FastBigInteger(b)).ToBigInteger());
         }
     }
+
+    [Fact]
+    public void CompareProductsMatchesBigIntegerComparison()
+    {
+        var random = new Random(2024);
+        BigInteger RandomBig()
+        {
+            int bits = random.Next(6) switch { 0 => random.Next(1, 40), 1 => random.Next(40, 70), 2 => random.Next(60, 140), 3 => random.Next(120, 300), _ => random.Next(200, 700) };
+            var bytes = new byte[(bits + 7) / 8 + 1];
+            random.NextBytes(bytes);
+            bytes[^1] = 0;
+            var value = new BigInteger(bytes) & ((BigInteger.One << bits) - 1);
+            if (random.Next(20) == 0) value = 0;
+            if (random.Next(20) == 0) value = 1;
+            return random.Next(2) == 0 ? value : -value;
+        }
+        int equal = 0;
+        for (int i = 0; i < 40000; i++)
+        {
+            BigInteger a = RandomBig(), b = RandomBig(), c = RandomBig(), d = RandomBig();
+            switch (random.Next(5))
+            {
+                case 0: // exactly equal products through different factorizations
+                    c = a * random.Next(1, 9); d = b; if (!c.IsZero) { d = BigInteger.Divide(a * b, c); if (d * c != a * b) { c = a; d = b; } }
+                    break;
+                case 1: c = b; d = a; break;
+                case 2: c = a; d = b + random.Next(-1, 2); break;
+            }
+            int expected = (a * b).CompareTo(c * d);
+            int actual = FastBigInteger.CompareProducts(new FastBigInteger(a), new FastBigInteger(b), new FastBigInteger(c), new FastBigInteger(d));
+            Assert.Equal(Math.Sign(expected), actual);
+            if (expected == 0) equal++;
+        }
+        Assert.True(equal > 2000, equal.ToString());
+    }
 }
