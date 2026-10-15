@@ -96,17 +96,23 @@ public struct BigRational : IComparable<BigRational>, IComparable, IEquatable<Bi
             return;
         }
 
-        var n = new FastBigInteger(new BigInteger(significand));
+        // An odd significand over a power of two is already in lowest terms, so
+        // no GCD is needed and no System.Numerics value is built.
+        int trailingZeros = System.Numerics.BitOperations.TrailingZeroCount(significand);
+        significand >>= trailingZeros;
+        exponent += trailingZeros;
+
+        var n = new FastBigInteger((long)significand);
         if (negative) n = -n;
         var d = new FastBigInteger(1);
         if (exponent >= 0)
-            n = new FastBigInteger(n.ToBigInteger() << exponent);
+            n *= FastBigInteger.PowerOfTwo(exponent);
         else
-            d = new FastBigInteger(BigInteger.One << -exponent);
+            d = FastBigInteger.PowerOfTwo(-exponent);
 
         numerator = n;
         denominator = d;
-        Simplify();
+        reduced = true;
     }
 
     public BigRational(decimal value)

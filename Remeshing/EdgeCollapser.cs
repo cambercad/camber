@@ -771,9 +771,10 @@ namespace Remeshing
                         if (tri.B == moved) b = newDestination;
                         if (tri.C == moved) pointC = newDestination;
                         // Reject a flipped or collapsed normal. The sign matches Dot(newCross, oldCross).
-                        var oldU = points[tri.B] - points[tri.A];
-                        var oldV = points[tri.C] - points[tri.A];
-                        if (Rat3Hybrid.SignOfCrossDot(b - a, pointC - a, oldU, oldV) <= 0)
+                        // The clear cases are settled by an error-bounded floating point filter;
+                        // everything else (including exactly degenerate triangles) stays exact.
+                        if (Rat3Hybrid.SignOfTriangleNormalDot(in a, in b, in pointC,
+                                points[tri.A], points[tri.B], points[tri.C]) <= 0)
                             return false;
                     }
                     else

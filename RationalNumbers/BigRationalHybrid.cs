@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 
 using Rat = GeoCore.BigRational;
 
@@ -43,6 +43,43 @@ namespace GeoCore
         }
 
         private bool cachedHasFraction;
+
+        // Cached double approximation, relative error below 1e-15. Like the bounds above it
+        // depends only on the numeric value, so racing threads publish the same answer.
+        private double cachedApprox;
+        private int approxState; // 0 = not computed, 1 = valid, 2 = unavailable
+
+        public bool TryGetApproximateDouble(out double approximation)
+        {
+            int state = Volatile.Read(ref approxState);
+            if (state == 0)
+            {
+                state = ComputeApproximateDouble(out double computed) ? 1 : 2;
+                cachedApprox = computed;
+                Volatile.Write(ref approxState, state);
+            }
+            approximation = cachedApprox;
+            return state == 1;
+        }
+
+        private bool ComputeApproximateDouble(out double approximation)
+        {
+            approximation = 0;
+            var numerator = Value.FastNumerator;
+            var denominator = Value.FastDenominator;
+            if (denominator.Sign <= 0)
+                return false;
+            numerator.ToScaledDouble(out double n, out int numeratorExponent);
+            denominator.ToScaledDouble(out double d, out int denominatorExponent);
+            // Each conversion, the division and the final power-of-two scaling round at most
+            // once, and truncating the lower limbs adds under 2^-64: within 6 * 2^-53 overall.
+            double quotient = n / d;
+            long exponent = (long)numeratorExponent - denominatorExponent;
+            if (exponent > 2000 || exponent < -2000)
+                return false;
+            approximation = Math.ScaleB(quotient, (int)exponent);
+            return double.IsFinite(approximation);
+        }
 
         private bool ComputeIntegerBounds(out long floor)
         {
@@ -105,6 +142,23 @@ namespace GeoCore
             isSimplified = true;
             isLongValue = true;
         }
+        /// <summary>
+        /// A double within a relative error of 1e-15 of the exact value, cached per value.
+        /// False when the magnitude is too large for the filter; callers must then stay exact.
+        /// </summary>
+        public bool TryApproximate(out double approximation)
+        {
+            if (isLongValue)
+            {
+                approximation = value;
+                return true;
+            }
+            return rationalValue.TryGetApproximateDouble(out approximation);
+        }
+
+        /// <summary>The exact value of a finite double without System.Numerics temporaries.</summary>
+        public static BigRationalHybrid FromDouble(double value) => new BigRationalHybrid(new Rat(value));
+
         public BigRationalHybrid(BigInteger num, BigInteger denom)
             : this(new Rat(num, denom))
         {            

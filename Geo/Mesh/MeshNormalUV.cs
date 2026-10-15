@@ -22,8 +22,7 @@ namespace Geo
                 {
                     if (!double.IsFinite(value))
                         throw new InvalidOperationException("Surface UV coordinates must be finite.");
-                    BigRational rational = value;
-                    return new BigRationalHybrid(rational.Numerator, rational.Denominator);
+                    return BigRationalHybrid.FromDouble(value);
                 }
                 // Keep the complete affine combination exact until its one
                 // conversion to display UV, including constant seam values.

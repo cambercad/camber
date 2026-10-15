@@ -101,11 +101,51 @@ public readonly struct FastBigInteger : IEquatable<FastBigInteger>, IComparable<
         abs.TryWriteBytes(MemoryMarshal.AsBytes(limbs.AsSpan()), out _, isUnsigned: true);
     }
 
+    /// <summary>2^exponent for exponent >= 0.</summary>
+    internal static FastBigInteger PowerOfTwo(int exponent)
+    {
+        if (exponent < 0) throw new ArgumentOutOfRangeException(nameof(exponent));
+        if (exponent < 63) return new FastBigInteger(1L << exponent);
+        if (exponent < 128) return FromMagnitude(UInt128.One << exponent, false);
+        var magnitude = new ulong[exponent / 64 + 1];
+        magnitude[exponent / 64] = 1UL << (exponent % 64);
+        return new FastBigInteger(magnitude, false);
+    }
+
     public int Sign => limbs == null && !wide ? Math.Sign(small) : negative ? -1 : 1;
     public bool IsZero => limbs == null && !wide && small == 0;
     internal bool IsUnit => limbs == null && !wide && (small == 1 || small == -1);
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryGetInt64(out long value) { value = small; return limbs == null && !wide; }
+
+    /// <summary>
+    /// Nearest double with relative error far below 2^-50, for magnitudes up to 128 bits.
+    /// Larger values report false. Only used for error-bounded floating point filters.
+    /// </summary>
+    internal bool TryToApproximateDouble(out double value)
+    {
+        if (limbs != null) { value = 0; return false; }
+        if (!wide) { value = small; return true; }
+        double magnitude = (double)(((UInt128)wideHigh << 64) | wideLow);
+        value = negative ? -magnitude : magnitude;
+        return true;
+    }
+
+    /// <summary>
+    /// value = mantissa * 2^exponent for any size. The mantissa keeps the top 128 bits,
+    /// so its relative error stays below 2^-52 however many limbs the value has.
+    /// </summary>
+    internal void ToScaledDouble(out double mantissa, out int exponent)
+    {
+        exponent = 0;
+        if (limbs == null) { TryToApproximateDouble(out mantissa); return; }
+        int n = limbs.Length;
+        UInt128 top = ((UInt128)limbs[n - 1] << 64) | limbs[n - 2];
+        // The lower limbs are dropped, so the value is within 2^-64 of top * 2^(64 * (n - 2)).
+        mantissa = (double)top;
+        exponent = 64 * (n - 2);
+        if (negative) mantissa = -mantissa;
+    }
 
     public BigInteger ToBigInteger()
     {
