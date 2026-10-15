@@ -98,4 +98,37 @@ public class TriangleNormalDotFilterTests
             Assert.Equal(BigInteger.One, BigInteger.GreatestCommonDivisor(fast.Numerator(), fast.Denominator()) is var g && g.IsZero ? BigInteger.One : g);
         }
     }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    public void OrientAndInCircleFiltersNeverContradictExactArithmetic(int kind)
+    {
+        var random = new Random(900 + kind);
+        int decided = 0;
+        for (int i = 0; i < 4000; i++)
+        {
+            var a = Point(random, kind); var b = Point(random, kind); var c = Point(random, kind); var d = Point(random, kind);
+            // Make every third case exactly coplanar / cocircular-ish so zero results are covered.
+            if (i % 3 == 0) d = a + (b - a) * new BigRationalHybrid(random.Next(-5, 6), random.Next(1, 5)) + (c - a) * new BigRationalHybrid(random.Next(-5, 6), random.Next(1, 5));
+            int exact = BigRationalHybrid.SignOfOrient3DExact(a.X, a.Y, a.Z, b.X, b.Y, b.Z, c.X, c.Y, c.Z, d.X, d.Y, d.Z);
+            if (FloatFilter.TryOrient3DSign(a.X, a.Y, a.Z, b.X, b.Y, b.Z, c.X, c.Y, c.Z, d.X, d.Y, d.Z, out int filtered))
+            {
+                decided++;
+                Assert.Equal(exact, filtered);
+            }
+            Assert.Equal(exact, BigRationalHybrid.SignOfOrient3D(a.X, a.Y, a.Z, b.X, b.Y, b.Z, c.X, c.Y, c.Z, d.X, d.Y, d.Z));
+
+            var adx = a.X - d.X; var ady = a.Y - d.Y; var bdx = b.X - d.X; var bdy = b.Y - d.Y; var cdx = c.X - d.X; var cdy = c.Y - d.Y;
+            var result = (adx * adx + ady * ady) * (bdx * cdy - cdx * bdy) + (bdx * bdx + bdy * bdy) * (cdx * ady - adx * cdy)
+                + (cdx * cdx + cdy * cdy) * (adx * bdy - bdx * ady);
+            int exactCircle = result.Sign();
+            if (FloatFilter.TryInCircleSign(a.X, a.Y, b.X, b.Y, c.X, c.Y, d.X, d.Y, out int circle))
+                Assert.Equal(exactCircle, circle);
+        }
+        Assert.True(decided > 1000, "The filter should settle most random cases: " + decided);
+    }
 }

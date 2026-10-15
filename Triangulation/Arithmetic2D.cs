@@ -111,6 +111,11 @@ namespace GeoCore
                 return InCircleResult.OnCircle;
             }
 
+            if (FloatFilter.TryInCircleSign(in pa.X, in pa.Y, in pb.X, in pb.Y, in pc.X, in pc.Y, in pd.X, in pd.Y, out int filtered))
+            {
+                return filtered > 0 ? InCircleResult.Inside : InCircleResult.Outside;
+            }
+
             BigRationalHybrid adx, ady, bdx, bdy, cdx, cdy;
             BigRationalHybrid abdet, bcdet, cadet;
             BigRationalHybrid alift, blift, clift;

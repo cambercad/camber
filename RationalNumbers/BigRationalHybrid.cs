@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+using System.Numerics;
 
 using Rat = GeoCore.BigRational;
 
@@ -486,6 +486,10 @@ namespace GeoCore
             if (TrySignOfOrient3DIntegerBounds(
                 pax, pay, paz, pbx, pby, pbz, pcx, pcy, pcz, pdx, pdy, pdz, out int boundedSign))
                 return boundedSign;
+            // Clear cases are settled by an error-bounded floating point evaluation.
+            if (FloatFilter.TryOrient3DSign(in pax, in pay, in paz, in pbx, in pby, in pbz,
+                    in pcx, in pcy, in pcz, in pdx, in pdy, in pdz, out int filteredSign))
+                return filteredSign;
             return SignOfOrient3DExact(
                 in pax, in pay, in paz, in pbx, in pby, in pbz,
                 in pcx, in pcy, in pcz, in pdx, in pdy, in pdz);
