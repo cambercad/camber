@@ -222,11 +222,12 @@ Locks a nested sub-assembly at its current pose (6 DOF).")]
         {
             AssemblyOccurrence root = occurrence?.InstanceRoot;
             EnsureOwnedOccurrence(root);
-            AssemblyPart leaf = FirstLeafPart(occurrence.Child);
+            AssemblyPart leaf = GetLeaves().FirstOrDefault(item =>
+                ReferenceEquals(item.Part.OccurrenceContext, root))?.Part;
             RecordMate(new AssemblyMateRecord(
                 AssemblyMateKind.FixPart,
                 $"Fix {occurrence.Child.Name}",
-                leaf.ForOccurrence(root)).WithFixedTarget(root.EvaluatePose(), root),
+                leaf).WithFixedTarget(root.EvaluatePose(), root),
                 occurrence.Child.Name + ":");
             AddSolverConstraints(new FixedTransformConstraint3d(root.Transform));
         }

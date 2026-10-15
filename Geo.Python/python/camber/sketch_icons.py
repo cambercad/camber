@@ -340,6 +340,7 @@ _TOOLTIPS = {
     "dim_angle": "Set the angle between two lines.",
     "fit": "Center the view on the sketch plane.",
     "undo": "Undo the last sketch action.",
+    "redo": "Restore the last undone sketch edit.",
 }
 
 

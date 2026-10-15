@@ -617,6 +617,21 @@ public class NativePart
         return Track(_inner.LoadWavefrontObjFile(filePath, groupBorderAngleThresholdDegree, NativeUtil.EmptyToNull(name), scale), "Mesh import", details: filePath);
     }
 
+    public NativeSolid LoadUsdaFile(string filePath, double groupBorderAngleThresholdDegree, string name, double scale)
+    {
+        return Track(_inner.LoadUsdaFile(filePath, groupBorderAngleThresholdDegree, NativeUtil.EmptyToNull(name), scale), "Mesh import", details: filePath);
+    }
+
+    public NativeSketch LoadSvgSketch(string plane, string filePath, string name, int constrained, double scale, int flipY)
+    {
+        string planeName = NativeUtil.ResolvePlane(plane);
+        PlotterSketcherCoordSys sketch = constrained != 0
+            ? _inner.GetConstraintSketcher(planeName, NativeUtil.EmptyToNull(name))
+            : _inner.GetPlotterSketcher(planeName, NativeUtil.EmptyToNull(name));
+        SvgSketchReader.Load(sketch, filePath, scale, flipY != 0);
+        return new NativeSketch(sketch);
+    }
+
     public void SaveStl(NativeSolid mesh, string filePath, int binary)
     {
         if (binary != 0)
@@ -648,6 +663,11 @@ public class NativePart
     public void SaveUsda(NativeSolid mesh, string filePath)
     {
         _inner.SaveUsdaFile(mesh.Native, filePath);
+    }
+
+    public void SaveSvg(NativeSketch sketch, string filePath, int annotations)
+    {
+        _inner.SaveSvgFile(sketch.Native, filePath, annotations != 0);
     }
 
     public NativeSection Section(NativeFrame plane) => new(new SectionView(_inner.GetMeshes(), _inner.Converter, plane.Native));
@@ -1617,6 +1637,27 @@ public class NativeSketch
                 $"Sketch constraint solve failed: {result.Message ?? "did not converge"}. " +
                 $"Residual sum of squares: {result.SumOfSquaredErrors:R}; " +
                 $"{result.NumEquations} equations, {result.NumParameters} parameters.");
+    }
+
+    /// <summary>
+    /// Solves and returns convergence, residual, sketch parameter count, and generated equation count.
+    /// Does not throw. Parameter minus equation count is only a coarse freedom estimate:
+    /// reductions and redundant rows are not a Jacobian rank.
+    /// </summary>
+    public string SketchSolveReport()
+    {
+        var sketch = ConstraintSketcher();
+        sketch.CountSketchSystem(out int parameters, out int equations);
+        var result = sketch.SolveConstraintsDetailed();
+        string message = result.Message ?? "";
+        message = message.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", "\\n");
+        return string.Format(System.Globalization.CultureInfo.InvariantCulture,
+            "{{\"converged\":{0},\"sum_squared_error\":{1:R},\"num_parameters\":{2},\"num_equations\":{3},\"message\":\"{4}\"}}",
+            result.Converged ? "true" : "false",
+            result.SumOfSquaredErrors,
+            parameters,
+            equations,
+            message);
     }
 
     /// <summary>

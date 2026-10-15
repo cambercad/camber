@@ -507,6 +507,17 @@ Adds one exact B-spline or rational NURBS curve. Omitted knots are uniform/clamp
             return ellipse;
         }
 
+        [APIDescription(@"AddCurve(curve: Curve2D) -> Curve2D
+Adds an existing analytic curve (elliptical arc, sampled spline, and similar) and moves the pen to its end.")]
+        public Curve2D AddCurve(Curve2D curve)
+        {
+            if (curve == null)
+                throw new ArgumentNullException(nameof(curve));
+            StartNewStripIfDisconnected(curve.StartPosition);
+            AddCurveToStrip(curve);
+            return curve;
+        }
+
         [APIDescription(@"AddCircle(center: Vec2D, radius: float, flags: CurveFlags = None) -> Circle2D
 Adds a full 2D circle. Each circle is its own closed contour (derived from start==end connectivity), so a second circle is a separate hole/profile without starting a stored strip.")]
         public virtual Circle2D AddCircle(Vec2D center, double radius, CurveFlags flags = CurveFlags.None)

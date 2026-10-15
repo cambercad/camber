@@ -356,7 +356,7 @@ def build_gearbox():
     for k in range(1, N_PLANETS):
         pins.append(part.copy_solid(pin0, "pin{0}".format(k)))
 
-    asm = part.assembly("planetary_3to1")
+    asm = part.assembly(name="planetary_3to1")
     asm.solve_after_every_constraint = False
 
     hsg = asm.add_part(housing)
@@ -366,17 +366,17 @@ def build_gearbox():
     pin_i = []
     for k in range(N_PLANETS):
         x, y, _ = planet_pos(k)
-        planet_i.append(asm.add_part(planets[k], (x, y, 0.0), quat_z(planet_spin(k))))
-        pin_i.append(asm.add_part(pins[k], (x, y, 0.0)))
+        planet_i.append(asm.add_part(planets[k], position=(x, y, 0.0), orientation=quat_z(planet_spin(k))))
+        pin_i.append(asm.add_part(pins[k], position=(x, y, 0.0)))
     car = asm.add_part(carrier)
     cvr = asm.add_part(cover)
-    bin_i = asm.add_part(brg_in, (0.0, 0.0, Z_COVER0 + 0.5 * BRG_IN[2]))
-    bout_i = asm.add_part(brg_out, (0.0, 0.0, Z_HOUSING0 + 1.0 + 0.5 * BRG_OUT[2]))
+    bin_i = asm.add_part(brg_in, position=(0.0, 0.0, Z_COVER0 + 0.5 * BRG_IN[2]))
+    bout_i = asm.add_part(brg_out, position=(0.0, 0.0, Z_HOUSING0 + 1.0 + 0.5 * BRG_OUT[2]))
     screw_i = []
     for i in range(N_BOLTS):
         a = i * TWO_PI / N_BOLTS
         x, y = BCD_R * math.cos(a), BCD_R * math.sin(a)
-        screw_i.append(asm.add_part(screws[i], (x, y, Z_COVER1), quat_z(a)))
+        screw_i.append(asm.add_part(screws[i], position=(x, y, Z_COVER1), orientation=quat_z(a)))
 
     # Use a current split-face name rather than the obsolete construction alias.
     carrier_hub_face = next(

@@ -20,14 +20,14 @@ def build_holed_plate(profile_name, hole_sketch_name, solid_name, cutter_name, r
     profile_sk = part.sketch("xy", name=profile_name)
     profile_sk.add_rectangle((0, 0), (plate_w, plate_h))
     solid = profile_sk.extrude_two_sides(
-        plate_thickness * 0.5, plate_thickness * 0.5, name=solid_name)
+        plate_thickness * 0.5, minus_z=plate_thickness * 0.5, name=solid_name)
 
     holes_sk = part.sketch("xy", name=hole_sketch_name)
     hole_y = plate_h * 0.5
     holes_sk.add_circle((hole_inset, hole_y), hole_radius, name="Circle1")
     holes_sk.add_circle((plate_w - hole_inset, hole_y), hole_radius, name="Circle2")
     cutter = holes_sk.extrude_two_sides(
-        plate_thickness * 0.5, plate_thickness * 0.5, name=cutter_name)
+        plate_thickness * 0.5, minus_z=plate_thickness * 0.5, name=cutter_name)
     return part.subtract(solid, cutter, name=result_name)
 
 
@@ -50,7 +50,7 @@ pin_radius = hole_radius - 0.5
 pin_height = plate_thickness + 2.0
 pin = part.cylinder(Frame(vec3(0, 0, 0)), pin_radius, pin_height, name="bearingPin")
 
-asm = part.assembly("bearing_link")
+asm = part.assembly(name="bearing_link")
 asm.solve_after_every_constraint = False
 
 body_a = asm.add_part(plate_a)
@@ -58,8 +58,8 @@ asm.fix(body_a)
 
 body_b = asm.add_part(
     plate_b,
-    (40, 0, 0),
-    (0, 0, 0.70710678, 0.70710678),
+    position=(40, 0, 0),
+    orientation=(0, 0, 0.70710678, 0.70710678),
 )
 
 elbow_a = body_a.axis("Circle1")
@@ -72,12 +72,12 @@ asm.parallel(elbow_a, elbow_b)
 asm.angle(leg_a, leg_b, math.pi * 0.5)
 asm.coincident(body_a.point_at((0, 0, 0)), body_b.point_at((0, plate_h, 0)))
 
-body_pin = asm.add_part(pin, (hole_inset, plate_h * 0.5, -plate_thickness * 0.5 - 1))
+body_pin = asm.add_part(pin, position=(hole_inset, plate_h * 0.5, -plate_thickness * 0.5 - 1))
 pin_axis = body_pin.axis_at((0, 0, pin_height * 0.5), (0, 0, 1))
 asm.concentric(pin_axis, elbow_a)
 
 body_post = asm.add_part(
-    support_post, (plate_w - hole_inset, plate_h * 0.5, plate_thickness * 0.5))
+    support_post, position=(plate_w - hole_inset, plate_h * 0.5, plate_thickness * 0.5))
 
 top_a = body_a.plane_at((plate_w * 0.5, plate_h * 0.5, plate_thickness * 0.5), (0, 0, 1))
 bottom_post = body_post.plane_at((post_size * 0.5, post_size * 0.5, 0), (0, 0, -1))

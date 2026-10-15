@@ -114,6 +114,26 @@ public class RationalEqualityTests
     }
 
     [Fact]
+    public void SmallFactorTrimLeavesARealGcdForHashIdentity()
+    {
+        var factor = (BigInteger.One << 180) + 1;
+        var trimmed = new BigRationalHybrid(30 * factor, 105 * factor);
+        var canonical = new BigRationalHybrid(2, 7);
+        trimmed.LimitGrowth();
+        Assert.Equal(canonical, trimmed);
+        Assert.Equal(canonical.GetHashCode(), trimmed.GetHashCode());
+        Assert.Single(new HashSet<BigRationalHybrid> { trimmed, canonical });
+        Assert.Equal(2 * factor, trimmed.Numerator());
+        Assert.Equal(7 * factor, trimmed.Denominator());
+
+        var primeFactor = new BigRationalHybrid(14, 21);
+        primeFactor.LimitGrowth();
+        Assert.Equal(new BigRationalHybrid(2, 3).GetHashCode(), primeFactor.GetHashCode());
+        Assert.Equal(14, primeFactor.Numerator());
+        Assert.Equal(21, primeFactor.Denominator());
+    }
+
+    [Fact]
     public void DefaultHybridEqualsExplicitZero()
     {
         var zero = default(BigRationalHybrid);

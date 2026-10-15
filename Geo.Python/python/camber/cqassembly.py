@@ -82,7 +82,7 @@ class Assembly:
         if self._part is None:
             self._part = solid._part
         if self._assembly is None:
-            self._assembly = self._part.assembly(self._name)
+            self._assembly = self._part.assembly(name=self._name)
         name = name or solid.name
         if name in self._parts:
             raise ValueError("duplicate assembly component {!r}".format(name))
@@ -93,7 +93,8 @@ class Assembly:
             self._source_geometry[source_key] = (
                 tuple(points), tuple(object.faces()._selected_faces), tuple(object._edges))
         self._geometry[name] = self._source_geometry[source_key]
-        occurrence = self._assembly.add_part(solid, loc.position, loc.orientation)
+        occurrence = self._assembly.add_part(
+            solid, position=loc.position, orientation=loc.orientation)
         self._parts[name] = occurrence
         self._objects[name] = object
         if color is not None:

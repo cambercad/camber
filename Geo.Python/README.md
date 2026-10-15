@@ -63,6 +63,14 @@ docked Properties panel edits the selection; the document toolbar and status bar
 remain in place. Finish sketch and Cancel sketch return to part modeling.
 Finish returns to the owning part and preserves the sketch's named placement.
 
+Use **View → Measure**, then Ctrl-click two points, edges or faces to see their
+minimum distance and X/Y/Z separation. **View → Section view** reveals the inside
+of a part or assembly: choose an axis, align to the view or use a selected planar
+face, then adjust the position or reverse the retained side. **Done** closes the
+settings while keeping the cut visible; reopen Section view to disable it.
+These inspection tools leave the model and its construction history unchanged.
+Section clipping pauses during sketch editing and returns when the sketch closes.
+
 Sketch setup offers **Pick planar face**, and point inputs offer **Pick point**.
 Selections store named references, so edits resolve the current feature geometry
 rather than freezing picked coordinates. Frame references are available in Python
@@ -811,9 +819,9 @@ with ThreadPoolExecutor(max_workers=4) as workers:
     solids = list(workers.map(build_component, range(4)))
 
 part = Part(low, high, tolerance=.01)
-assembly = part.assembly("components")
+assembly = part.assembly(name="components")
 for index, solid in enumerate(solids):
-    assembly.add_part(solid, (0, 0, 3 * index))
+    assembly.add_part(solid, position=(0, 0, 3 * index))
 ```
 
 Assembly mutation occurs sequentially. Independent parts can use different
@@ -840,6 +848,12 @@ Supported planar Boolean splits retain their creation and separating-boundary
 names. For example, `base-ExtrudeTop{main_slot-Line2}` identifies the top region
 beside that slot wall. An unrelated earlier cut or hole does not renumber this
 reference. Explicitly name the generating features and sketch elements.
+
+Coplanar fusion keeps one face. Its current name joins the creation roots, for
+example `left-ExtrudeTop&right-ExtrudeTop`. Each original name remains an alias
+of that same face, so a later feature can still select it. Passing two aliases
+selects the face once. A later cut that leaves an alias on more than one region
+retires it: datum lookup then names the current faces instead of guessing.
 
 A split ancestor, obsolete ordinal alias, or indistinguishable region raises an
 ambiguity error during datum lookup. Curved split regions and repeated copies

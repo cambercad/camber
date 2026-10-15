@@ -209,7 +209,8 @@ public sealed class ShellTests : IDisposable
         Assert.True(MeshAnalysis.IsWatertightMesh(result.Mesh.PrecisionPositions, result.Mesh.Triangles, true));
         Assert.True(MeshAnalysis.ComputeSignedMeshVolume(result.Mesh.Positions, result.Mesh.Triangles) > 0);
         Assert.Contains(result.extendedNameToGroupId.Keys, patch => patch.Contains("BlendEdge_"));
-        Assert.Contains("ShellRim_horizontal-ExtrudeTop", result.extendedNameToGroupId.Keys);
+        Assert.Contains(result.extendedNameToGroupId.Keys, patch =>
+            patch.StartsWith("ShellRim_horizontal-ExtrudeTop&vertical-ExtrudeTop"));
     }
 
     [Fact]

@@ -86,10 +86,12 @@ def _collect_gallery(folder, category, failures):
                 scenes.append((label, scene))
                 print("Built: {} ({:.1f} s)".format(
                     label, time.perf_counter() - start), flush=True)
+            except NotImplementedError as error:
+                print("Skipped: {} ({})".format(label, error), flush=True)
             except Exception as error:
                 message = str(error)
                 failures.append((label, message))
-                print("Skipped: {} ({})".format(label, message), flush=True)
+                print("Failed: {} ({})".format(label, message), flush=True)
             finally:
                 # Drop native model wrappers before the next, potentially large build.
                 namespace = build = scene = None

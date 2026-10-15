@@ -214,6 +214,16 @@ def mirror(dl, x, y, ink, accent):
         dl.AddTriangleFilled(s._pt(x,y,*a),s._pt(x,y,*b),s._pt(x,y,*c),color)
 
 
+def section_view(dl, x, y, ink, accent):
+    block(dl, x, y, ink, accent)
+    for a, b in (((2, 14), (15, 4)), ((15, 4), (22, 9)),
+                 ((22, 9), (9, 20)), ((9, 20), (2, 14))):
+        _edge(dl, x, y, a, b, accent, 2)
+    _edge(dl, x, y, (6, 13), (12, 17), accent)
+    _edge(dl, x, y, (10, 10), (16, 14), accent)
+    _edge(dl, x, y, (14, 7), (20, 11), accent)
+
+
 def surface(dl, x, y, ink, accent):
     for a,b in (((3,8),(15,3)),((15,3),(22,16)),((22,16),(8,21)),((8,21),(3,8))):
         _edge(dl,x,y,a,b,ink)

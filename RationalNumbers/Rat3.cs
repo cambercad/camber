@@ -36,6 +36,13 @@ namespace GeoCore
             Z.Simplify();
         }
 
+        public void LimitGrowth()
+        {
+            X.LimitGrowth();
+            Y.LimitGrowth();
+            Z.LimitGrowth();
+        }
+
         public static Rat3 operator /(Rat3 lhs, BigInteger rhs)
         {
             return new Rat3(lhs.X / rhs, lhs.Y / rhs, lhs.Z / rhs);

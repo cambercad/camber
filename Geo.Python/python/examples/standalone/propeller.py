@@ -94,9 +94,9 @@ for b in range(blade_count):
         pitch_rad = geometric_pitch_rad(r)
         cs = propeller_section_frame(r, blade_azimuth, pitch_rad, chord)
         sk = part.sketch(frame=cs, name="blade{0}_r{1}".format(b, i))
-        sk.add_naca4("4412", (0.0, 0.0), chord, 0.0, airfoil_samples_per_side)
+        sk.add_naca4("4412", (0.0, 0.0), chord, chord_angle=0.0, samples_per_side=airfoil_samples_per_side)
         sketches.append(sk)
-    blades.append(part.loft(sketches, loft_options, name="PropBlade{0}".format(b), max_deviation=max_dev))
+    blades.append(part.loft(sketches, options=loft_options, name="PropBlade{0}".format(b), max_deviation=max_dev))
 
 propeller = create_propeller_spinner(part, max_dev)
 for blade in blades:

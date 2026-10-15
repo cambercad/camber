@@ -19,6 +19,49 @@ namespace GeoCore
         {
             Value.Simplify();
         }
+
+        // Cached exact floor/ceiling. They depend only on the numeric value, which Simplify never
+        // changes, so racing threads at worst compute the same answer twice.
+        private long cachedFloor;
+        private int boundsState; // 0 = not computed, 1 = floor/ceiling fit Int64, 2 = they do not
+
+        public bool TryGetIntegerBounds(out long floor, out long ceiling)
+        {
+            int state = Volatile.Read(ref boundsState);
+            if (state == 0)
+            {
+                state = ComputeIntegerBounds(out long computed) ? 1 : 2;
+                cachedFloor = computed;
+                Volatile.Write(ref boundsState, state);
+            }
+            floor = cachedFloor;
+            ceiling = floor;
+            if (state != 1) return false;
+            // An exact integer has floor == ceiling; encode the fractional case by checking again cheaply.
+            ceiling = floor + (cachedHasFraction ? 1 : 0);
+            return true;
+        }
+
+        private bool cachedHasFraction;
+
+        private bool ComputeIntegerBounds(out long floor)
+        {
+            floor = 0;
+            var numerator = Value.FastNumerator;
+            var denominator = Value.FastDenominator;
+            if (denominator.Sign <= 0) return false;
+            var quotient = numerator / denominator;
+            if (!quotient.TryGetInt64(out long q) || q == long.MinValue || q == long.MaxValue) return false;
+            bool fraction = !(numerator - quotient * denominator).IsZero;
+            floor = fraction && numerator.Sign < 0 ? q - 1 : q;
+            cachedHasFraction = fraction;
+            return true;
+        }
+
+        public void LimitGrowth()
+        {
+            Value.LimitGrowth();
+        }
         public int Sign()
         {
             return Value.Sign;
@@ -97,9 +140,20 @@ namespace GeoCore
         private BigRationalHybrid(Rat value)
         {
             this.value = 0; // Not used when isLongValue is false
-            rationalValue = new BigRationalClass(value);
+            rationalValue = null;
             isSimplified = false;
             isLongValue = false;
+            // An already coprime fraction must not pay for another GCD. Integers
+            // that fit in a long use the same fast path Simplify would reach.
+            if (value.IsReduced && value.FastDenominator.IsUnit && value.FastNumerator.TryGetInt64(out long integer))
+            {
+                this.value = integer;
+                isSimplified = true;
+                isLongValue = true;
+                return;
+            }
+            rationalValue = new BigRationalClass(value);
+            isSimplified = value.IsReduced;
         }
 
         // This is the only method that mutates a BigRationalHybrid in place.
@@ -127,7 +181,37 @@ namespace GeoCore
             }
 
             isSimplified= true;
-        }        
+        }
+
+        /// <summary>
+        /// Drops shared factors of 2, 3, and 5 so later products stay smaller.
+        /// Leaves the value unmarked unless that reduction is already complete,
+        /// so a later hash still computes the real GCD.
+        /// </summary>
+        public void LimitGrowth()
+        {
+            if (isSimplified || isLongValue)
+                return;
+
+            rationalValue = rationalValue == null
+                ? new BigRationalClass((Rat)value)
+                : new BigRationalClass(rationalValue.Value);
+            rationalValue.LimitGrowth();
+
+            if (rationalValue.Value.IsReduced && rationalValue.Denominator() == 1)
+            {
+                var num = rationalValue.Numerator();
+                if (num >= long.MinValue && num <= long.MaxValue)
+                {
+                    this.value = (long)num;
+                    isLongValue = true;
+                    isSimplified = true;
+                    return;
+                }
+            }
+
+            isSimplified = rationalValue.Value.IsReduced;
+        }
 
         public bool IsInt32
         {
@@ -218,7 +302,7 @@ namespace GeoCore
         }
 
         /// <summary>
-        /// Exact sign of (ux·vy − uy·vx). Fuses the two products and subtraction into one BigInteger
+        /// Exact sign of (uxÂ·vy âˆ’ uyÂ·vx). Fuses the two products and subtraction into one BigInteger
         /// comparison when rationals are involved, and uses 128-bit integer arithmetic when all four
         /// values are in the long fast path (same result as <c>ux * vy - uy * vx</c> then <see cref="Sign"/>).
         /// </summary>
@@ -423,14 +507,13 @@ namespace GeoCore
                 scaled = (long)smallQuotient;
                 return true;
             }
-            GetNumDenom(coordinate, out var numerator, out var denominator);
-            // BigInteger division truncates toward zero, for either sign.
+            GetFastNumDenom(coordinate, out var numerator, out var denominator);
+            // Division truncates toward zero, for either sign.
             // This gives an exact error bound even for thousand-bit rationals.
-            var quotient=(numerator << OrientBoundsFractionBits)/denominator;
-            if (quotient.CompareTo(-OrientBoundsCoordinateLimit)<0 ||
-                quotient.CompareTo(OrientBoundsCoordinateLimit)>0)
-            { scaled=0; return false; }
-            scaled=(long)quotient;
+            var quotient = numerator * new FastBigInteger(1L << OrientBoundsFractionBits) / denominator;
+            if (!quotient.TryGetInt64(out long q) || q < -OrientBoundsCoordinateLimit || q > OrientBoundsCoordinateLimit)
+            { scaled = 0; return false; }
+            scaled = q;
             return true;
         }
 
@@ -450,7 +533,7 @@ namespace GeoCore
                 pax, pay, paz, pbx, pby, pbz, pcx, pcy, pcz, pdx, pdy, pdz, out sign);
         }
 
-        /// <summary>Exact BigInteger determinant sign (no float filter, no Int128 fast path).</summary>
+        /// <summary>Exact determinant sign. Same scaling as the rational determinant; zero stays zero.</summary>
         public static int SignOfOrient3DExact(
             in BigRationalHybrid pax, in BigRationalHybrid pay, in BigRationalHybrid paz,
             in BigRationalHybrid pbx, in BigRationalHybrid pby, in BigRationalHybrid pbz,
@@ -471,19 +554,43 @@ namespace GeoCore
         private static void ScaleCoordinateDifferences(
             in BigRationalHybrid a, in BigRationalHybrid b,
             in BigRationalHybrid c, in BigRationalHybrid d,
-            out BigInteger ax, out BigInteger bx, out BigInteger cx)
+            out FastBigInteger ax, out FastBigInteger bx, out FastBigInteger cx)
         {
-            GetNumDenom(a, out var an, out var ad);
-            GetNumDenom(b, out var bn, out var bd);
-            GetNumDenom(c, out var cn, out var cd);
-            GetNumDenom(d, out var dn, out var dd);
-            static BigInteger Lcm(BigInteger x, BigInteger y) =>
-                x == y ? x : x / BigInteger.GreatestCommonDivisor(x, y) * y;
-            var common = Lcm(Lcm(ad, bd), Lcm(cd, dd));
+            GetFastNumDenom(a, out var an, out var ad);
+            GetFastNumDenom(b, out var bn, out var bd);
+            GetFastNumDenom(c, out var cn, out var cd);
+            GetFastNumDenom(d, out var dn, out var dd);
+            // Equal denominators cancel. Unit denominators are the long coordinates.
+            if ((ad.IsUnit && bd.IsUnit && cd.IsUnit && dd.IsUnit) || (ad == bd && ad == cd && ad == dd))
+            {
+                ax = an - dn;
+                bx = bn - dn;
+                cx = cn - dn;
+                return;
+            }
+            var common = LeastCommonMultiple(LeastCommonMultiple(ad, bd), LeastCommonMultiple(cd, dd));
             var origin = dn * (common / dd);
             ax = an * (common / ad) - origin;
             bx = bn * (common / bd) - origin;
             cx = cn * (common / cd) - origin;
+        }
+
+        private static FastBigInteger LeastCommonMultiple(in FastBigInteger x, in FastBigInteger y)
+        {
+            if (x == y || y.IsUnit) return x;
+            if (x.IsUnit) return y;
+            return x / FastBigInteger.GreatestCommonDivisor(x, y) * y;
+        }
+
+        /// <summary>Exact floor and ceiling of a value whose numerator and denominator fit Int64; false otherwise.</summary>
+        private static bool TryIntegerBounds(in BigRationalHybrid v, out long floor, out long ceiling)
+        {
+            if (v.isLongValue || v.rationalValue == null)
+            {
+                floor = ceiling = v.value;
+                return true;
+            }
+            return v.rationalValue.TryGetIntegerBounds(out floor, out ceiling);
         }
 
         /// <summary>
@@ -506,6 +613,20 @@ namespace GeoCore
                 if (t1.value > triMax) triMax = t1.value;
                 if (t2.value > triMax) triMax = t2.value;
                 return segMax < triMin || segMin > triMax;
+            }
+
+            // Integer enclosures [floor, ceil] of small rationals decide almost every
+            // call without cross-multiplying; ambiguous ones use the exact compare below.
+            if (TryIntegerBounds(seg0, out long s0Lo, out long s0Hi) && TryIntegerBounds(seg1, out long s1Lo, out long s1Hi) &&
+                TryIntegerBounds(t0, out long t0Lo, out long t0Hi) && TryIntegerBounds(t1, out long t1Lo, out long t1Hi) &&
+                TryIntegerBounds(t2, out long t2Lo, out long t2Hi))
+            {
+                long segMinLo = Math.Min(s0Lo, s1Lo), segMinHi = Math.Min(s0Hi, s1Hi);
+                long segMaxLo = Math.Max(s0Lo, s1Lo), segMaxHi = Math.Max(s0Hi, s1Hi);
+                long triMinLo = Math.Min(Math.Min(t0Lo, t1Lo), t2Lo), triMinHi = Math.Min(Math.Min(t0Hi, t1Hi), t2Hi);
+                long triMaxLo = Math.Max(Math.Max(t0Lo, t1Lo), t2Lo), triMaxHi = Math.Max(Math.Max(t0Hi, t1Hi), t2Hi);
+                if (segMaxHi < triMinLo || segMinLo > triMaxHi) return true;
+                if (segMaxLo >= triMinHi && segMinHi <= triMaxLo) return false;
             }
 
             var segMinR = Min(seg0, seg1);
@@ -540,7 +661,7 @@ namespace GeoCore
             in BigRationalHybrid az, in BigRationalHybrid bz)
         {
             // Three arbitrary Int64 products can overflow Int128 when summed.
-            // Int32 products are bounded; wider values use BigInteger below.
+            // Int32 products are bounded; wider values use the exact scaled sum.
             if (ax.IsInt32 && bx.IsInt32 && ay.IsInt32 && by.IsInt32 && az.IsInt32 && bz.IsInt32)
             {
                 Int128 s = (Int128)ax.value * bx.value;
@@ -551,22 +672,109 @@ namespace GeoCore
                 return 0;
             }
 
-            BigRationalHybrid sum = ax * bx + ay * by + az * bz;
-            return sum.Sign();
+            return SignOfScaledSum(
+                ax, bx, ay, by, az, bz);
         }
 
-        private static void GetNumDenom(in BigRationalHybrid x, out BigInteger n, out BigInteger d)
+        /// <summary>Exact sign of ax*by - ay*bx.</summary>
+        public static int SignOf2D(
+            in BigRationalHybrid ax, in BigRationalHybrid ay,
+            in BigRationalHybrid bx, in BigRationalHybrid by)
         {
-            if (x.isLongValue || x.rationalValue == null)
+            if (ax.IsInt32 && ay.IsInt32 && bx.IsInt32 && by.IsInt32)
             {
-                n = x.value;
-                d = BigInteger.One;
+                Int128 determinant = (Int128)ax.value * by.value - (Int128)ay.value * bx.value;
+                if (determinant > 0) return 1;
+                if (determinant < 0) return -1;
+                return 0;
             }
-            else
-            {
-                n = x.rationalValue.Numerator();
-                d = x.rationalValue.Denominator();
-            }
+            GetFastNumDenom(ax, out var axn, out var axd);
+            GetFastNumDenom(ay, out var ayn, out var ayd);
+            GetFastNumDenom(bx, out var bxn, out var bxd);
+            GetFastNumDenom(by, out var byn, out var byd);
+            var common = LeastCommonMultiple(LeastCommonMultiple(axd, ayd), LeastCommonMultiple(bxd, byd));
+            var sax = Scale(axn, axd, common);
+            var say = Scale(ayn, ayd, common);
+            var sbx = Scale(bxn, bxd, common);
+            var sby = Scale(byn, byd, common);
+            return (sax * sby - say * sbx).Sign;
+        }
+
+        /// <summary>Exact sign of (u Ã— v) Â· (p Ã— q). A positive common denominator scale does not change it.</summary>
+        public static int SignOfCrossDot(
+            in BigRationalHybrid ux, in BigRationalHybrid uy, in BigRationalHybrid uz,
+            in BigRationalHybrid vx, in BigRationalHybrid vy, in BigRationalHybrid vz,
+            in BigRationalHybrid px, in BigRationalHybrid py, in BigRationalHybrid pz,
+            in BigRationalHybrid qx, in BigRationalHybrid qy, in BigRationalHybrid qz)
+        {
+            GetFastNumDenom(ux, out var unx, out var udx);
+            GetFastNumDenom(uy, out var uny, out var udy);
+            GetFastNumDenom(uz, out var unz, out var udz);
+            GetFastNumDenom(vx, out var vnx, out var vdx);
+            GetFastNumDenom(vy, out var vny, out var vdy);
+            GetFastNumDenom(vz, out var vnz, out var vdz);
+            GetFastNumDenom(px, out var pnx, out var pdx);
+            GetFastNumDenom(py, out var pny, out var pdy);
+            GetFastNumDenom(pz, out var pnz, out var pdz);
+            GetFastNumDenom(qx, out var qnx, out var qdx);
+            GetFastNumDenom(qy, out var qny, out var qdy);
+            GetFastNumDenom(qz, out var qnz, out var qdz);
+            var common = udx;
+            common = LeastCommonMultiple(common, udy);
+            common = LeastCommonMultiple(common, udz);
+            common = LeastCommonMultiple(common, vdx);
+            common = LeastCommonMultiple(common, vdy);
+            common = LeastCommonMultiple(common, vdz);
+            common = LeastCommonMultiple(common, pdx);
+            common = LeastCommonMultiple(common, pdy);
+            common = LeastCommonMultiple(common, pdz);
+            common = LeastCommonMultiple(common, qdx);
+            common = LeastCommonMultiple(common, qdy);
+            common = LeastCommonMultiple(common, qdz);
+            var uxs = Scale(unx, udx, common);
+            var uys = Scale(uny, udy, common);
+            var uzs = Scale(unz, udz, common);
+            var vxs = Scale(vnx, vdx, common);
+            var vys = Scale(vny, vdy, common);
+            var vzs = Scale(vnz, vdz, common);
+            var pxs = Scale(pnx, pdx, common);
+            var pys = Scale(pny, pdy, common);
+            var pzs = Scale(pnz, pdz, common);
+            var qxs = Scale(qnx, qdx, common);
+            var qys = Scale(qny, qdy, common);
+            var qzs = Scale(qnz, qdz, common);
+            var cx = uys * vzs - uzs * vys;
+            var cy = uzs * vxs - uxs * vzs;
+            var cz = uxs * vys - uys * vxs;
+            var dx = pys * qzs - pzs * qys;
+            var dy = pzs * qxs - pxs * qzs;
+            var dz = pxs * qys - pys * qxs;
+            return (cx * dx + cy * dy + cz * dz).Sign;
+        }
+
+        private static int SignOfScaledSum(
+            in BigRationalHybrid ax, in BigRationalHybrid bx,
+            in BigRationalHybrid ay, in BigRationalHybrid by,
+            in BigRationalHybrid az, in BigRationalHybrid bz)
+        {
+            GetFastNumDenom(ax, out var axn, out var axd);
+            GetFastNumDenom(bx, out var bxn, out var bxd);
+            GetFastNumDenom(ay, out var ayn, out var ayd);
+            GetFastNumDenom(by, out var byn, out var byd);
+            GetFastNumDenom(az, out var azn, out var azd);
+            GetFastNumDenom(bz, out var bzn, out var bzd);
+            var common = LeastCommonMultiple(
+                LeastCommonMultiple(LeastCommonMultiple(axd, bxd), LeastCommonMultiple(ayd, byd)),
+                LeastCommonMultiple(azd, bzd));
+            return (Scale(axn, axd, common) * Scale(bxn, bxd, common)
+                + Scale(ayn, ayd, common) * Scale(byn, byd, common)
+                + Scale(azn, azd, common) * Scale(bzn, bzd, common)).Sign;
+        }
+
+        private static FastBigInteger Scale(in FastBigInteger numerator, in FastBigInteger denominator, in FastBigInteger common)
+        {
+            if (denominator == common) return numerator;
+            return numerator * (common / denominator);
         }
 
         private static void GetFastNumDenom(in BigRationalHybrid x, out FastBigInteger n, out FastBigInteger d)

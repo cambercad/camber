@@ -35,7 +35,10 @@ internal sealed class ShellTopologyBuilder
             {
                 bool convex = HasConvexPatchJunctions(source);
                 if (convex && HasPlanarOpenings(source, openingGroups))
-                    return BuildLayerOffset(source, openingGroups, retainedOffset, firstGroupId);
+                {
+                    var layered = TryBuildLayerOffset(source, openingGroups, retainedOffset, firstGroupId);
+                    if (layered != null) return layered;
+                }
             }
         }
         // A planar support is a trim, not a constraint on the source triangle
@@ -269,7 +272,7 @@ internal sealed class ShellTopologyBuilder
         return MeshConnectivity.FindExactPositionComponents(mesh.PrecisionPositions, mesh.Triangles).Count == 1;
     }
 
-    private AnchorMesh BuildLayerOffset(AnchorMesh source, HashSet<int> openings, double thickness, int firstGroupId)
+    private AnchorMesh TryBuildLayerOffset(AnchorMesh source, HashSet<int> openings, double thickness, int firstGroupId)
     {
         // Remove the closed layer between each source patch and its offset.
         // An open, extended patch is not necessarily a separator of the whole
@@ -339,10 +342,12 @@ internal sealed class ShellTopologyBuilder
         }
         // The layer's side walls are NOT offset support geometry. Adjacent
         // layers must remove them, and every retained source face must move.
-        // Reject incomplete coverage instead of publishing artificial seams.
+        // Convex patch junctions alone do not guarantee coverage inside curved
+        // patches. If finite layers leave source faces or side walls, this
+        // construction is inapplicable; let the general offset skin resolve it.
         foreach (var triangle in cavity.TrianglesEx)
             if (!names.ContainsKey(triangle.GroupId))
-                throw new InvalidOperationException("Shell offset layers do not cover the complete cavity.");
+                return null;
         var used = new HashSet<int>();
         foreach (var triangle in cavity.TrianglesEx) used.Add(triangle.GroupId);
         foreach (int id in remap.Values)

@@ -293,7 +293,7 @@ def build_gallery(cases=SCULPTURES):
     started = time.perf_counter()
     bounds = (350, 300, 130) if any(case in SCULPTURES for case in cases) else (210, 150, 70)
     part = Part((-50, -50, -15), bounds, tolerance=.04)
-    gallery = part.assembly("Loft edge treatments")
+    gallery = part.assembly(name="Loft edge treatments")
     reports = []
     solids = []
     for index, case in enumerate(cases):

@@ -1,6 +1,7 @@
 """Standalone gallery for the reusable, pyglet-only dock UI.
 
 Run with ``python Geo.Python/python/examples/standalone/control_gallery.py``.
+Use ``--no-show`` to validate one rendered frame in a hidden window.
 """
 import os
 import sys
@@ -8,11 +9,13 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 import pyglet
+from pyglet.graphics.api import gl
 
 from camber.gui import UI, MenuItem
 
 
-window = pyglet.window.Window(1280, 760, caption="Control Gallery", resizable=True)
+window = pyglet.window.Window(1280, 760, caption="Control Gallery", resizable=True,
+                              visible="--no-show" not in sys.argv)
 ui = UI(window)
 
 
@@ -122,7 +125,6 @@ def panel(title, rect, background=None, scroll=True):
 
 @window.event
 def on_draw():
-    gl = pyglet.gl
     gl.glClearColor(*(channel/255 for channel in ui.theme["window"]))
     window.clear()
     ui.new_frame()
@@ -387,4 +389,11 @@ def on_close():
 
 
 if __name__ == "__main__":
-    pyglet.app.run()
+    if "--no-show" in sys.argv:
+        try:
+            on_draw()
+        finally:
+            ui.shutdown()
+            window.close()
+    else:
+        pyglet.app.run()

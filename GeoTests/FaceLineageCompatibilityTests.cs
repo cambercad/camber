@@ -24,8 +24,12 @@ public class FaceLineageCompatibilityTests : IDisposable
         const string reference = "left-ExtrudeTop&right-ExtrudeTop{slot-Line2}";
         Assert.True(fused.TryGetSurface(reference, out _), string.Join(";", fused.groupIdToExtendedName.Values));
         AssemblyDatumResolver.ResolvePlane(fused, reference, api.Converter);
-        Assert.Throws<NameCollisionException>(() =>
+        Assert.Equal(reference, fused.ResolveLocalPatchNamePublic("right-ExtrudeTop"));
+        Assert.True(fused.TryGetSurface("right-ExtrudeTop", out _));
+        var ambiguous = Assert.Throws<NameCollisionException>(() =>
             AssemblyDatumResolver.ResolvePlane(fused, "left-ExtrudeTop", api.Converter));
+        Assert.Contains("ambiguous among current faces", ambiguous.Message);
+        Assert.Contains(reference, ambiguous.Message);
         MeshPipelineTestHelpers.AssertWatertightAllowTouch(fused.Mesh);
 
         var copy = api.CopyMeshAsInstance(fused, "copied");

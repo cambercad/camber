@@ -13,7 +13,7 @@ class AssemblyDiagnosticsTests(unittest.TestCase):
 
     def test_failed_solve_reports_exact_unsatisfied_mate_without_printing(self):
         part=self.part
-        assembly=part.assembly('contradictory')
+        assembly=part.assembly(name='contradictory')
         assembly.solve_after_every_constraint=False
         first=assembly.add_part(part.cuboid((0,0,0),(1,1,1),name='first'))
         second=assembly.add_part(part.cuboid((0,0,0),(1,1,1),name='second'))
@@ -37,10 +37,10 @@ class AssemblyDiagnosticsTests(unittest.TestCase):
             result.converged=True
 
     def test_success_reports_named_entities_and_final_pose_errors(self):
-        part=self.part;assembly=part.assembly('seated')
+        part=self.part;assembly=part.assembly(name='seated')
         assembly.solve_after_every_constraint=False
         first=assembly.add_part(part.cuboid((0,0,0),(1,1,1),name='first'))
-        second=assembly.add_part(part.cuboid((0,0,0),(1,1,1),name='second'),(0,0,4))
+        second=assembly.add_part(part.cuboid((0,0,0),(1,1,1),name='second'),position=(0,0,4))
         assembly.fix(first)
         assembly.coincident(first.plane('first-ExtrudeTop'),second.plane('second-ExtrudeBottom'),opposite_normals=True)
         assembly.concentric(first.axis_at((0,0,0),(0,0,1)),second.axis_at((0,0,0),(0,0,1)))
@@ -54,10 +54,10 @@ class AssemblyDiagnosticsTests(unittest.TestCase):
         self.assertGreaterEqual(result.num_equations,0)
 
     def test_constraints_are_native_immutable_records_with_physics_anchors(self):
-        part=self.part;assembly=part.assembly('seated')
+        part=self.part;assembly=part.assembly(name='seated')
         assembly.solve_after_every_constraint=False
         first=assembly.add_part(part.cuboid((0,0,0),(1,1,1),name='first'))
-        second=assembly.add_part(part.cuboid((0,0,0),(1,1,1),name='second'),(0,0,4))
+        second=assembly.add_part(part.cuboid((0,0,0),(1,1,1),name='second'),position=(0,0,4))
         assembly.fix(first)
         assembly.coincident(first.plane('first-ExtrudeTop'),second.plane('second-ExtrudeBottom'),opposite_normals=True)
         assembly.concentric(first.axis_at((0,0,0),(0,0,1)),second.axis_at((0,0,0),(0,0,1)))
@@ -80,7 +80,7 @@ class AssemblyDiagnosticsTests(unittest.TestCase):
             records[1].kind='other'
 
     def test_python_can_author_every_kernel_constraint_kind(self):
-        part=self.part;assembly=part.assembly('all_kinds')
+        part=self.part;assembly=part.assembly(name='all_kinds')
         assembly.solve_after_every_constraint=False
         first=assembly.add_part(part.cuboid((0,0,0),(1,1,1),name='first'))
         second=assembly.add_part(part.cuboid((0,0,0),(1,1,1),name='second'))

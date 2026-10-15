@@ -252,10 +252,10 @@ print("captures complete", flush=True)
         set_progress_log(False)
         part = Part((-20, -20, -20), (20, 20, 20), tolerance=.1)
         block = part.cuboid((-5, -7, -9), (10, 14, 18), name="block")
-        child = part.assembly("child")
+        child = part.assembly(name="child")
         child.fix(child.add_part(block))
-        root = part.assembly("root")
-        root.fix(root.add_subassembly(child, (2, 0, 0)))
+        root = part.assembly(name="root")
+        root.fix(root.add_subassembly(child, position=(2, 0, 0)))
         with tempfile.TemporaryDirectory() as tmp:
             for i, colors in enumerate([{"*": (.8, .1, .1)}, {"*": (.1, .1, .8)}]):
                 path = render_views(root, Path(tmp)/f"sheet{i}.png", tile_size=(256, 192), columns=4, colors=colors, individual=True)

@@ -11,15 +11,15 @@ class AssemblyMirrorTests(unittest.TestCase):
         self.body = self.part.cuboid(Frame((1, 2, 3)), (1, 2, 4), name='source_body')
 
     def test_mirror_solved_part_preserves_source_and_opposite_handed_geometry(self):
-        assembly = self.part.assembly('parent')
+        assembly = self.part.assembly(name='parent')
         assembly.solve_after_every_constraint = False
-        seed = assembly.add_part(self.body, (7, -5, 9),
-                                 (0, 0, math.sin(.23), math.cos(.23)))
+        seed = assembly.add_part(self.body, position=(7, -5, 9),
+                                 orientation=(0, 0, math.sin(.23), math.cos(.23)))
         assembly.fix(seed)
         self.assertTrue(assembly.solve().converged)
         points, _ = self.body.mesh()
         before = [(p.x, p.y, p.z) for p in points]
-        mirror = assembly.mirror(seed, Frame((0, 0, 2)), name='opposite')
+        mirror = assembly.mirror(seed, plane=Frame((0, 0, 2)), name='opposite')
         self.assertTrue(assembly.solve().converged)
         reflected = self.part.solid(mirror.name)
         actual, _ = reflected.mesh()
@@ -30,21 +30,21 @@ class AssemblyMirrorTests(unittest.TestCase):
         self.assertEqual((7, -5, 9), seed.pose)
 
     def test_mirrored_subassembly_retains_revolute_motion_and_nested_support(self):
-        support = self.part.assembly('support')
+        support = self.part.assembly(name='support')
         support.solve_after_every_constraint = False
         fixed = support.add_part(self.body)
         support.fix(fixed)
-        mechanism = self.part.assembly('mechanism')
+        mechanism = self.part.assembly(name='mechanism')
         mechanism.solve_after_every_constraint = False
         housing = mechanism.add_subassembly(support)
         mechanism.fix(housing)
-        rotor = mechanism.add_part(self.body, (0, 0, 5))
+        rotor = mechanism.add_part(self.body, position=(0, 0, 5))
         mechanism.concentric(fixed.axis_at((0, 0, 0), (0, 0, 1)), rotor.axis_at((0, 0, 0), (0, 0, 1)))
         mechanism.distance(rotor.plane_at((0, 0, 0), (0, 0, 1)), fixed.plane_at((0, 0, 0), (0, 0, 1)), 5)
         self.assertTrue(mechanism.solve().converged)
-        parent = self.part.assembly('parent')
+        parent = self.part.assembly(name='parent')
         parent.solve_after_every_constraint = False
-        seed = parent.add_subassembly(mechanism, (10, 2, 4))
+        seed = parent.add_subassembly(mechanism, position=(10, 2, 4))
         parent.fix(seed)
         mirror = parent.mirror(seed, name='opposite_mechanism')
         self.assertEqual(1, len(mirror.subassemblies))
@@ -63,13 +63,13 @@ class AssemblyMirrorTests(unittest.TestCase):
         self.assertEqual((0, 0, 5), rotor.pose)
 
     def test_mirror_rejects_empty_and_foreign_seeds(self):
-        parent = self.part.assembly('parent')
+        parent = self.part.assembly(name='parent')
         with self.assertRaisesRegex(TypeError, 'AssemblyPart or AssemblyOccurrence'):
             parent.mirror(object())
-        empty = parent.add_subassembly(self.part.assembly('empty'))
+        empty = parent.add_subassembly(self.part.assembly(name='empty'))
         with self.assertRaisesRegex(Exception, 'empty subassembly'):
             parent.mirror(empty)
-        owner = self.part.assembly('owner')
+        owner = self.part.assembly(name='owner')
         foreign = owner.add_part(self.body)
         with self.assertRaisesRegex(Exception, 'direct part of this assembly'):
             parent.mirror(foreign)

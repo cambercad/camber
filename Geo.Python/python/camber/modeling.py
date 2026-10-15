@@ -22,7 +22,7 @@ _TEMPLATE = '''from camber import Part, Frame, Curve3D, LoftOptions
 
 def build_model():
     # camber:begin setup
-    part = Part((-50, -50, -50), (50, 50, 50), tolerance=0.01)
+    part = Part((-50, -50, -50), (50, 50, 50), tolerance=0.01, unit="mm")
     # camber:end setup
 
     return part, part
@@ -61,7 +61,7 @@ def load_component(path: str) -> "Solid | Assembly":
     if target in paths:
         raise ValueError("Circular component reference: " + target.name)
     source = target.read_text(encoding="utf-8")
-    document = ModelDocument(source)
+    document = ModelDocument(source, path=target)
     def build():
         _, result, _, _ = _run_model(document, target)
         if not isinstance(result, (Solid, Assembly)):
@@ -247,11 +247,28 @@ def _result_scene(part, result):
     return glview._as_scene(result)
 
 
+def _execution_tree(document):
+    """Give both document layouts the same disposable execution scope."""
+    tree = copy.deepcopy(document.tree)
+    if document.module_level:
+        # Execute script statements in a disposable scope, just like build_model.
+        result = ast.Return(value=ast.Tuple(elts=[ast.Name(id="part", ctx=ast.Load()),
+                            ast.Name(id="displayed", ctx=ast.Load())], ctx=ast.Load()))
+        result.lineno = result.end_lineno = document.function.end_lineno
+        function = ast.FunctionDef(name="build_model", args=ast.arguments(
+            posonlyargs=[], args=[], kwonlyargs=[], kw_defaults=[], defaults=[]),
+            body=tree.body + [result], decorator_list=[])
+        function.end_lineno = result.end_lineno
+        tree.body = [function]
+        ast.fix_missing_locations(tree)
+    function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "build_model")
+    return tree, function
+
+
 def _run_model(document, path, *, before=None):
     """Build a fresh model. A failed build cannot mutate the displayed Part."""
     namespace = {"__name__": "__camber_model__", "__file__": str(path)}
-    tree = copy.deepcopy(document.tree)
-    function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "build_model")
+    tree, function = _execution_tree(document)
     if before is not None:
         function.body = [n for n in function.body if n.end_lineno < before]
         function.body.append(ast.Return(value=ast.Tuple(elts=[ast.Name(id="part",ctx=ast.Load()),
@@ -300,9 +317,7 @@ def _run_model(document, path, *, before=None):
 
 def _sketch_for_edit(document, block, path):
     """Evaluate only the prefix through this sketch in a disposable Part."""
-    tree = copy.deepcopy(document.tree)
-    function = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
-                    and n.name == "build_model")
+    tree, function = _execution_tree(document)
     function.body = [n for n in function.body if n.end_lineno < block.end]
     for statement in function.body:
         if (isinstance(statement, ast.Assign) and isinstance(statement.targets[0], ast.Name)
@@ -370,6 +385,39 @@ def _feature_icon(block):
             "add_subassembly":icons.assembly}.get(method, icons.block)
 
 
+class ModelFailure:
+    """The rebuild report shared by the modeler status line and a calling script.
+
+    ``current_faces`` lists the faces named by an ambiguity error, or the faces
+    still present on the last good model. ``line`` is the model-file line that raised.
+    """
+
+    def __init__(self, message, line, ambiguous_name, current_faces):
+        self.message = message
+        self.line = line
+        self.ambiguous_name = ambiguous_name
+        self.current_faces = tuple(current_faces)
+
+    def __str__(self):
+        return self.message
+
+
+def _model_failure(exc, line, part):
+    message = str(exc) or type(exc).__name__
+    ambiguous = None
+    listed = ()
+    marker = "is ambiguous among current faces: "
+    if "Face reference '" in message and marker in message:
+        ambiguous = message.split("Face reference '", 1)[1].split("'", 1)[0]
+        listed = tuple(name.strip() for name in message.split(marker, 1)[1].split(".", 1)[0].split(",") if name.strip())
+    if not listed and part is not None:
+        try:
+            listed = tuple(part.patch_names)
+        except Exception:
+            listed = ()
+    return ModelFailure(message, line, ambiguous, listed)
+
+
 class ModelSession:
     """Document revisions and successful build, independent of window widgets."""
 
@@ -379,18 +427,19 @@ class ModelSession:
         self.path = Path(path).resolve()
         self.source = self.path.read_text(encoding="utf-8") if self.path.exists() else _TEMPLATE
         try:
-            self.document = ModelDocument(self.source)
+            self.document = ModelDocument(self.source, path=self.path)
             parse_error = ""
         except (SyntaxError, ValueError) as exc:
             self.document = None
             parse_error = str(exc)
         self.saved_source = self.source if self.path.exists() else None
         self._initial_source = self.source
-        self.undo_stack = []
-        self.redo_stack = []
+        from .history import History
+        self.history = History()
         self.part = self.displayed = self.packed = None
         self.values = {}
         self.error = parse_error
+        self.failure = _model_failure(ValueError(parse_error), None, None) if parse_error else None
         self.failed_line = None
         self.selected = (self.document.blocks[0].id
                          if self.document is not None and self.document.blocks else None)
@@ -406,7 +455,7 @@ class ModelSession:
     def rebuild(self, source=None, *, record=True):
         source = self.source if source is None else source
         try:
-            document = ModelDocument(source)
+            document = ModelDocument(source, path=self.path)
             part, displayed, packed, values = self.build(document,prune=True)
             types = {name: type(value).__name__ for name, value in values.items()}
             for name, value in values.items():
@@ -421,38 +470,31 @@ class ModelSession:
                 if trace.tb_frame.f_code.co_filename == str(self.path):
                     self.failed_line = trace.tb_lineno
                 trace = trace.tb_next
+            self.failure = _model_failure(exc, self.failed_line, self.part)
             return False
         if source != self.source and record:
-            self.undo_stack.append(self.source)
-            self.redo_stack.clear()
+            self.history.record(self.source, source)
         self.source, self.document = source, document
         self.part, self.displayed, self.packed = part, displayed, packed
         self.values = values
         self.error = ""
+        self.failure = None
         self.failed_line = None
         return True
 
     def undo(self):
-        if not self.undo_stack:
-            return False
-        previous = self.undo_stack[-1]
-        current = self.source
-        if not self.rebuild(previous, record=False):
-            return False
-        self.undo_stack.pop()
-        self.redo_stack.append(current)
-        return True
+        return self.history.step("undo", self.source, lambda source: self.rebuild(source, record=False))
 
     def redo(self):
-        if not self.redo_stack:
-            return False
-        candidate = self.redo_stack[-1]
-        current = self.source
-        if not self.rebuild(candidate, record=False):
-            return False
-        self.redo_stack.pop()
-        self.undo_stack.append(current)
-        return True
+        return self.history.step("redo", self.source, lambda source: self.rebuild(source, record=False))
+
+    @property
+    def undo_stack(self):
+        return self.history.undo_stack
+
+    @property
+    def redo_stack(self):
+        return self.history.redo_stack
 
     def save(self):
         if self.path.exists():
@@ -481,6 +523,10 @@ class _Workspace:
         self.model = session
         self.viewer = Viewer("Modeling (experimental) — " + session.path.name, size=(1920,1080), borderless=True)
         self.ui = self.viewer._ui
+        from .inspection import _ViewerInspection
+        self.viewer.inspection = _ViewerInspection(self.viewer)
+        self._inspection_mode = None
+        self._sketch_section_plane = None
         from .gui_window import WindowChrome
         self.window_chrome = WindowChrome(self.viewer.window, self.ui, panel=None, height=40)
         self.ui.dock_panel("Status", "bottom", size=28, header=False)
@@ -511,6 +557,7 @@ class _Workspace:
         self._feature_menu_id = None
         self._draft_baseline = None
         self._pending_action = None
+        self._parameter_delete = None
         self._shortcut_action = None
         self._sketch_panels = {}
         self._output_tab = None
@@ -559,6 +606,7 @@ class _Workspace:
             self._resolve_action(value)
             return
         if kind == "select" and value == self.model.selected and self.pending is None:
+            self._inspection_mode = None
             self.ui.set_dock_visible("Properties", True)
             return
         if self._draft_dirty() or kind in ("open", "new", "new_assembly", "close", "open_component", "return_parent") and self.model.dirty:
@@ -572,7 +620,14 @@ class _Workspace:
         self._queued_action = (kind,value)
 
     def _run_action(self, kind, value=None):
-        if kind == "select":
+        if kind == "inspect":
+            self._inspection_mode = value
+            self._pick_reference = self._pick_datum = None
+            self.ui.set_dock_visible("Properties", True)
+            if value == "Section view":
+                self.viewer.inspection.enable_section()
+            self.status = "Ctrl-click two entities to measure" if value == "Measure" else "Adjust the section plane" if value else "Ready"
+        elif kind == "select":
             self._select(value)
         elif kind == "edit_sketch":
             self._select(value)
@@ -685,6 +740,13 @@ class _Workspace:
     def _on_key_press(self, symbol, modifiers):
         from pyglet.window import key
         from pyglet.event import EVENT_HANDLED
+        if self.sketch_session is None and not self.ui.text_input_focused and not modifiers:
+            if symbol in (key.M, key.I):
+                self._queue_action("inspect", None if symbol == key.I and self._inspection_mode else "Measure")
+                return EVENT_HANDLED
+            if symbol == key.ESCAPE and self._inspection_mode:
+                self._inspection_mode = None
+                return EVENT_HANDLED
         if symbol == key.ESCAPE and (self._pick_reference is not None or self._pick_datum is not None):
             self._pick_reference = None
             self._pick_datum = None
@@ -743,7 +805,10 @@ class _Workspace:
                                for k in call.keywords)
             self.sketch_transparency = (self.viewer._solid_transparent, self.viewer._transparency)
             self._sketch_camera = copy.copy(self.viewer.camera)
+            self._sketch_section_plane = self.viewer.section_plane
+            self.viewer.section_plane = None
             self.viewer.set_solid(_pack_result(part, part))
+            self.viewer.inspection.refresh()
             self.viewer.set_solid_transparent(True)
             self.sketch_session = begin_sketch_session(
                 self.viewer, self.ui, part, plane=plane, name=block.result,
@@ -771,6 +836,8 @@ class _Workspace:
             for field in ("eye", "center", "up", "zoom", "ortho", "near", "far"):
                 setattr(self.viewer.camera, field, getattr(self._sketch_camera, field))
             self._sketch_camera = None
+            self.viewer.section_plane = self._sketch_section_plane
+            self._sketch_section_plane = None
 
     def _finish_sketch(self):
         from .sketch_ui import finalize_sketch_session, sketch_session_code
@@ -833,11 +900,13 @@ class _Workspace:
             self._body_pick_owners = {}
             packed = self.model.packed
         if packed is not None:
+            first_geometry = self.viewer._solid is None or not self.viewer._solid['packed'].get('mesh_pos')
             self.viewer.set_solid(packed)
-            if fit:
+            if fit or first_geometry and packed.get('mesh_pos'):
                 self.viewer.camera.fit(*packed["bounds"])
         else:
             self.viewer.set_solid(None)
+        self.viewer.inspection.refresh()
 
     def _switch_file(self, *, new, discard=False, assembly=False):
         if self.model.dirty and not discard:
@@ -864,6 +933,10 @@ class _Workspace:
             self.status = str(exc)
             return
         self.model = session
+        self._inspection_mode = None
+        from .inspection import _ViewerInspection
+        self.viewer.inspection = _ViewerInspection(self.viewer)
+        self.viewer.section_plane = None
         self._sketch_next_operation = None
         self._ribbon_tab = "Assembly" if type(session.displayed).__name__ == "Assembly" else "Solid"
         self.pending = None
@@ -904,6 +977,7 @@ class _Workspace:
             return False
 
     def _select(self, identifier):
+        self._inspection_mode = None
         self._tree_inspection = None
         self._sketch_next_operation = None
         self._pick_reference = None
@@ -947,6 +1021,7 @@ class _Workspace:
         result = self.model.values[block.result] if block.result else self.model.values[_assignment(block)[1]]
         self._body_pick_owners = {}
         self.viewer.set_solid(_pack_result(self.model.part, result))
+        self.viewer.inspection.refresh()
         self.status = "Previewing " + block.id
 
     def _available_values(self, before=None):
@@ -1014,6 +1089,7 @@ class _Workspace:
         return self._assembly_references[2]
 
     def _choose_operation(self, key):
+        self._inspection_mode = None
         from .api import Assembly, Sketch, Solid, Surface
         self._tree_inspection = None
         self._pick_reference = None
@@ -1027,7 +1103,7 @@ class _Workspace:
             return
         operation = operations()[key]
         self.file_action = None
-        stem = operation.method or operation.owner.__name__.lower()
+        stem = operation.call_name or operation.method or operation.owner.__name__.lower()
         ids = {b.id for b in self.model.document.blocks}
         index = 1
         while stem + str(index) in ids:
@@ -1048,6 +1124,8 @@ class _Workspace:
                          selected if selected in receivers else receivers[-1] if receivers else "")
         if "name" in self.fields:
             self.fields["name"] = self.result_name
+        if "part" in self.fields:
+            self.fields["part"] = next((name for name,value in available.items() if isinstance(value, operation.owner)), "")
         if key == "Part.sketch":
             self.fields["constrained"] = "True"
         if key in ("Sketch.revolve", "Sketch.revolve_surface"):
@@ -1251,6 +1329,7 @@ class _Workspace:
             _, _, packed, _ = self.model.build(ModelDocument(self._candidate_source()))
             self._body_pick_owners = {}
             self.viewer.set_solid(packed)
+            self.viewer.inspection.refresh()
             self.form_build_error = ""
             self._draft_preview = True
             self._preview_selection = self._selection_signature()
@@ -1273,8 +1352,7 @@ class _Workspace:
         previous_displayed = previous.displayed
         if start_sketch and operation.key == "Part.sketch":
             self.model = copy.copy(previous)
-            self.model.undo_stack = previous.undo_stack.copy()
-            self.model.redo_stack = previous.redo_stack.copy()
+            self.model.history = previous.history.transformed()
             self._sketch_previous = previous
         if self._apply(candidate):
             next_operation = self._sketch_next_operation
@@ -1309,13 +1387,43 @@ class _Workspace:
         block = document.block(identifier)
         if block.kind == "Setup":
             return
+        if block.operation == "named_parameter" and document.parameter_references(identifier):
+            if block.result not in self.model.values:
+                self.status = "Build the model successfully before replacing parameter references"
+                return
+            value = self.model.values[block.result]
+            self._parameter_delete = identifier
+            users = document.dependents(identifier)
+            self.ui.OpenMessageBox("Delete parameter",
+                f"{block.result} is referenced in " + (", ".join(users) if users else "Python code") +
+                f".\n\nReplace every reference with its current value ({value}) and delete the parameter? "
+                "These inputs will no longer follow the parameter.",
+                ("Replace references and delete", "Cancel"), default="Cancel", cancel="Cancel")
+            return
         try:
             candidate = document.delete(identifier)
-            if block.result:
+            if block.result and block.operation != "named_parameter":
                 remaining = [item for item in ModelDocument(candidate).blocks if item.result and item.kind != "Setup"]
                 assemblies = [item for item in remaining if item.operation == "Part.assembly"]
                 shown = (assemblies or remaining)[-1].result if remaining else "part"
                 candidate = ModelDocument(candidate).display_result(shown)
+            if self._apply(candidate):
+                self._select(self.model.document.blocks[0].id)
+        except ValueError as exc:
+            self.status = str(exc)
+
+    def _parameter_delete_dialog(self):
+        if self._parameter_delete is None:
+            return
+        choice = self.ui.MessageBox("Delete parameter")
+        if choice is None:
+            return
+        identifier, self._parameter_delete = self._parameter_delete, None
+        if choice != "Replace references and delete":
+            return
+        try:
+            block = self.model.document.block(identifier)
+            candidate = self.model.document.delete_parameter(identifier, self.model.values[block.result])
             if self._apply(candidate):
                 self._select(self.model.document.blocks[0].id)
         except ValueError as exc:
@@ -1397,7 +1505,25 @@ class _Workspace:
                                                 selected=self._tree_inspection == (address,index))
                         if clicked:
                             self._queue_action("inspect_component", (address,index))
+        if self.model.document:
+            _, expanded = ui.TreeNode("Parameters##document", default_open=True)
+            if expanded:
+                parameters = [b for b in self.model.document.blocks if b.operation == "named_parameter"]
+                rows = [(b.result, str(self.model.values.get(b.result, "")),
+                         dict(_parameter_form(b)).get("unit", "mm")) for b in parameters]
+                selected = next((i for i,b in enumerate(parameters) if b.id == self.model.selected), -1)
+                chosen = ui.DataGrid(("Name", "Value", "Unit"), rows, selected=selected, widths=(2, 1, 1))
+                if chosen != selected and 0 <= chosen < len(parameters):
+                    self._queue_action("select", parameters[chosen].id)
+                if ui.Button("Add parameter"):
+                    self._queue_action("operation", "named_parameter")
+                if selected >= 0:
+                    ui.SameLine()
+                    if ui.Button("Delete parameter"):
+                        self._delete_feature(parameters[selected].id)
         for block, children in _feature_groups(self.model.document) if self.model.document is not None else ():
+            if block.operation == "named_parameter":
+                continue
             query = self.feature_filter.casefold()
             if query and query not in (block.id+" "+block.kind).replace("_"," ").casefold():
                 children = [child for child in children if query in (child.id+" "+child.kind).replace("_"," ").casefold()]
@@ -1773,11 +1899,23 @@ class _Workspace:
 
     def _properties(self):
         ui = self.ui
-        ui.PushStyleVar(ui.ImGuiStyleVar_WindowPadding, (14, 12))
-        visible = ui.Begin("Properties", flags=ui.ImGuiWindowFlags_NoScrollWithMouse)
-        ui.PopStyleVar()
-        if not visible:
-            ui.End()
+        with ui.style(variables={ui.ImGuiStyleVar_WindowPadding: (14, 12)}):
+            with ui.panel("Properties", flags=ui.ImGuiWindowFlags_NoScrollWithMouse) as visible:
+                if visible:
+                    self._properties_content()
+
+    def _properties_content(self):
+        ui = self.ui
+        if self._inspection_mode:
+            ui.Heading(self._inspection_mode)
+            ui.Separator()
+            with ui.child("Inspection", height=max(30, ui.GetContentRegionAvail()[1]-42)):
+                if self._inspection_mode == "Measure":
+                    self.viewer.inspection.draw_measurements(ui, self.picked, automatic=True)
+                else:
+                    self.viewer.inspection.draw_section(ui, self._inspection_plane)
+            if ui.Button("Done", width=ui.GetContentRegionAvail()[0], height=32, primary=True):
+                self._inspection_mode = None
             return
         if self._tree_inspection is not None and self._pending_action is None:
             address, index = self._tree_inspection
@@ -1800,7 +1938,6 @@ class _Workspace:
             source = self._component_file(address)
             if source and ui.Button("Open component model", primary=True):
                 self._queue_action("open_component", source)
-            ui.End()
             return
         if self.file_action:
             ui.TextUnformatted(self.file_action + " model")
@@ -1816,11 +1953,9 @@ class _Workspace:
             ui.SameLine()
             if ui.Button("Cancel", width=100, height=30):
                 self.file_action = None
-            ui.End()
             return
         if self.model.document is None:
             ui.TextWrapped("Repair the Python source in Output, then rebuild.")
-            ui.End()
             return
         block = next((b for b in self.model.document.blocks if b.id == self.model.selected), None)
         if self.pending:
@@ -1832,7 +1967,6 @@ class _Workspace:
                 self._queue_action("operation","Part.sketch")
             ui.Spacing(8)
             ui.TextMuted("Or select an existing feature to edit it.",wrap=True)
-            ui.End()
             return
         operation = self.pending or operations().get(block.operation)
         if block and self.draft_for != block.id:
@@ -1878,70 +2012,73 @@ class _Workspace:
             if ui.Button("Insert component",height=32,primary=True):
                 self._queue_action("insert_component")
             ui.Separator()
-        ui.BeginChild("Parameters", height=max(30, ui.GetContentRegionAvail()[1]-82))
-        if editable and operation:
-            form_errors = self._form_errors(operation, available, self.result_name if self.pending else block.result or block.id)
-            self._field_errors = form_errors
-            ui.TextMuted(operation.description,wrap=True)
-            ui.Spacing(4)
-            if not operation.static:
-                receivers = [name for name, value in available.items() if isinstance(value, operation.owner)]
-                ui.TextUnformatted("Input " + operation.owner.__name__.lower())
-                if receivers:
-                    _, self.receiver = ui.ComboBox("Receiver##" + operation.key, self.receiver,
-                                                   receivers, width=max(1, ui.GetContentRegionAvail()[0]))
-                else:
-                    ui.TextWrapped("Create a " + operation.owner.__name__.lower() + " first.")
-                ui.Spacing(2)
-            if self.pending:
-                ui.TextUnformatted("Mate name" if operation.mutation else "Feature name")
-                changed, result_name = ui.InputText("Feature name", self.result_name,
-                                                    width=max(1, ui.GetContentRegionAvail()[0]), error=form_errors.get("__result", ""))
-                if changed and self.fields.get("name") == self.result_name:
-                    self.fields["name"] = result_name
-                self.result_name = result_name
-                if "__result" in form_errors:
-                    ui.ValidationMessage(form_errors["__result"])
-                ui.Spacing(2)
-            primary = [p for p in operation.parameters if p.default is inspect.Parameter.empty
-                       or p.name != "max_deviation" and annotation_names(p.annotation)-{"None"} in ({"float"}, {"int"})
-                       or operation.key == "Part.sketch" and p.name == "plane"
-                       or operation.key == "Solid.shell" and p.name == "faces"
-                       or operation.owner.__name__ == "Assembly" and p.name == "position"
-                       or p.name == "opposite_normals"]
-            for parameter in primary:
-                self._field(operation, parameter, available)
-            end_fields = [p for p in operation.parameters if operation.key == "Part.loft"
-                          and p.name in ("start_point", "start_closure", "start_tangent",
-                                         "end_point", "end_closure", "end_tangent")]
-            if end_fields:
-                _, expanded = ui.TreeNode("End conditions##Part.loft", default_open=False,
-                                         force_open=any(p.name in form_errors for p in end_fields))
-                if expanded:
-                    for end in ("start", "end"):
-                        ui.Heading(end.capitalize())
-                        for parameter in sorted((p for p in end_fields if p.name.startswith(end)),
-                                                key=lambda p: ("point", "closure", "tangent").index(p.name.split("_", 1)[1])):
+        with ui.child("Parameters", height=max(30, ui.GetContentRegionAvail()[1]-82)):
+            if editable and operation:
+                form_errors = self._form_errors(operation, available, self.result_name if self.pending else block.result or block.id)
+                self._field_errors = form_errors
+                if "__parameters" in form_errors:
+                    ui.ValidationMessage(form_errors["__parameters"])
+                ui.TextMuted(operation.description,wrap=True)
+                ui.Spacing(4)
+                if not operation.static:
+                    receivers = [name for name, value in available.items() if isinstance(value, operation.owner)]
+                    ui.TextUnformatted("Input " + operation.owner.__name__.lower())
+                    if receivers:
+                        _, self.receiver = ui.ComboBox("Receiver##" + operation.key, self.receiver,
+                                                       receivers, width=max(1, ui.GetContentRegionAvail()[0]))
+                    else:
+                        ui.TextWrapped("Create a " + operation.owner.__name__.lower() + " first.")
+                    ui.Spacing(2)
+                if self.pending:
+                    ui.TextUnformatted("Mate name" if operation.mutation else "Feature name")
+                    changed, result_name = ui.InputText("Feature name", self.result_name,
+                                                        width=max(1, ui.GetContentRegionAvail()[0]), error=form_errors.get("__result", ""))
+                    if changed and self.fields.get("name") == self.result_name:
+                        self.fields["name"] = result_name
+                    self.result_name = result_name
+                    if "__result" in form_errors:
+                        ui.ValidationMessage(form_errors["__result"])
+                    ui.Spacing(2)
+                primary = [p for p in operation.parameters if p.default is inspect.Parameter.empty
+                           or p.name != "max_deviation" and annotation_names(p.annotation)-{"None"} in ({"float"}, {"int"})
+                           or operation.key == "Part.sketch" and p.name == "plane"
+                           or operation.key == "Solid.shell" and p.name == "faces"
+                           or operation.owner.__name__ == "Assembly" and p.name == "position"
+                           or p.name == "opposite_normals"]
+                for parameter in primary:
+                    self._field(operation, parameter, available)
+                end_fields = [p for p in operation.parameters if operation.key == "Part.loft"
+                              and p.name in ("start_point", "start_closure", "start_tangent",
+                                             "end_point", "end_closure", "end_tangent")]
+                if end_fields:
+                    _, expanded = ui.TreeNode("End conditions##Part.loft", default_open=False,
+                                             force_open=any(p.name in form_errors for p in end_fields))
+                    if expanded:
+                        for end in ("start", "end"):
+                            ui.Heading(end.capitalize())
+                            for parameter in sorted((p for p in end_fields if p.name.startswith(end)),
+                                                    key=lambda p: ("point", "closure", "tangent").index(p.name.split("_", 1)[1])):
+                                self._field(operation, parameter, available)
+                optional = [p for p in operation.parameters if p not in primary and p not in end_fields]
+                if optional:
+                    _, expanded = ui.TreeNode("More options##" + operation.key, default_open=False,
+                                             force_open=any(p.name in form_errors for p in optional))
+                    if expanded:
+                        for parameter in optional:
                             self._field(operation, parameter, available)
-            optional = [p for p in operation.parameters if p not in primary and p not in end_fields]
-            if optional:
-                _, expanded = ui.TreeNode("More options##" + operation.key, default_open=False,
-                                         force_open=any(p.name in form_errors for p in optional))
-                if expanded:
-                    for parameter in optional:
-                        self._field(operation, parameter, available)
-        else:
-            ui.TextWrapped(block.reason)
-        if self.form_build_error:
-            ui.ValidationMessage("Cannot apply: " + self.form_build_error)
-        if block:
-            users = self.model.document.dependents(block.id)
-            ui.Spacing(4)
-            if users:
-                ui.TextMuted("Used by: " + ", ".join(users),wrap=True)
-            elif block.kind != "Setup" and ui.Button("Delete feature"):
-                self._delete_feature(block.id)
-        ui.EndChild()
+            else:
+                ui.TextWrapped(block.reason)
+            if self.form_build_error:
+                ui.ValidationMessage("Cannot apply: " + self.form_build_error)
+            if block:
+                users = self.model.document.dependents(block.id)
+                ui.Spacing(4)
+                if users:
+                    ui.TextMuted("Used by: " + ", ".join(users),wrap=True)
+                    if block.operation == "named_parameter" and ui.Button("Delete parameter"):
+                        self._delete_feature(block.id)
+                elif block.kind != "Setup" and ui.Button("Delete feature"):
+                    self._delete_feature(block.id)
         ui.Separator()
         errors = self._form_errors(operation, available, self.result_name if self.pending else block.result or block.id) if editable and operation else {}
         if errors and self._pick_reference is None and self._pick_datum is None:
@@ -1989,7 +2126,6 @@ class _Workspace:
                 self._sync_scene()
         if self._draft_preview and self._preview_selection != self._selection_signature():
             self._preview_draft()
-        ui.End()
 
     def _diagnostics(self):
         ui = self.ui
@@ -1997,7 +2133,7 @@ class _Workspace:
             ui.End()
             return
         if self._output_tab:
-            ui._tabs[(id(ui._current),"Model output")] = self._output_tab
+            ui.SetSelectedTab("Model output", self._output_tab)
             self._output_tab = None
         ui.BeginTabBar("Model output")
         if ui.BeginTabItem("Messages"):
@@ -2034,16 +2170,31 @@ class _Workspace:
         ui.EndTabBar()
         ui.End()
 
+    def _history_available(self, direction):
+        if self.sketch_session is None:
+            return getattr(self.model.history, "can_"+direction)
+        from .sketch_ui import can_sketch_history
+        return can_sketch_history(self.sketch_session["state"], direction)
+
     def _history(self, direction):
+        if self.sketch_session is not None:
+            from . import sketch_ui
+            state = self.sketch_session["state"]
+            if direction == "undo":
+                sketch_ui._undo_pending_or_action(state)
+            else:
+                sketch_ui._sketch_history(state, direction)
+            return
+        previous = {b.id: b.source for b in self.model.document.blocks}
         if getattr(self.model, direction)():
-            self._tree_inspection = None
-            self.pending = None
-            self.draft_for = None
             self.source_editor = self.model.source
-            if self.model.selected not in {b.id for b in self.model.document.blocks}:
-                self.model.selected = self.model.document.blocks[0].id
-            self.picked.clear()
+            changed = [b for b in self.model.document.blocks if previous.get(b.id) != b.source]
+            if changed:
+                self.model.selected = changed[-1].id
+            elif self.model.selected not in {b.id for b in self.model.document.blocks}:
+                self.model.selected = self.model.document.blocks[-1].id
             self._sync_scene()
+            self._select(self.model.selected)
             self.status = "Undo" if direction == "undo" else "Redo"
 
     def _document_bar(self):
@@ -2073,12 +2224,12 @@ class _Workspace:
                 self._queue_action("save")
             elif save_choice == (1,):
                 self._queue_action("save_as")
-            for action, drawer, tip, enabled in (
-                    ("undo",icons.undo,"Undo feature change · Ctrl+Z",bool(self.model.undo_stack)),
-                    ("redo",icons.redo,"Redo feature change · Ctrl+Y",bool(self.model.redo_stack))):
+            for action, drawer, tip in (
+                    ("undo",icons.undo,"Undo feature change · Ctrl+Z"),
+                    ("redo",icons.redo,"Redo feature change · Ctrl+Y")):
                 ui.SameLine()
-                if ui.IconButton(action,drawer,tooltip="Finish or cancel the sketch first" if sketching else tip,enabled=enabled and not sketching):
-                    self._queue_action(action)
+                if ui.IconButton(action,drawer,tooltip=tip.replace("feature", "sketch") if sketching else tip,enabled=self._history_available(action)):
+                    self._history(action) if sketching else self._queue_action(action)
             if self._return_paths:
                 ui.SameLine()
                 if ui.Button("Back to assembly", width=140, height=28, enabled=not sketching):
@@ -2088,7 +2239,7 @@ class _Workspace:
             ui.SameLine()
             ui.TextEllipsis(self.model.path.name+(" · Sketch: "+self.sketch_session["sketch_name"] if sketching else "")+("  •" if self.model.dirty else ""),
                             max(1,ui.GetContentRegionAvail()[0]-312-3*self.window_chrome.button_width),muted=True,height=28)
-            title_rect = ui._last
+            title_rect = ui.GetItemRect()
             self.window_chrome.drag_rect = (title_rect[0], 0, title_rect[2], 40)
             ui.SameLine()
             if ui.IconButton("Fit model",sketch_icons.draw_normal):
@@ -2126,11 +2277,13 @@ class _Workspace:
                 message = "Build failed · " + self.model.error
             elif self._draft_dirty() and not message.startswith("Check inputs:"):
                 message = "Unapplied changes · Apply to rebuild the model"
-            ui.TextEllipsis(message,max(1,ui.GetContentRegionAvail()[0]-268),height=22)
-            ui.SameLine()
             state = "Unsaved changes" if self.model.dirty else "New model" if self.model.saved_source is None else "Saved"
-            ui.TextEllipsis(state+"  ·  Experimental modeling",
-                            muted=True,height=22)
+            unit = getattr(self.model.part, "unit", None) if self.model.part is not None else None
+            chip = state+"  ·  "+(unit or "unit undeclared")+"  ·  Experimental modeling"
+            chip_width = ui.CalcTextSize(chip)[0]+12
+            ui.TextEllipsis(message,max(1,ui.GetContentRegionAvail()[0]-chip_width),height=22)
+            ui.SameLine()
+            ui.TextEllipsis(chip,muted=True,height=22)
         ui.End()
 
     def _ribbon_group(self, label, commands):
@@ -2265,8 +2418,7 @@ class _Workspace:
                 if not candidate.rebuild(source):
                     raise ValueError(candidate.error)
                 candidate.save()
-                candidate.undo_stack = [relocate(s) for s in self.model.undo_stack]
-                candidate.redo_stack = [relocate(s) for s in self.model.redo_stack]
+                candidate.history = self.model.history.transformed(transform=relocate)
                 candidate.selected = self.model.selected
                 self.model = candidate
                 self.file_path = str(target)
@@ -2291,9 +2443,9 @@ class _Workspace:
             ui.End()
             return
         if self._ribbon_tab:
-            ui._tabs[(id(ui._current),"Modeling commands")] = self._ribbon_tab
+            ui.SetSelectedTab("Modeling commands", self._ribbon_tab)
             self._ribbon_tab = None
-        ui._tabs.setdefault((id(ui._current), "Modeling commands"), "Solid")
+        ui.SetSelectedTab("Modeling commands", "Solid", default=True)
         ui.BeginTabBar("Modeling commands")
         if ui.BeginTabItem("File"):
             ui.BeginRibbonGroup("Document")
@@ -2308,12 +2460,11 @@ class _Workspace:
                     self._queue_action(action)
             ui.EndRibbonGroup()
             ui.BeginRibbonGroup("History")
-            for index, (label, icon, revisions) in enumerate((
-                    ("Undo", icons.undo, self.model.undo_stack), ("Redo", icons.redo, self.model.redo_stack))):
+            for index, (label, icon) in enumerate((("Undo", icons.undo), ("Redo", icons.redo))):
                 if index:
                     ui.SameLine()
-                if ui.RibbonButton(label, icon, enabled=bool(revisions) and self.sketch_session is None, tooltip="Restore the " + label.lower() + " revision."):
-                    self._queue_action(label.lower())
+                if ui.RibbonButton(label, icon, enabled=self._history_available(label.lower()), tooltip="Restore the " + label.lower() + " revision."):
+                    self._history(label.lower()) if self.sketch_session is not None else self._queue_action(label.lower())
             ui.EndRibbonGroup()
             ui.EndTabItem()
         if ui.BeginTabItem("Assembly"):
@@ -2391,7 +2542,9 @@ class _Workspace:
                                               ("Part.sphere", "Sphere", "sphere")))
             self._ribbon_group("Import", (("Part.load_stl", "STL", "file_open"),
                                           ("Part.load_obj", "OBJ", "file_open"),
-                                          ("Part.load_off", "OFF", "file_open")))
+                                          ("Part.load_off", "OFF", "file_open"),
+                                          ("Part.load_usda", "USDA", "file_open"),
+                                          ("Part.load_svg", "SVG sketch", "file_open")))
             ui.EndTabItem()
         if ui.BeginTabItem("Operations"):
             _, self.operation_filter = ui.InputText("Find operation", self.operation_filter,
@@ -2417,6 +2570,20 @@ class _Workspace:
                 ui.TextWrapped(operations()[self.operation_choice].description)
             ui.EndTabItem()
         if ui.BeginTabItem("View"):
+            ui.BeginRibbonGroup("Inspect")
+            for label, icon, tip in (("Measure", icons.distance, "Measure minimum distance between two selected entities · M"),
+                                     ("Section view", icons.section_view, "Reveal the inside with an adjustable cutting plane")):
+                if label != "Measure":
+                    ui.SameLine()
+                if ui.RibbonButton(label, icon, width=96 if label == "Section view" else 76,
+                                   enabled=self.sketch_session is None and self.viewer._solid is not None,
+                                   selected=self._inspection_mode == label or label == "Section view" and self.viewer.section_plane is not None,
+                                   tooltip=tip):
+                    closing = self._inspection_mode == label
+                    if closing and label == "Section view":
+                        self.viewer.inspection.enable_section(False)
+                    self._queue_action("inspect", None if closing else label)
+            ui.EndRibbonGroup()
             ui.BeginRibbonGroup("Viewport")
             if ui.RibbonButton("Fit", sketch_icons.draw_normal, tooltip="Fit the displayed model in the viewport."):
                 if self.sketch_session is not None:
@@ -2521,8 +2688,11 @@ class _Workspace:
         if ui.RibbonButton("Fit sketch", icons.draw_normal, enabled=active, tooltip="Center and fit this sketch in the viewport."):
             self.sketch_session["fit"]()
         ui.SameLine()
-        if ui.RibbonButton("Undo", modeling_icons.undo, enabled=active, tooltip="Undo the last sketch action or cancel the active edit."):
+        if ui.RibbonButton("Undo", modeling_icons.undo, enabled=active and self._history_available("undo"), tooltip="Undo the last sketch action or cancel the active edit."):
             sketch_ui._undo_pending_or_action(state)
+        ui.SameLine()
+        if ui.RibbonButton("Redo", modeling_icons.redo, enabled=active and self._history_available("redo"), tooltip="Restore the last undone sketch edit · Ctrl+Y"):
+            sketch_ui._sketch_history(state, "redo")
         ui.EndRibbonGroup()
 
     def _pointer_in_viewport(self):
@@ -2532,6 +2702,16 @@ class _Workspace:
             return False
         x, y, w, h = rect
         return w > 1 and h > 1 and x <= pos[0] < x + w and y <= pos[1] < y + h
+
+    def _inspection_plane(self):
+        from .view import _selected_plane_context
+        context = _selected_plane_context(self.model.displayed, self.picked)
+        if context is not None or len(self.picked) != 1:
+            return context
+        name = self.picked[0]
+        owner = self._body_pick_owners.get(name)
+        body = self._available_values().get(owner)
+        return _selected_plane_context(body, [name[len(owner)+1:]]) if body is not None else None
 
     def _maybe_fit_view(self):
         from pyglet.window import key
@@ -2595,9 +2775,9 @@ class _Workspace:
                     2 * mx / width - 1, 1 - 2 * my / height)
                 point_radius, curve_radius = glview.pick_radii(self.viewer.camera)
                 name = glview.pick_name(packed, origin, direction,
-                                        point_radius, curve_radius)
+                                        point_radius, curve_radius, clip_plane=self.viewer.section_plane)
                 owner = self._body_pick_owners.get(name) if name else None
-                assigned_body = bool(owner and self._assign_clicked_body(owner))
+                assigned_body = bool(not self._inspection_mode and owner and self._assign_clicked_body(owner))
                 if assigned_body:
                     self.picked = [picked for picked, who in self._body_pick_owners.items() if who == owner]
                     name = None
@@ -2627,6 +2807,7 @@ class _Workspace:
         self._diagnostics()
         self._status_bar()
         self._action_dialog()
+        self._parameter_delete_dialog()
         if self._queued_action:
             action,self._queued_action = self._queued_action,None
             self._request_action(*action)

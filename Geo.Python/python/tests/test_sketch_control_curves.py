@@ -14,7 +14,7 @@ class SketchControlCurveTests(unittest.TestCase):
             sketch.add_bspline([(width, 0), (width, -2), (-width, -2), (-width, 0)])
             sections.append(sketch)
             starts.append(upper.name)
-        solid = part.loft(sections, LoftOptions(correspondence="vertices"), first_curves=starts)
+        solid = part.loft(sections, options=LoftOptions(correspondence="vertices"), first_curves=starts)
         self.assertTrue(solid.is_watertight())
         self.assertGreater(solid.volume(), 0)
         self.assertEqual(len(solid.patch_names), 4)  # two authored sides and two caps

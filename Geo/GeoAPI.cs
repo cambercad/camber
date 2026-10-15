@@ -285,6 +285,17 @@ Creates a constraint-capable sketcher in an explicit world CoordinateSystem (ori
             return result;
         }
 
+        [APIDescription(@"GetSketcherFromSvg(filePath: str, sketchPlaneName: str, name: str = None, scale: float = 1, flipY: bool = False, constrained: bool = False) -> PlotterSketcherCoordSys
+Loads SVG geometry (line, circle, ellipse, rect, polyline, polygon, path with M/L/H/V/C/S/Q/T/A/Z) into a new sketch on a named plane. Transforms are applied. The annotation layer written by SaveSvgFile is ignored. flipY (default True) then mirrors Y so page-up is sketch +Y, which matches SaveSvgFile. scale multiplies coordinates. constrained=True returns a ConstrainedSketcher so dimensions can be added afterwards. Throws if the file has no supported geometry.")]
+        public PlotterSketcherCoordSys GetSketcherFromSvg(string filePath, string sketchPlaneName, string name = null, double scale = 1, bool flipY = true, bool constrained = false)
+        {
+            PlotterSketcherCoordSys sketch = constrained
+                ? GetConstraintSketcher(sketchPlaneName, name)
+                : GetPlotterSketcher(sketchPlaneName, name);
+            SvgSketchReader.Load(sketch, ResolvePath(filePath), scale, flipY);
+            return sketch;
+        }
+
         [APIDescription(@"GetAssembly(name: str = None) -> Assembly
 Creates or returns a named 3D assembly mate solver for meshes on this GeoAPI instance.")]
         public Assembly GetAssembly(string name = null)
@@ -410,6 +421,15 @@ Writes a triangulated USD ASCII (.usda) mesh with per-vertex normals, UVs, and G
             filePath = ResolvePath(filePath);
             EnsureParentDirectory(filePath);
             UsdaWriter.Write(filePath, mesh.Name, positions, normals, uvs, triangles, perTriangleGroup, mesh.groupIdToExtendedName);
+        }
+
+        [APIDescription(@"SaveSvgFile(sketch: PlotterSketcher, filePath: str, includeAnnotations: bool = False)
+Writes a sketch as SVG. Lines, circles, circular arcs, ellipses and Béziers stay analytic; other curves are tessellated. Y is negated so the drawing is upright in a browser. includeAnnotations adds constraint glyphs and dimensions in a layer that GetSketcherFromSvg ignores. Load with flipY=True.")]
+        public void SaveSvgFile(PlotterSketcher sketch, string filePath, bool includeAnnotations = false)
+        {
+            filePath = ResolvePath(filePath);
+            EnsureParentDirectory(filePath);
+            SvgSketchWriter.Write(filePath, sketch, includeAnnotations, _maxDeviation > 0 ? _maxDeviation : 0.01);
         }
 
         [APIDescription(@"LoadWavefrontObjFile(filePath: str, groupBorderAngleThresholdDegree: float = -1, name: str = None, scale: float = 1) -> AnchorMesh
@@ -572,6 +592,149 @@ Loads STL (ASCII or binary). groupBorderAngleThresholdDegree: dihedral angle in 
             name = name ?? GenerateName("StlMesh");
             StlReader.Read(filePath, out var points, out var triangles);
             return MeshFromPointsAndTriangles(points, triangles, groupBorderAngleThresholdDegree, EntityNaming.StlAutoGroupPrefix, name, requireWatertight);
+        }
+
+        [APIDescription(@"LoadUsdaFile(filePath: str, groupBorderAngleThresholdDegree: float = -1, name: str = None, scale: float = 1) -> AnchorMesh
+Loads a USD ASCII (.usda) stage as an AnchorMesh. Static UsdGeom Mesh prims are triangulated (n-gons included). GeomSubset face sets become surface patches unless groupBorderAngleThresholdDegree > 0, which auto-detects patches by dihedral angle the same way as OBJ. Vertex and face-varying normals and UVs are kept; missing ones are generated. metersPerUnit is applied, then scale. upAxis Y is converted to Z-up. Watertight meshes are volumes. name auto-generated if null.")]
+        public AnchorMesh LoadUsdaFile(string filePath, double groupBorderAngleThresholdDegree = -1, string name = null, double scale = 1.0)
+        {
+            if (scale <= 0)
+                throw new ArgumentOutOfRangeException(nameof(scale), "Scale must be positive.");
+            name = name ?? GenerateName("UsdaMesh");
+            UsdaDocument doc = UsdaReader.Read(ResolvePath(filePath));
+            double unit = doc.MetersPerUnit > 0 ? doc.MetersPerUnit : 1.0;
+            double applied = unit * scale;
+            bool yUp = string.Equals(doc.UpAxis, "Y", StringComparison.OrdinalIgnoreCase);
+
+            var meshes = new List<UsdaMesh>();
+            foreach (UsdaMesh mesh in doc.Meshes)
+            {
+                if (mesh.Triangles == null || mesh.Triangles.Count == 0)
+                    continue;
+                if (applied != 1.0)
+                {
+                    for (int i = 0; i < mesh.Points.Count; i++)
+                        mesh.Points[i] *= applied;
+                }
+                if (yUp)
+                {
+                    for (int i = 0; i < mesh.Points.Count; i++)
+                        mesh.Points[i] = UsdaReader.YUpToZUp(mesh.Points[i]);
+                    if (mesh.Normals != null)
+                    {
+                        for (int i = 0; i < mesh.Normals.Count; i++)
+                            mesh.Normals[i] = UsdaReader.YUpToZUp(mesh.Normals[i]);
+                    }
+                }
+                meshes.Add(mesh);
+            }
+            if (meshes.Count == 0)
+                throw new InvalidDataException("USDA file contains no triangles.");
+
+            int groupCount = 0;
+            foreach (UsdaMesh mesh in meshes)
+                groupCount += Math.Max(1, mesh.GroupNames.Count);
+            int offset = groupBorderAngleThresholdDegree > 0 ? 0 : ReserveGroupIds(groupCount);
+
+            var allPoints = new List<Vec3D>();
+            var allNormals = new List<Vec3D>();
+            var allUv = new List<Vec2D>();
+            var allTriangles = new List<Tri>();
+            var groupPerTriangle = new List<int>();
+            var triangleGroupToName = new Dictionary<int, string>();
+            bool normalsAligned = true;
+            bool uvAligned = true;
+            int groupCursor = 0;
+            foreach (UsdaMesh mesh in meshes)
+            {
+                int pointBase = allPoints.Count;
+                allPoints.AddRange(mesh.Points);
+                bool meshNormals = mesh.Normals != null && mesh.Normals.Count == mesh.Points.Count && mesh.Points.Count > 0;
+                bool meshUv = mesh.Uvs != null && mesh.Uvs.Count == mesh.Points.Count && mesh.Points.Count > 0;
+                if (meshNormals)
+                    allNormals.AddRange(mesh.Normals);
+                else
+                    normalsAligned = false;
+                if (meshUv)
+                    allUv.AddRange(mesh.Uvs);
+                else
+                    uvAligned = false;
+
+                int names = Math.Max(1, mesh.GroupNames.Count);
+                for (int g = 0; g < names; g++)
+                {
+                    string raw = g < mesh.GroupNames.Count && !string.IsNullOrEmpty(mesh.GroupNames[g])
+                        ? mesh.GroupNames[g]
+                        : mesh.Name;
+                    string groupName = meshes.Count > 1 ? mesh.Name + "/" + raw : raw;
+                    triangleGroupToName[offset + groupCursor + g] = groupName;
+                }
+
+                for (int t = 0; t < mesh.Triangles.Count; t++)
+                {
+                    Tri tri = mesh.Triangles[t];
+                    tri.A += pointBase;
+                    tri.B += pointBase;
+                    tri.C += pointBase;
+                    allTriangles.Add(tri);
+                    int local = mesh.GroupPerTriangle != null && t < mesh.GroupPerTriangle.Count
+                        ? mesh.GroupPerTriangle[t] : 0;
+                    if (local < 0 || local >= names)
+                        local = 0;
+                    groupPerTriangle.Add(offset + groupCursor + local);
+                }
+                groupCursor += names;
+            }
+            if (!normalsAligned)
+                allNormals.Clear();
+            if (!uvAligned)
+                allUv.Clear();
+
+            if (groupBorderAngleThresholdDegree > 0)
+            {
+                int numGroups = AutoGroups.AutoDetectPatches(allPoints, allTriangles, groupBorderAngleThresholdDegree.ToRadians(), out groupPerTriangle, 0);
+                offset = ReserveGeneratedGroupIds(groupPerTriangle, numGroups);
+                triangleGroupToName = new Dictionary<int, string>();
+                for (int i = offset; i < offset + numGroups; i++)
+                    triangleGroupToName.Add(i, EntityNaming.ImportAutoGroup(EntityNaming.UsdaAutoGroupPrefix, i));
+            }
+
+            bool hasNormals = allNormals.Count == allPoints.Count && allPoints.Count > 0;
+            bool hasUv = allUv.Count == allPoints.Count && allPoints.Count > 0;
+            bool isWatertight = MeshAnalysis.IsWatertightMesh(allPoints, allTriangles);
+            double angleThreshold = groupBorderAngleThresholdDegree > 0
+                ? groupBorderAngleThresholdDegree.ToRadians()
+                : 60.0.ToRadians();
+            var generatedNormals = hasNormals ? null : AutoNormals.ComputeNormals(allPoints, allTriangles, angleThreshold);
+            var generatedUv = hasUv ? null : AutoUV.AutoUvPerPatch(allPoints, allTriangles, groupPerTriangle);
+            var triangleCornerData = new List<MeshTriangle<TriangleVertexNormalUV>>(allTriangles.Count);
+            for (int i = 0; i < allTriangles.Count; i++)
+            {
+                Tri tri = allTriangles[i];
+                triangleCornerData.Add(new MeshTriangle<TriangleVertexNormalUV>
+                {
+                    V0 = new TriangleVertexNormalUV
+                    {
+                        Normal = hasNormals ? allNormals[tri.A] : generatedNormals[3 * i],
+                        UV = hasUv ? allUv[tri.A] : generatedUv[i].UvA
+                    },
+                    V1 = new TriangleVertexNormalUV
+                    {
+                        Normal = hasNormals ? allNormals[tri.B] : generatedNormals[3 * i + 1],
+                        UV = hasUv ? allUv[tri.B] : generatedUv[i].UvB
+                    },
+                    V2 = new TriangleVertexNormalUV
+                    {
+                        Normal = hasNormals ? allNormals[tri.C] : generatedNormals[3 * i + 2],
+                        UV = hasUv ? allUv[tri.C] : generatedUv[i].UvC
+                    }
+                });
+            }
+            var meshOut = new MeshNormalUV(converter, allPoints, allTriangles, triangleCornerData, groupPerTriangle, skipWatertightCheck: !isWatertight);
+            var result = new AnchorMesh(name, meshOut, triangleGroupToName, new Dictionary<string, SurfaceMetaData>(), isWatertight);
+            ImportPatchMetadataBuilder.Attach(result);
+            RegisterMesh(result);
+            return result;
         }
 
         private AnchorMesh MeshFromPointsAndTriangles(List<Vec3D> points, List<Tri> triangles, double groupBorderAngleThresholdDegree, string groupNamePrefix, string name, bool requireWatertight = true)

@@ -58,24 +58,12 @@ namespace Geo
             List<Tri>[] newTrianglesArr = new List<Tri>[triangleIdsPerGroup.Count];
             List<MeshTriangle<T>>[] newTrianglesExArr = new List<MeshTriangle<T>>[triangleIdsPerGroup.Count];
 
-            var pairs = triangleIdsPerGroup.ToArray();
-            int groupCount = pairs.Length;
+            var pairs = new KeyValuePair<int, List<int>>[triangleIdsPerGroup.Count];
+            int groupCount = 0;
+            foreach (var pair in triangleIdsPerGroup)
+                pairs[groupCount++] = pair;
 
-            const int MinTrisForParallelGroup = 64;
-            var isHeavyGroup = new bool[groupCount];
             var wasRetriangulatedByGroup = new bool[groupCount];
-            int heavyGroupCount = 0;
-            var heavyGroupIndices = new List<int>();
-            for (int i = 0; i < groupCount; i++)
-            {
-                var pair = pairs[i];
-                if (idsOfPlanarGroups.Contains(pair.Key) && pair.Value.Count >= MinTrisForParallelGroup)
-                {
-                    isHeavyGroup[i] = true;
-                    heavyGroupIndices.Add(i);
-                    ++heavyGroupCount;
-                }
-            }
 
             void ProcessGroup(int i)
             {
@@ -95,14 +83,7 @@ namespace Geo
                 wasRetriangulatedByGroup[i] = wasRetriangulated;
             }
 
-            for (int i = 0; i < groupCount; i++)
-            {
-                if (isHeavyGroup[i])
-                    continue;
-                ProcessGroup(i);
-            }
-
-            ParallelEx.ForGroups(0, heavyGroupCount, k => ProcessGroup(heavyGroupIndices[k]));
+            ParallelEx.ForGroups(0, groupCount, ProcessGroup);
 
             // Workers own distinct array entries; collect shared set membership
             // only after all workers finish, in stable group order.
@@ -626,7 +607,9 @@ namespace Geo
                 boundaryVertices.Add(edge.Y);
             }
 
-            var boundaryVertexList = boundaryVertices.ToList();
+            var boundaryVertexList = new List<int>(boundaryVertices.Count);
+            foreach (int vertex in boundaryVertices)
+                boundaryVertexList.Add(vertex);
             var projectionAxes = ComputeProjectionAxes(positions, boundaryVertexList);
 
             projected2D = new List<Rat2Hybrid>();

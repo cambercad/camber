@@ -15,12 +15,12 @@ class AssemblyObjExportTests(unittest.TestCase):
     def test_nested_rotated_instances_keep_world_positions_and_names(self):
         part = Part((-20, -20, -20), (20, 20, 20), tolerance=.01)
         block = part.cuboid((0, 0, 0), (1, 2, 3), name="block")
-        child = part.assembly("child")
-        child.add_part(block, (1, 0, 0))
-        top = part.assembly("top")
-        top.add_part(block, (-5, 0, 0))
+        child = part.assembly(name="child")
+        child.add_part(block, position=(1, 0, 0))
+        top = part.assembly(name="top")
+        top.add_part(block, position=(-5, 0, 0))
         half = math.sqrt(.5)
-        top.add_subassembly(child, (0, 10, 0), (0, 0, half, half))
+        top.add_subassembly(child, position=(0, 10, 0), orientation=(0, 0, half, half))
 
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "assembly.obj")

@@ -5,25 +5,33 @@ namespace GeoCore;
 
 /// <summary>
 /// Exact rational arithmetic backed by Camber's arbitrary-precision integer.
-/// Fractions are kept unreduced during arithmetic; call <see cref="Simplify"/>
-/// when a canonical numerator and denominator are useful.
+/// Fractions are kept unreduced during arithmetic. <see cref="LimitGrowth"/>
+/// cancels easy shared factors so a value cannot grow without bound.
+/// <see cref="Simplify"/> is the full reduction and is what hashing needs.
 /// </summary>
 public struct BigRational : IComparable<BigRational>, IComparable, IEquatable<BigRational>
 {
     private FastBigInteger numerator;
     private FastBigInteger denominator;
+    private bool reduced;
     private static readonly BigInteger DoubleMaximum = (BigInteger)double.MaxValue;
     private static readonly BigInteger DoubleMinimum = -DoubleMaximum;
     private static readonly BigInteger DoubleScale = BigInteger.Pow(10, 308);
 
     internal FastBigInteger FastNumerator => numerator;
     internal readonly FastBigInteger FastDenominator => EffectiveDenominator;
+    /// <summary>True when numerator and denominator are already coprime and the denominator is positive.</summary>
+    internal readonly bool IsReduced => reduced;
     private readonly FastBigInteger EffectiveDenominator => denominator.IsZero ? new FastBigInteger(1) : denominator;
 
-    public BigInteger Numerator
+        public BigInteger Numerator
     {
         readonly get => numerator.ToBigInteger();
-        set => numerator = new FastBigInteger(value);
+        set
+        {
+            numerator = new FastBigInteger(value);
+            reduced = false;
+        }
     }
 
     public BigInteger Denominator
@@ -39,6 +47,7 @@ public struct BigRational : IComparable<BigRational>, IComparable, IEquatable<Bi
                 valueFast = -valueFast;
             }
             denominator = valueFast;
+            reduced = false;
         }
     }
 
@@ -122,23 +131,37 @@ public struct BigRational : IComparable<BigRational>, IComparable, IEquatable<Bi
         }
         this.numerator = numerator;
         this.denominator = numerator.IsZero ? new FastBigInteger(1) : denominator;
+        // A unit numerator or a unit denominator is already coprime. Other
+        // fractions stay unmarked until Simplify runs the GCD.
+        reduced = this.numerator.IsZero || this.numerator.IsUnit || this.denominator.IsUnit;
     }
 
     private BigRational(BigRational value)
     {
         numerator = value.numerator;
         denominator = value.EffectiveDenominator;
+        reduced = value.reduced;
     }
 
     public void Simplify()
     {
+        if (reduced)
+            return;
         if (numerator.IsZero)
         {
             denominator = new FastBigInteger(1);
+            reduced = true;
             return;
         }
 
         var den = EffectiveDenominator;
+        if (numerator.IsUnit || den.IsUnit)
+        {
+            denominator = den;
+            reduced = true;
+            return;
+        }
+
         var gcd = FastBigInteger.GreatestCommonDivisor(numerator, den);
         if (gcd != new FastBigInteger(1))
         {
@@ -147,6 +170,38 @@ public struct BigRational : IComparable<BigRational>, IComparable, IEquatable<Bi
         }
         else
             denominator = den;
+        reduced = true;
+    }
+
+    /// <summary>
+    /// Cancels shared factors of 2, 3, and 5. The fraction stays exact, but it is
+    /// not marked canonical unless that already makes the denominator or numerator 1.
+    /// Hashing still runs <see cref="Simplify"/> so equal values keep one hash.
+    /// </summary>
+    public void LimitGrowth()
+    {
+        if (reduced)
+            return;
+        if (numerator.IsZero)
+        {
+            denominator = new FastBigInteger(1);
+            reduced = true;
+            return;
+        }
+        var den = EffectiveDenominator;
+        if (numerator.IsUnit || den.IsUnit)
+        {
+            denominator = den;
+            reduced = true;
+            return;
+        }
+        FastBigInteger.RemoveSharedSmallFactors(ref numerator, ref den);
+        denominator = den;
+        if (numerator.IsZero || numerator.IsUnit || den.IsUnit)
+        {
+            if (numerator.IsZero) denominator = new FastBigInteger(1);
+            reduced = true;
+        }
     }
 
     public readonly BigInteger GetWholePart() => numerator.ToBigInteger() / EffectiveDenominator.ToBigInteger();

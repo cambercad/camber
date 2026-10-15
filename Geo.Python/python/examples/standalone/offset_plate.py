@@ -24,9 +24,9 @@ west = rim_sk.add_line((0, plate_h), (0, 0), name="west", construction=True)
 rim_sk.offset([south, east, north, west], rim_offset, side="out", join="round")
 
 base = outline_sk.extrude_two_sides(
-    plate_thickness * 0.5, plate_thickness * 0.5, name="plate_base")
+    plate_thickness * 0.5, minus_z=plate_thickness * 0.5, name="plate_base")
 rim_solid = rim_sk.extrude_two_sides(
-    plate_thickness * 0.5 + rim_height, plate_thickness * 0.5, name="rim")
+    plate_thickness * 0.5 + rim_height, minus_z=plate_thickness * 0.5, name="rim")
 plate = base + rim_solid
 print(plate)
 plate.show(title="offset plate")

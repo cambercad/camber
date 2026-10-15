@@ -532,11 +532,11 @@ class FeatureSourceTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     ModelDocument(candidate)
 
-    def test_comment_and_expression_make_block_code_only(self):
+    def test_comments_are_protected_and_numeric_expressions_are_editable(self):
         commented = _TEMPLATE.replace("    part = Part", "    # keep this comment\n    part = Part")
         self.assertFalse(ModelDocument(commented).block("setup").editable)
         expression = _TEMPLATE.replace("tolerance=0.01", "tolerance=scale * 0.01")
-        self.assertFalse(ModelDocument(expression).block("setup").editable)
+        self.assertTrue(ModelDocument(expression).block("setup").editable)
 
     def test_dependencies_block_delete(self):
         source = ModelDocument(_TEMPLATE).insert(
@@ -707,6 +707,10 @@ class ModelSessionTests(unittest.TestCase):
             self.assertIs(session.part, initial)
             self.assertEqual(session.source, _TEMPLATE)
             self.assertTrue(session.error)
+            self.assertEqual(session.error, session.failure.message)
+            self.assertIsNone(session.failure.ambiguous_name)
+            self.assertTrue(session.rebuild(), session.error)
+            self.assertIsNone(session.failure)
 
     def test_save_undo_redo(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:

@@ -6,6 +6,24 @@ public class AssemblyHierarchyCloneTests : IDisposable
     public void Dispose() => GeoAPI.Clear(resetNameCounters: false);
 
     [Fact]
+    public void FixedDeepSubassemblyRecordRetainsTheFullOccurrencePath()
+    {
+        var api = new GeoAPI(new Box3D(new Vec3D(-100), new Vec3D(100)), .01);
+        var leaf = api.GetAssembly("leaf");
+        leaf.AddPart(api.CreateCube(CoordinateSystem.Default, 1, "body"), new Vec3D(2, 0, 0));
+        var middle = api.GetAssembly("middle");
+        middle.AddSubAssembly(leaf, new Vec3D(3, 0, 0));
+        var root = api.GetAssembly("root");
+        root.SolveAfterEveryConstraint = false;
+        var occurrence = root.AddSubAssembly(middle, new Vec3D(10, 0, 0));
+        root.FixSubAssembly(occurrence);
+        var mate = Assert.Single(root.GetMateRecords());
+        Assert.Equal(15, root.WorldPoseOf(mate.PartA).Position.X, 8);
+        var copy = root.CloneHierarchy("copy");
+        Assert.Equal(15, copy.WorldPoseOf(Assert.Single(copy.GetMateRecords()).PartA).Position.X, 8);
+    }
+
+    [Fact]
     public void CloneKeepsNestedOccurrenceFixAndExplicitPoseWithoutFixingOtherBodies()
     {
         var api = new GeoAPI(new Box3D(new Vec3D(-50),new Vec3D(50)),.01);

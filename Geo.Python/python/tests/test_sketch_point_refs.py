@@ -82,8 +82,8 @@ class PointRefDispatchTests(unittest.TestCase):
             _classify_point((0, 1))
 
     def test_curve_at_operator(self):
-        top = SketchCurve("top", "line")
-        rim = SketchCurve("rim", "arc")
+        top = SketchCurve("top", kind="line")
+        rim = SketchCurve("rim", kind="arc")
         self.assertEqual("top@1.000", top @ 1.000)
         self.assertEqual("top@0.000", top @ 0)
         self.assertEqual("rim@0.500", rim @ 0.5)

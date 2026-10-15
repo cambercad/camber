@@ -36,6 +36,12 @@ internal static class FaceLineageEdges
                 continue;
             }
 
+            if (mesh.TryResolveCurrentFaceReference(pair.PatchA, out string canonicalA))
+                pair = new EntityNaming.GroupEdgeAddress { PatchA = canonicalA, PatchB = pair.PatchB, EdgeIndex = pair.EdgeIndex };
+            if (mesh.TryResolveCurrentFaceReference(pair.PatchB, out string canonicalB))
+                pair = new EntityNaming.GroupEdgeAddress { PatchA = pair.PatchA, PatchB = canonicalB, EdgeIndex = pair.EdgeIndex };
+            localReference = EntityNaming.FormatGroupEdgeName(pair.PatchA, pair.PatchB, pair.EdgeIndex);
+
             // Current patch names are unique. Resolve their exact edge names
             // before considering ancestor support-pair aliases.
             bool currentFaces = mesh.extendedNameToGroupId.ContainsKey(pair.PatchA) &&

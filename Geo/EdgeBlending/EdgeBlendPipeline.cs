@@ -1471,16 +1471,17 @@ namespace Geo
             // distinct source-boundary contours can meet at one exact vertex.
             // T-junction detection, exact coverage by source boundary triangles,
             // and validation of the final sewn solid check the actual invariants.
-            var triangleBounds = volume.Triangles.Select(triangle =>
+            var triangleBounds = new (Rat3Hybrid Min, Rat3Hybrid Max)[volume.Triangles.Count];
+            ParallelEx.For(0, triangleBounds.Length, triangleIndex =>
             {
+                var triangle = volume.Triangles[triangleIndex];
                 var a = points[triangle.A];
                 var b = points[triangle.B];
                 var c = points[triangle.C];
-                return (Min: new Rat3Hybrid(Min3(a.X, b.X, c.X), Min3(a.Y, b.Y, c.Y),
-                                           Min3(a.Z, b.Z, c.Z)),
-                        Max: new Rat3Hybrid(Max3(a.X, b.X, c.X), Max3(a.Y, b.Y, c.Y),
-                                           Max3(a.Z, b.Z, c.Z)));
-            }).ToArray();
+                triangleBounds[triangleIndex] = (
+                    Min: new Rat3Hybrid(Min3(a.X, b.X, c.X), Min3(a.Y, b.Y, c.Y), Min3(a.Z, b.Z, c.Z)),
+                    Max: new Rat3Hybrid(Max3(a.X, b.X, c.X), Max3(a.Y, b.Y, c.Y), Max3(a.Z, b.Z, c.Z)));
+            });
             // Integer enclosures and outward-rounded BVH boxes only select
             // candidates. Rational bounds and coverage below still decide
             // whether the original volume covers each exact patch boundary.
@@ -1543,11 +1544,16 @@ namespace Geo
                 return false;
             }
 
+            // Coverage checks are independent and read-only; report the first
+            // uncovered edge in index order, exactly as a sequential scan would.
+            var covered = new bool[boundaryEdges.Count];
+            ParallelEx.ForLoadBalanced(0, boundaryEdges.Count, edgeIndex =>
+                covered[edgeIndex] = CoveredByBoundaryTriangles(boundaryEdges[edgeIndex], boundaryBounds[edgeIndex],
+                    volume, points, triangleBounds, triangleTree, boundaryBoxes[edgeIndex]));
             for (int edgeIndex = 0; edgeIndex < boundaryEdges.Count; edgeIndex++)
             {
                 var edge = boundaryEdges[edgeIndex];
-                if (!CoveredByBoundaryTriangles(edge, boundaryBounds[edgeIndex], volume, points, triangleBounds,
-                    triangleTree, boundaryBoxes[edgeIndex]))
+                if (!covered[edgeIndex])
                 {
                     string patchName = patchNames[edge.Surface].Name ?? $"closure/corner {edge.Surface}";
                     throw new InvalidOperationException(

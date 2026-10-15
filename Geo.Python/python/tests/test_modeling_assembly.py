@@ -95,7 +95,7 @@ class AssemblyDocumentTests(_ModelFixture):
 
     def test_nested_navigator_exposes_components_and_internal_constraints(self):
         session = self.assembly()
-        parent = session.part.assembly("parent")
+        parent = session.part.assembly(name="parent")
         parent.add_subassembly(session.displayed)
         context = AssemblyReferences(parent,"parent")
         address = "parent.subassemblies[0]"
@@ -248,7 +248,7 @@ class AssemblyWorkflowTests(_ModelFixture):
             self.assertFalse(w.model.dirty)
             self.assertIsNone(w.model.saved_source)
             self.assertFalse(w.model.path.exists())
-            self.assertTrue(any(args[2] == "New model  ·  Experimental modeling"
+            self.assertTrue(any(args[2] == "New model  ·  mm  ·  Experimental modeling"
                                 for kind, args, panel in w.ui._commands if kind == "text_align"))
             with patch("pyglet.window.dialog.FileSaveDialog") as factory:
                 driver.click("File##tab", panel="Model")

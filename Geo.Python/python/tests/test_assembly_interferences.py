@@ -7,11 +7,11 @@ class AssemblyInterferenceTests(unittest.TestCase):
         set_progress_log(False)
         part=Part((-10,-10,-10),(10,10,10),tolerance=.01)
         cube=part.cuboid((0,0,0),(2,2,2),name='cube')
-        child=part.assembly('child')
+        child=part.assembly(name='child')
         child.add_part(cube)
-        assembly=part.assembly('fixture')
-        assembly.add_part(cube,(1,0,0))
-        assembly.add_part(cube,(1.75,0,0))
+        assembly=part.assembly(name='fixture')
+        assembly.add_part(cube,position=(1,0,0))
+        assembly.add_part(cube,position=(1.75,0,0))
         assembly.add_subassembly(child)
         before=[tuple(v) for v in cube.mesh()[0]]
         hits=assembly.interferences()
@@ -28,7 +28,7 @@ class AssemblyInterferenceTests(unittest.TestCase):
 
     def test_empty_and_invalid_threshold(self):
         part=Part((-10,-10,-10),(10,10,10))
-        assembly=part.assembly('empty')
+        assembly=part.assembly(name='empty')
         self.assertEqual([],assembly.interferences())
         for value in (-1,float('nan'),float('inf')):
             with self.subTest(value=value):

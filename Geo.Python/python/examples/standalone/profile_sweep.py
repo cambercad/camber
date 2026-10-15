@@ -128,7 +128,7 @@ s_cut.vertical_distance(s_cut @ "origin", south @ 0.000, 7.5)
 s_cut.length(east, 14.5)
 s_cut.solve()
 
-cutter = s_cut.extrude_two_sides(20, 20, name="pocket", max_deviation=0.003)
+cutter = s_cut.extrude_two_sides(20, minus_z=20, name="pocket", max_deviation=0.003)
 result = body - cutter
 print(result)
 result.show(title="profile sweep")

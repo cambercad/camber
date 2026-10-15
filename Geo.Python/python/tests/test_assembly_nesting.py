@@ -34,23 +34,23 @@ class AssemblyNestingTests(unittest.TestCase):
         mid_solid = _box(part, "mid")
         top_solid = _box(part, "top")
 
-        inner = part.assembly("inner_asm")
+        inner = part.assembly(name="inner_asm")
         inner.solve_after_every_constraint = False
         inner_p = inner.add_part(inner_solid)
         inner.fix(inner_p)
         inner.solve()
 
-        mid = part.assembly("mid_asm")
+        mid = part.assembly(name="mid_asm")
         mid.solve_after_every_constraint = False
         mid_p = mid.add_part(mid_solid)
-        inner_occ = mid.add_subassembly(inner, (10.0, 0.0, 0.0))
+        inner_occ = mid.add_subassembly(inner, position=(10.0, 0.0, 0.0))
         mid.fix(mid_p)
         mid.solve()
 
-        top = part.assembly("top_asm")
+        top = part.assembly(name="top_asm")
         top.solve_after_every_constraint = False
         top_p = top.add_part(top_solid)
-        mid_occ = top.add_subassembly(mid, (0.0, 20.0, 0.0))
+        mid_occ = top.add_subassembly(mid, position=(0.0, 20.0, 0.0))
         top.fix(top_p)
         top.solve()
 
@@ -67,11 +67,11 @@ class AssemblyNestingTests(unittest.TestCase):
         part = Part(vec3(-80), vec3(80), tolerance=0.05)
         direct_solid = _box(part, "direct", size=2)
         nested_solid = _box(part, "nested", size=4)
-        child = part.assembly("child")
-        child.add_part(nested_solid, (3, 0, 0))
-        top = part.assembly("top")
-        top.add_part(direct_solid, (-2, 0, 0))
-        top.add_subassembly(child, (0, 10, 0))
+        child = part.assembly(name="child")
+        child.add_part(nested_solid, position=(3, 0, 0))
+        top = part.assembly(name="top")
+        top.add_part(direct_solid, position=(-2, 0, 0))
+        top.add_subassembly(child, position=(0, 10, 0))
 
         leaves = top.leaves()
         self.assertIsInstance(leaves[0], AssemblyLeaf)
@@ -88,16 +88,16 @@ class AssemblyNestingTests(unittest.TestCase):
         nested_solid = _box(part, "nested")
         ground_solid = _box(part, "ground")
 
-        nested = part.assembly("nested_asm")
+        nested = part.assembly(name="nested_asm")
         nested.solve_after_every_constraint = False
         nested_p = nested.add_part(nested_solid)
         nested.fix(nested_p)
         nested.solve()
 
-        top = part.assembly("top_asm")
+        top = part.assembly(name="top_asm")
         top.solve_after_every_constraint = False
         ground = top.add_part(ground_solid)
-        occ = top.add_subassembly(nested, (12.0, 8.0, 0.0))
+        occ = top.add_subassembly(nested, position=(12.0, 8.0, 0.0))
         top.fix(ground)
         top.coincident(ground.point_at((0.0, 0.0, 0.0)), nested_p.point_at((0.0, 0.0, 0.0)))
         top.solve()
@@ -115,18 +115,18 @@ class AssemblyNestingTests(unittest.TestCase):
             ground_solid = _box(part, "bearing_support")
             hub_solid = _box(part, "hub")
             marker_solid = _box(part, "spoke_marker", size=.5)
-            wheel = part.assembly("wheel")
+            wheel = part.assembly(name="wheel")
             wheel.solve_after_every_constraint = False
             hub = wheel.add_part(hub_solid)
-            marker = wheel.add_part(marker_solid, (5, 0, 0))
+            marker = wheel.add_part(marker_solid, position=(5, 0, 0))
             wheel.fix(hub)
             wheel.fix(marker)
-            top = part.assembly("bike")
+            top = part.assembly(name="bike")
             top.solve_after_every_constraint = False
             support = top.add_part(ground_solid)
             top.fix(support)
-            top.add_subassembly(wheel, (0, 0, 8),
-                                (0, 0, math.sin(spin/2), math.cos(spin/2)))
+            top.add_subassembly(wheel, position=(0, 0, 8),
+                                orientation=(0, 0, math.sin(spin/2), math.cos(spin/2)))
             top.concentric(hub.axis_at((0, 0, 0), (0, 0, 1)),
                            support.axis_at((0, 0, 0), (0, 0, 1)))
             top.coincident(hub.plane_at((0, 0, 0), (0, 0, 1)),
@@ -141,7 +141,7 @@ class AssemblyNestingTests(unittest.TestCase):
         part = Part(vec3(-80), vec3(80), tolerance=0.05)
         base_solid = _box(part, "flex_base", size=2)
         rotor_solid = _box(part, "flex_rotor", size=1)
-        mechanism = part.assembly("flex_mechanism")
+        mechanism = part.assembly(name="flex_mechanism")
         mechanism.solve_after_every_constraint = False
         base = mechanism.add_part(base_solid)
         rotor = mechanism.add_part(rotor_solid)
@@ -153,10 +153,10 @@ class AssemblyNestingTests(unittest.TestCase):
                              opposite_normals=False)
         self.assertTrue(mechanism.solve().converged)
 
-        parent = part.assembly("flex_parent")
+        parent = part.assembly(name="flex_parent")
         parent.solve_after_every_constraint = False
-        first = parent.add_subassembly(mechanism, (10, 0, 0), flexible=True)
-        second = parent.add_subassembly(mechanism, (30, 0, 0), flexible=True)
+        first = parent.add_subassembly(mechanism, position=(10, 0, 0), flexible=True)
+        second = parent.add_subassembly(mechanism, position=(30, 0, 0), flexible=True)
         self.assertTrue(first.flexible)
         self.assertTrue(second.flexible)
         self.assertIsNot(first.assembly._n, second.assembly._n)
@@ -179,17 +179,17 @@ class AssemblyNestingTests(unittest.TestCase):
         a_solid = _box(part, "a")
         b_solid = _box(part, "b")
 
-        a = part.assembly("a_asm")
+        a = part.assembly(name="a_asm")
         a.add_part(a_solid)
-        b = part.assembly("b_asm")
+        b = part.assembly(name="b_asm")
         b.add_part(b_solid)
-        b.add_subassembly(a, (1.0, 0.0, 0.0))
+        b.add_subassembly(a, position=(1.0, 0.0, 0.0))
 
         with self.assertRaises(Exception):
             a.add_subassembly(b)
         with self.assertRaises(Exception):
             b.add_subassembly(b)
-        extra = part.assembly("extra_asm")
+        extra = part.assembly(name="extra_asm")
         with self.assertRaises(Exception):
             extra.add_subassembly(a)
 

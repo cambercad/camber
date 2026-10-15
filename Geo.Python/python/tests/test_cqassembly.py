@@ -70,13 +70,13 @@ class AssemblyBridgeTests(unittest.TestCase):
 
     def test_independent_subassembly_keeps_its_internal_parts_and_mates(self):
         child_part = Part((-20, -20, -20), (20, 20, 20), tolerance=0.01)
-        child = child_part.assembly("independent_module")
+        child = child_part.assembly(name="independent_module")
         first = child.add_part(child_part.cuboid((0, 0, 0), (10, 10, 10)))
         child.fix(first)
 
         parent_part = Part((-200, -200, -200), (200, 200, 200), tolerance=0.001)
-        parent = parent_part.assembly("independent_parent")
-        occurrence = parent.add_subassembly(child, (30, 0, 0))
+        parent = parent_part.assembly(name="independent_parent")
+        occurrence = parent.add_subassembly(child, position=(30, 0, 0))
         parent.fix(occurrence)
 
         self.assertEqual(1, len(child.constraints))
@@ -87,18 +87,18 @@ class AssemblyBridgeTests(unittest.TestCase):
 
     def test_repeated_subassembly_definition_has_occurrence_scoped_parts(self):
         component_part = Part((-20, -20, -20), (20, 20, 20), tolerance=0.01)
-        component = component_part.assembly("reusable_component")
+        component = component_part.assembly(name="reusable_component")
         body = component.add_part(component_part.cuboid((0, 0, 0), (4, 4, 4)))
         component.fix(body)
 
         module_part = Part((-40, -40, -40), (40, 40, 40), tolerance=0.01)
-        module = module_part.assembly("reusable_module")
-        module.fix(module.add_subassembly(component, (2, 0, 0)))
+        module = module_part.assembly(name="reusable_module")
+        module.fix(module.add_subassembly(component, position=(2, 0, 0)))
 
         parent_part = Part((-100, -100, -100), (100, 100, 100), tolerance=0.001)
-        parent = parent_part.assembly("repeated_parent")
-        left = parent.add_subassembly(module, (10, 0, 0))
-        right = parent.add_subassembly(module, (30, 0, 0))
+        parent = parent_part.assembly(name="repeated_parent")
+        left = parent.add_subassembly(module, position=(10, 0, 0))
+        right = parent.add_subassembly(module, position=(30, 0, 0))
 
         left_part = left.subassemblies[0].parts[0]
         right_part = right.subassemblies[0].parts[0]

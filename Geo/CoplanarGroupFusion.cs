@@ -107,6 +107,87 @@ namespace Geo
             return planeA.PlaneD * scaleB == planeB.PlaneD * scaleA;
         }
 
+        /// <summary>
+        /// Groups that share a mesh edge. Skips the named <see cref="GroupEdge"/> build,
+        /// which fusion never reads.
+        /// </summary>
+        private static Dictionary<int, HashSet<int>> BuildGroupAdjacency(List<Tri> triangles, List<int> groupIdPerTriangle)
+        {
+            var adjacency = new Dictionary<int, HashSet<int>>();
+            int numTris = triangles.Count;
+            if (numTris == 0)
+                return adjacency;
+
+            var edgeTriPairs = new (long edge, int tri)[numTris * 3];
+            for (int i = 0; i < numTris; i++)
+            {
+                var t = triangles[i];
+                edgeTriPairs[i * 3] = (Algorithms.Key(t.A, t.B), i);
+                edgeTriPairs[i * 3 + 1] = (Algorithms.Key(t.B, t.C), i);
+                edgeTriPairs[i * 3 + 2] = (Algorithms.Key(t.C, t.A), i);
+            }
+
+            Array.Sort(edgeTriPairs, (a, b) => a.edge.CompareTo(b.edge));
+
+            int idx = 0;
+            int totalPairs = edgeTriPairs.Length;
+            while (idx < totalPairs)
+            {
+                long currentEdge = edgeTriPairs[idx].edge;
+                int startIdx = idx;
+                while (idx < totalPairs && edgeTriPairs[idx].edge == currentEdge)
+                    idx++;
+
+                int firstGroup = groupIdPerTriangle[edgeTriPairs[startIdx].tri];
+                bool allSameGroup = true;
+                for (int k = startIdx + 1; k < idx; k++)
+                {
+                    if (groupIdPerTriangle[edgeTriPairs[k].tri] != firstGroup)
+                    {
+                        allSameGroup = false;
+                        break;
+                    }
+                }
+                if (allSameGroup)
+                    continue;
+
+                for (int k = startIdx; k < idx; k++)
+                {
+                    int groupK = groupIdPerTriangle[edgeTriPairs[k].tri];
+                    for (int m = k + 1; m < idx; m++)
+                    {
+                        int groupM = groupIdPerTriangle[edgeTriPairs[m].tri];
+                        if (groupK == groupM)
+                            continue;
+                        AddAdjacent(adjacency, groupK, groupM);
+                        AddAdjacent(adjacency, groupM, groupK);
+                    }
+                }
+            }
+
+            return adjacency;
+        }
+
+        private static void AddAdjacent(Dictionary<int, HashSet<int>> adjacency, int group, int neighbor)
+        {
+            if (!adjacency.TryGetValue(group, out HashSet<int> neighbors))
+            {
+                neighbors = new HashSet<int>();
+                adjacency[group] = neighbors;
+            }
+            neighbors.Add(neighbor);
+        }
+
+        private static int[] SortedKeys(Dictionary<int, List<int>> groups)
+        {
+            var keys = new int[groups.Count];
+            int n = 0;
+            foreach (int key in groups.Keys)
+                keys[n++] = key;
+            Array.Sort(keys);
+            return keys;
+        }
+
         // Core fusion logic extracted to be reusable
         private static Dictionary<int, int> FuseCoplanarGroupsCore<TPlane>(
             List<Tri> triangles,
@@ -115,32 +196,23 @@ namespace Geo
             Dictionary<int, TPlane> groupPlanes,
             Dictionary<int, bool> groupIsPlanar,
             Func<TPlane, TPlane, bool> arePlanesCoplanar,
-            List<Rat3Hybrid> points,
             out List<int> newGroupIdPerTriangle,
             out Dictionary<int, string> newTriangleGroupToName)
         {
-            var groupAdjacency = GroupEdgeExtractor.ExtractGroupEdges(triangles, groupIdPerTriangle, null, points, triangleGroupToName);
             var triangleIdsPerGroup = ExtractTriangleIdsPerGroup(groupIdPerTriangle);
 
-            // Build adjacency map: groupId -> list of adjacent groupIds
-            var adjacencyMap = new Dictionary<int, HashSet<int>>();
-            foreach (var groupEdge in groupAdjacency)
-            {
-                if (!adjacencyMap.ContainsKey(groupEdge.GroupIdA))
-                    adjacencyMap[groupEdge.GroupIdA] = new HashSet<int>();
-                if (!adjacencyMap.ContainsKey(groupEdge.GroupIdB))
-                    adjacencyMap[groupEdge.GroupIdB] = new HashSet<int>();
-
-                adjacencyMap[groupEdge.GroupIdA].Add(groupEdge.GroupIdB);
-                adjacencyMap[groupEdge.GroupIdB].Add(groupEdge.GroupIdA);
-            }
+            // Flood fill only needs which groups share an edge. Building named
+            // GroupEdge loops (and their geometry) does not change the merge.
+            var adjacencyMap = BuildGroupAdjacency(triangles, groupIdPerTriangle);
 
             // Flood fill to merge coplanar groups
             var groupMapping = new Dictionary<int, int>();
             var processedGroups = new HashSet<int>();
 
-            foreach (int startGroupId in triangleIdsPerGroup.Keys.OrderBy(x => x))
+            int[] startGroupIds = SortedKeys(triangleIdsPerGroup);
+            for (int startIndex = 0; startIndex < startGroupIds.Length; startIndex++)
             {
+                int startGroupId = startGroupIds[startIndex];
                 if (processedGroups.Contains(startGroupId))
                     continue;
 
@@ -287,7 +359,6 @@ namespace Geo
                 groupPlanes,
                 groupIsPlanar,
                 RationalPlanesAreCoplanar,
-                points,
                 out newGroupIdPerTriangle,
                 out newTriangleGroupToName);
         }
@@ -340,7 +411,6 @@ namespace Geo
                 groupPlanes,
                 groupIsPlanar,
                 (planeA, planeB) => GroupsAreCoplanar(planeA, planeB, tolerance),
-                null,
                 out newGroupIdPerTriangle,
                 out newTriangleGroupToName);
         }

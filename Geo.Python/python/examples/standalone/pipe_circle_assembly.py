@@ -17,7 +17,7 @@ PIPE_COUNT = 4
 part = Part(vec3(-1000), vec3(1000), tolerance=0.1)
 pipes = [create_pipe(part, "pipe{0}".format(i)) for i in range(1, PIPE_COUNT + 1)]
 
-assembly = part.assembly("pipe_circle")
+assembly = part.assembly(name="pipe_circle")
 assembly.solve_after_every_constraint = False
 
 bodies = [assembly.add_part(pipes[0])]

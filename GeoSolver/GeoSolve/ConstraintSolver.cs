@@ -128,17 +128,24 @@
             return result.SumOfSquaredErrors;
         }
 
-        public static SolveResult SolveDetailed(
+        /// <summary>
+        /// Equations a sketch would hand to Newton, before linear reductions.
+        /// Endpoint tangency uses the same replacement as <see cref="SolveDetailed"/>.
+        /// </summary>
+        public static int CountGeneratedEquations(IList<IBaseEquation> cons, double scaling = 1)
+        {
+            return BuildEquations(cons, scaling, out _, out _).Count;
+        }
+
+        private static List<Expr> BuildEquations(
             IList<IBaseEquation> cons,
-            HashSet<Param> draggedParams = null,
-            double scaling = 1,
-            bool allowSoftOverconstrained = false,
-            bool applySketchReductions = true,
-            int maxNewtonIterations = 0)
+            double scaling,
+            out List<double> residualTolerances,
+            out HashSet<Param> nonNegative)
         {
             List<Expr> equations = new List<Expr>();
-            var residualTolerances = new List<double>();
-            HashSet<Param> nonNegative = null;
+            residualTolerances = new List<double>();
+            nonNegative = null;
 
             for (int i = 0; i < cons.Count; ++i)
             {
@@ -150,12 +157,28 @@
                     nonNegative.Add(contact.Lambda);
                 }
                 int firstRow = equations.Count;
-                if (!(c is TangentCircularCircular2d tangent &&
-                      tangent.TryGenerateJoinedArcEquation(cons, equations)))
+                bool endpointTangent = c is TangentCircularCircular2d tangent &&
+                    tangent.TryGenerateEndpointEquation(cons, equations) ||
+                    c is TangentLineCircular2d lineTangent &&
+                    lineTangent.TryGenerateEndpointEquation(cons, equations);
+                if (!endpointTangent)
                     c.GenerateEquations(equations, scaling);
                 for (int row = firstRow; row < equations.Count; row++)
                     residualTolerances.Add(NewtonSolver.ResidualTolerance(c is ContactHalfSpace3d));
             }
+
+            return equations;
+        }
+
+        public static SolveResult SolveDetailed(
+            IList<IBaseEquation> cons,
+            HashSet<Param> draggedParams = null,
+            double scaling = 1,
+            bool allowSoftOverconstrained = false,
+            bool applySketchReductions = true,
+            int maxNewtonIterations = 0)
+        {
+            List<Expr> equations = BuildEquations(cons, scaling, out List<double> residualTolerances, out HashSet<Param> nonNegative);
 
             EquationContainer e = new EquationContainer(equations, draggedParams, applySketchReductions, residualTolerances);
             bool softOver = allowSoftOverconstrained || (nonNegative != null && nonNegative.Count > 0);

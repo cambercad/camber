@@ -1,6 +1,6 @@
 """Capped section snapshots and point-to-point inspection in model units."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import product
 import math
 
@@ -20,7 +20,7 @@ class Measurement:
     start: tuple
     end: tuple
     length: float
-    label: str = "Distance"
+    label: str = field(default="Distance", kw_only=True)
 
 
 def _point(value):
@@ -40,14 +40,14 @@ class Section:
 
     def __init__(self, native, plane):
         self._n = native
-        self._plane = Frame(plane.origin, plane.x, plane.y, plane.z)
+        self._plane = Frame(plane.origin, x=plane.x, y=plane.y, z=plane.z)
         self._measurements = []
 
     @property
     def plane(self):
         """A copy of the section coordinate frame."""
         p = self._plane
-        return Frame(p.origin, p.x, p.y, p.z)
+        return Frame(p.origin, x=p.x, y=p.y, z=p.z)
 
     @property
     def measurements(self):
@@ -84,7 +84,7 @@ class Section:
                 value = p.origin + p.x * float(value[0]) + p.y * float(value[1])
             return _point(value)
         a, b = world(start), world(end)
-        result = Measurement(a, b, math.dist(a, b), str(label))
+        result = Measurement(a, b, math.dist(a, b), label=str(label))
         self._measurements.append(result)
         return result
 
@@ -179,21 +179,30 @@ class _ViewerInspection:
         self._section_initialized = False
         self._geometry = {}
         self._visible = ()
+        self._last_selection = None
+
+    def refresh(self):
+        """Discard stale measurements and query caches when displayed geometry changes."""
+        scenes = tuple(self.viewer.visible_part_packeds())
+        if len(scenes) != len(self._visible) or any(a is not b for a, b in zip(scenes, self._visible)):
+            if self._visible:
+                self.measurements.clear()
+            self._geometry.clear()
+            self._visible = scenes
+            self._last_selection = None
+            self.error = ""
+        return scenes
 
     def measure_selected(self, names):
         from .measure import Geometry, closest_entities, named_geometry
         if len(names) != 2:
             raise ValueError("select exactly two points, edges or faces")
-        scenes = self.viewer.visible_part_packeds()
-        visible = tuple(id(scene) for scene in scenes)
-        if visible != self._visible:
-            self._geometry.clear()
-            self._visible = visible
+        scenes = self.refresh()
         for name in names:
             if name not in self._geometry:
                 self._geometry[name] = Geometry(named_geometry(scenes, name))
         result = closest_entities(*(self._geometry[name] for name in names), *names)
-        measurement = Measurement(result.first, result.second, result.length, "Minimum distance")
+        measurement = Measurement(result.first, result.second, result.length, label="Minimum distance")
         self.measurements.append(measurement)
         return measurement
 
@@ -237,17 +246,19 @@ class _ViewerInspection:
         offset = sum(a*b for a, b in zip(normal, origin if origin is not None else center))
         self.set_section(normal, offset + (position if origin is None else 0), reverse=self.reverse)
 
-    def _draw_section(self, ui, selected_plane):
+    def enable_section(self, enabled=True):
+        if not enabled:
+            self.viewer.section_plane = None
+        elif self._section_initialized:
+            self._update_plane()
+        else:
+            self._orient_section(self.normal)
+
+    def draw_section(self, ui, selected_plane):
         enabled = self.viewer.section_plane is not None
         changed, enabled = ui.Checkbox("Enable cross section", enabled)
         if changed:
-            if enabled:
-                if self._section_initialized:
-                    self._update_plane()
-                else:
-                    self._orient_section(self.normal)
-            else:
-                self.viewer.section_plane = None
+            self.enable_section(enabled)
         if not enabled:
             ui.TextUnformatted("Enable to reveal the inside of the model.")
             return
@@ -313,6 +324,7 @@ class _ViewerInspection:
         _, self.viewer.section_fill = ui.Checkbox("Fill cut faces (closed solids)", self.viewer.section_fill)
 
     def draw(self, ui, selected, selected_plane):
+        self.refresh()
         if not self.open:
             return
         width, height = self.viewer.window.get_size()
@@ -321,16 +333,28 @@ class _ViewerInspection:
         expanded, self.open = ui.Begin("Inspect (I)", self.open)
         if expanded and ui.BeginTabBar("inspection"):
             if ui.BeginTabItem("Measure"):
-                self._draw_measurements(ui, selected)
+                self.draw_measurements(ui, selected)
                 ui.EndTabItem()
             if ui.BeginTabItem("Cross section"):
-                self._draw_section(ui, selected_plane)
+                self.draw_section(ui, selected_plane)
                 ui.EndTabItem()
             ui.EndTabBar()
         ui.End()
 
-    def _draw_measurements(self, ui, selected):
+    def draw_measurements(self, ui, selected, *, automatic=False):
+        self.refresh()
+        selection = tuple(selected)
+        if automatic and selection != self._last_selection:
+            self._last_selection = selection
+            self.error = ""
+            if len(selected) == 2:
+                try:
+                    self.measure_selected(selected)
+                except ValueError as error:
+                    self.error = str(error)
         ui.TextUnformatted("Ctrl-click two points, edges or faces")
+        for index, name in enumerate(selected, 1):
+            ui.TextEllipsis(str(index) + ": " + name)
         if ui.Button("Measure minimum distance", enabled=len(selected) == 2):
             try:
                 self.measure_selected(selected)

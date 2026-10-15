@@ -28,8 +28,8 @@ class SolidPatternTests(unittest.TestCase):
     def test_mirror_is_an_independent_oriented_solid_and_can_be_mirrored_back(self):
         p, s = self.part, self.seed
         plane = Frame((.13, -.27, .31), x=(1,0,0), y=(0,.8,.6), z=(0,-.6,.8))
-        reflected = s.mirror(plane, name='reflected')
-        restored = reflected.mirror(plane, name='restored')
+        reflected = s.mirror(plane=plane, name='reflected')
+        restored = reflected.mirror(plane=plane, name='restored')
         self.assertTrue(reflected.is_watertight())
         self.assertAlmostEqual(s.signed_volume(), reflected.signed_volume(), places=8)
         before, _ = s.mesh()

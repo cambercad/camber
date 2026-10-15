@@ -47,6 +47,11 @@ public readonly struct FastBigInteger : IEquatable<FastBigInteger>, IComparable<
     }
 
     private FastBigInteger(ulong[] magnitude, bool isNegative)
+        : this(magnitude.AsSpan(), isNegative, magnitude)
+    {
+    }
+
+    private FastBigInteger(ReadOnlySpan<ulong> magnitude, bool isNegative, ulong[] ownedMagnitude = null)
     {
         int length = magnitude.Length;
         while (length > 0 && magnitude[length - 1] == 0) length--;
@@ -68,7 +73,9 @@ public readonly struct FastBigInteger : IEquatable<FastBigInteger>, IComparable<
         }
         small = isNegative ? -1 : 1;
         wideLow = 0; wideHigh = 0;
-        limbs = length == magnitude.Length ? magnitude : magnitude.AsSpan(0, length).ToArray();
+        limbs = ownedMagnitude != null && length == ownedMagnitude.Length
+            ? ownedMagnitude
+            : magnitude.Slice(0, length).ToArray();
     }
 
     public FastBigInteger(BigInteger value)
@@ -96,7 +103,7 @@ public readonly struct FastBigInteger : IEquatable<FastBigInteger>, IComparable<
 
     public int Sign => limbs == null && !wide ? Math.Sign(small) : negative ? -1 : 1;
     public bool IsZero => limbs == null && !wide && small == 0;
-    private bool IsUnit => limbs == null && !wide && (small == 1 || small == -1);
+    internal bool IsUnit => limbs == null && !wide && (small == 1 || small == -1);
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryGetInt64(out long value) { value = small; return limbs == null && !wide; }
 
@@ -251,7 +258,8 @@ public readonly struct FastBigInteger : IEquatable<FastBigInteger>, IComparable<
         if (b.IsUnit) return b.small == 1 ? a : -a;
         if (a.Length <= 2 && b.Length <= 2)
             return FromMagnitude(a.Magnitude128 / b.Magnitude128, (a.Sign < 0) != (b.Sign < 0));
-        return new FastBigInteger(a.ToBigInteger() / b.ToBigInteger());
+        DivRemMagnitudes(a, b, out FastBigInteger quotient, out _, (a.Sign < 0) != (b.Sign < 0));
+        return quotient;
     }
 
     public static FastBigInteger operator %(FastBigInteger a, FastBigInteger b)
@@ -264,11 +272,9 @@ public readonly struct FastBigInteger : IEquatable<FastBigInteger>, IComparable<
             return new FastBigInteger(a.small % b.small);
         }
         if (a.Length <= 2 && b.Length <= 2)
-        {
-            var remainder = a.Magnitude128 % b.Magnitude128;
-            return FromMagnitude(remainder, a.Sign < 0);
-        }
-        return new FastBigInteger(a.ToBigInteger() % b.ToBigInteger());
+            return FromMagnitude(a.Magnitude128 % b.Magnitude128, a.Sign < 0);
+        DivRemMagnitudes(a, b, out _, out FastBigInteger remainder, false);
+        return remainder;
     }
 
     public static FastBigInteger operator *(FastBigInteger a, FastBigInteger b)
@@ -286,34 +292,22 @@ public readonly struct FastBigInteger : IEquatable<FastBigInteger>, IComparable<
         if (a.IsUnit) return a.small == 1 ? b : -b;
         if (b.IsUnit) return b.small == 1 ? a : -a;
         int na = a.Length, nb = b.Length;
-        // At this size the runtime's subquadratic multiplication overtakes the
-        // limb loop, even after the conversion cost. Keep unbalanced products
-        // on the linear-in-the-large-operand schoolbook path.
-        if (na >= 24 && nb >= 24)
+        bool negative = (a.Sign < 0) != (b.Sign < 0);
+        if (nb == 1) return MultiplyByLimb(a, b.Limb(0), negative);
+        if (na == 1) return MultiplyByLimb(b, a.Limb(0), negative);
+        if (na <= 2 && nb <= 2) return Multiply128(a.Limb(0), a.Limb(1), b.Limb(0), b.Limb(1), negative);
+        // Measured against System.Numerics.BigInteger on 64-bit limbs: once both
+        // operands reach 12 limbs, the runtime multiply (including the conversion)
+        // beats this schoolbook loop. Unbalanced products stay here.
+        if (na >= 12 && nb >= 12)
             return new FastBigInteger(a.ToBigInteger() * b.ToBigInteger());
-        int topBits = 128 - BitOperations.LeadingZeroCount(a.Limb(na - 1)) - BitOperations.LeadingZeroCount(b.Limb(nb - 1));
-        var result = new ulong[na + nb - (topBits <= 64 ? 1 : 0)];
-        for (int i = 0; i < na; i++)
-        {
-            ulong carry = 0, x = a.Limb(i);
-            for (int j = 0; j < nb; j++)
-            {
-                ulong high = MultiplyLimb(x, b.Limb(j), out ulong low);
-                ulong sum = unchecked(result[i + j] + low);
-                ulong overflow = sum < low ? 1UL : 0;
-                ulong next = unchecked(sum + carry);
-                if (next < sum) overflow++;
-                result[i + j] = next;
-                carry = unchecked(high + overflow);
-            }
-            if (i + nb < result.Length) result[i + nb] = carry;
-            else if (carry != 0) throw new InvalidOperationException("Multiplication carry exceeds the allocated product.");
-        }
-        return new FastBigInteger(result, (a.Sign < 0) != (b.Sign < 0));
+        return MultiplySchoolbook(a, na, b, nb, negative);
     }
 
     public static FastBigInteger GreatestCommonDivisor(FastBigInteger a, FastBigInteger b)
     {
+        if (a.IsZero) return b.Sign < 0 ? -b : b;
+        if (b.IsZero) return a.Sign < 0 ? -a : a;
         if (a.limbs == null && !a.wide && b.limbs == null && !b.wide)
         {
             ulong x = Magnitude(a.small), y = Magnitude(b.small);
@@ -322,26 +316,118 @@ public readonly struct FastBigInteger : IEquatable<FastBigInteger>, IComparable<
         }
         if (a.IsUnit || b.IsUnit) return new FastBigInteger(1);
         if (a.Length <= 2 && b.Length <= 2)
+            return GcdUpTo128(a.Limb(0), a.Length > 1 ? a.Limb(1) : 0, b.Limb(0), b.Length > 1 ? b.Limb(1) : 0);
+        // One remainder brings an unbalanced pair back to the 128-bit path.
+        // Past that, the runtime Lehmer GCD is faster than a limb binary GCD.
+        if (a.Length <= 2 || b.Length <= 2)
         {
-            UInt128 x = a.Magnitude128, y = b.Magnitude128;
-            if (x == 0) return FromMagnitude(y, false);
-            if (y == 0) return FromMagnitude(x, false);
-            UInt128 distance = x >= y ? x - y : y - x;
-            if (distance == 0) return FromMagnitude(x, false);
-            if (distance <= ulong.MaxValue)
-            {
-                ulong right = (ulong)distance;
-                ulong left = (ulong)(x % right);
-                while (right != 0) { ulong remainder = left % right; left = right; right = remainder; }
-                return FromMagnitude(left, false);
-            }
-            while (y != 0) { UInt128 remainder = x % y; x = y; y = remainder; }
-            return FromMagnitude(x, false);
+            FastBigInteger small = a.Length <= b.Length ? a : b;
+            FastBigInteger large = a.Length <= b.Length ? b : a;
+            return GreatestCommonDivisor(small, large % small);
         }
-        // For many limbs the runtime's Lehmer reduction wins by a wide margin.
-        // BinaryGreatestCommonDivisor remains available when a self-contained
-        // calculation is required, but the rational hot path uses the faster one.
         return new FastBigInteger(BigInteger.GreatestCommonDivisor(a.ToBigInteger(), b.ToBigInteger()));
+    }
+
+    private static FastBigInteger MultiplyByLimb(in FastBigInteger value, ulong limb, bool negative)
+    {
+        int n = value.Length;
+        Span<ulong> result = n + 1 <= 32 ? stackalloc ulong[n + 1] : new ulong[n + 1];
+        ulong carry = 0;
+        for (int i = 0; i < n; i++)
+        {
+            ulong high = MultiplyLimb(value.limbs != null ? value.limbs[i] : value.Limb(i), limb, out ulong low);
+            ulong sum = low + carry;
+            result[i] = sum;
+            carry = high + (sum < low ? 1UL : 0);
+        }
+        result[n] = carry;
+        return new FastBigInteger(result, negative);
+    }
+
+    private static FastBigInteger Multiply128(ulong x0, ulong x1, ulong y0, ulong y1, bool negative)
+    {
+        ulong z1 = MultiplyLimb(x0, y0, out ulong z0);
+        ulong c1 = MultiplyLimb(x0, y1, out ulong c0);
+        ulong d1 = MultiplyLimb(x1, y0, out ulong d0);
+        ulong e1 = MultiplyLimb(x1, y1, out ulong e0);
+        ulong limb1 = z1 + c0;
+        ulong carry = limb1 < z1 ? 1UL : 0;
+        limb1 += d0;
+        if (limb1 < d0) carry++;
+        UInt128 limb2 = (UInt128)c1 + d1 + e0 + carry;
+        ulong limb3 = e1 + (ulong)(limb2 >> 64);
+        ulong low2 = (ulong)limb2;
+        if (limb3 != 0) return new FastBigInteger([z0, limb1, low2, limb3], negative);
+        if (low2 != 0)
+        {
+            Span<ulong> three = stackalloc ulong[3] { z0, limb1, low2 };
+            return new FastBigInteger(three, negative);
+        }
+        return FromMagnitude(((UInt128)limb1 << 64) | z0, negative);
+    }
+
+    private static FastBigInteger MultiplySchoolbook(in FastBigInteger a, int na, in FastBigInteger b, int nb, bool negative)
+    {
+        Span<ulong> xs = na <= 32 ? stackalloc ulong[na] : new ulong[na];
+        Span<ulong> ys = nb <= 32 ? stackalloc ulong[nb] : new ulong[nb];
+        CopyLimbs(a, xs);
+        CopyLimbs(b, ys);
+        int topBits = 128 - BitOperations.LeadingZeroCount(xs[na - 1]) - BitOperations.LeadingZeroCount(ys[nb - 1]);
+        int resultLength = na + nb - (topBits <= 64 ? 1 : 0);
+        ulong[] owned = null;
+        Span<ulong> result = resultLength <= 32 ? stackalloc ulong[resultLength] : (owned = new ulong[resultLength]);
+        result.Clear();
+        for (int i = 0; i < na; i++)
+        {
+            ulong carry = 0, x = xs[i];
+            for (int j = 0; j < nb; j++)
+            {
+                ulong high = MultiplyLimb(x, ys[j], out ulong low);
+                ulong sum = result[i + j] + low;
+                ulong overflow = sum < low ? 1UL : 0;
+                ulong next = sum + carry;
+                if (next < sum) overflow++;
+                result[i + j] = next;
+                carry = high + overflow;
+            }
+            if (i + nb < resultLength) result[i + nb] = carry;
+            else if (carry != 0) throw new InvalidOperationException("Multiplication carry exceeds the allocated product.");
+        }
+        return new FastBigInteger(result, negative, owned);
+    }
+
+    private static FastBigInteger GcdUpTo128(ulong x0, ulong x1, ulong y0, ulong y1)
+    {
+        if ((x0 | x1) == 0) return FromMagnitude(((UInt128)y1 << 64) | y0, false);
+        if ((y0 | y1) == 0) return FromMagnitude(((UInt128)x1 << 64) | x0, false);
+        UInt128 x = ((UInt128)x1 << 64) | x0;
+        UInt128 y = ((UInt128)y1 << 64) | y0;
+        UInt128 distance = x >= y ? x - y : y - x;
+        if (distance == 0) return FromMagnitude(x, false);
+        if (distance <= ulong.MaxValue)
+        {
+            ulong right = (ulong)distance;
+            ulong left = (ulong)(x % right);
+            while (right != 0) { ulong remainder = left % right; left = right; right = remainder; }
+            return FromMagnitude(left, false);
+        }
+        int zx = TrailingZeros128(x0, x1), zy = TrailingZeros128(y0, y1);
+        int shared = zx < zy ? zx : zy;
+        ShiftRight128(ref x0, ref x1, zx);
+        while ((y0 | y1) != 0)
+        {
+            ShiftRight128(ref y0, ref y1, TrailingZeros128(y0, y1));
+            if (x1 > y1 || (x1 == y1 && x0 > y0))
+            {
+                (x0, y0) = (y0, x0);
+                (x1, y1) = (y1, x1);
+            }
+            ulong borrow = y0 < x0 ? 1UL : 0;
+            y0 -= x0;
+            y1 = y1 - x1 - borrow;
+        }
+        ShiftLeft128(ref x0, ref x1, shared);
+        return FromMagnitude(((UInt128)x1 << 64) | x0, false);
     }
 
     public static FastBigInteger BinaryGreatestCommonDivisor(FastBigInteger a, FastBigInteger b)
@@ -374,6 +460,304 @@ public readonly struct FastBigInteger : IEquatable<FastBigInteger>, IComparable<
                 result[i + wordShift + 1] = x[i] >> (64 - bitShift);
         }
         return new FastBigInteger(result, false);
+    }
+
+    internal static void RemoveSharedSmallFactors(ref FastBigInteger left, ref FastBigInteger right)
+    {
+        int sharedTwos = Math.Min(TrailingZeroCount(left), TrailingZeroCount(right));
+        if (sharedTwos > 0)
+        {
+            left = ShiftRight(left, sharedTwos);
+            right = ShiftRight(right, sharedTwos);
+        }
+        RemoveSharedPrime(ref left, ref right, 3);
+        RemoveSharedPrime(ref left, ref right, 5);
+    }
+
+    private static void RemoveSharedPrime(ref FastBigInteger left, ref FastBigInteger right, ulong prime)
+    {
+        while (LimbSumMod(left, prime) == 0 && LimbSumMod(right, prime) == 0)
+        {
+            left = DivideExact(left, prime);
+            right = DivideExact(right, prime);
+        }
+    }
+
+    private static int TrailingZeroCount(in FastBigInteger value)
+    {
+        if (value.IsZero) return 0;
+        int length = value.Length, words = 0;
+        while (words < length && value.Limb(words) == 0) words++;
+        return words * 64 + BitOperations.TrailingZeroCount(value.Limb(words));
+    }
+
+    private static ulong LimbSumMod(in FastBigInteger value, ulong modulus)
+    {
+        ulong sum = 0;
+        int length = value.Length;
+        for (int i = 0; i < length; i++)
+        {
+            sum += value.Limb(i) % modulus;
+            if (sum >= modulus) sum -= modulus;
+        }
+        return sum;
+    }
+
+    private static FastBigInteger DivideExact(in FastBigInteger value, ulong divisor)
+    {
+        int length = value.Length;
+        Span<ulong> limbs = length <= 128 ? stackalloc ulong[length] : new ulong[length];
+        CopyLimbs(value, limbs);
+        ulong remainder = 0;
+        for (int i = length - 1; i >= 0; i--)
+            limbs[i] = Div128By64(remainder, limbs[i], divisor, out remainder);
+        if (remainder != 0)
+            throw new InvalidOperationException("Small-factor division was not exact.");
+        return new FastBigInteger(limbs, value.Sign < 0);
+    }
+
+    private static FastBigInteger ShiftRight(in FastBigInteger value, int bits)
+    {
+        if (bits <= 0 || value.IsZero) return value;
+        int length = value.Length;
+        int words = bits / 64;
+        if (words >= length) return default;
+        int shift = bits % 64;
+        int newLength = length - words;
+        Span<ulong> source = length <= 128 ? stackalloc ulong[length] : new ulong[length];
+        CopyLimbs(value, source);
+        Span<ulong> destination = newLength <= 128 ? stackalloc ulong[newLength] : new ulong[newLength];
+        if (shift == 0)
+            source.Slice(words, newLength).CopyTo(destination);
+        else
+            ShiftRight(source.Slice(words, newLength), destination, shift);
+        return new FastBigInteger(destination, value.Sign < 0);
+    }
+
+    private static void CopyLimbs(in FastBigInteger value, Span<ulong> dest)
+    {
+        if (value.limbs != null)
+        {
+            value.limbs.AsSpan(0, dest.Length).CopyTo(dest);
+            return;
+        }
+        dest[0] = value.wide ? value.wideLow : Magnitude(value.small);
+        if (dest.Length > 1) dest[1] = value.wideHigh;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int TrailingZeros128(ulong low, ulong high)
+        => low != 0 ? BitOperations.TrailingZeroCount(low) : 64 + BitOperations.TrailingZeroCount(high);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ShiftRight128(ref ulong low, ref ulong high, int bits)
+    {
+        if (bits == 0) return;
+        if (bits >= 64)
+        {
+            low = high >> (bits - 64);
+            high = 0;
+            return;
+        }
+        low = (low >> bits) | (high << (64 - bits));
+        high >>= bits;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ShiftLeft128(ref ulong low, ref ulong high, int bits)
+    {
+        if (bits == 0) return;
+        if (bits >= 64)
+        {
+            high = low << (bits - 64);
+            low = 0;
+            return;
+        }
+        high = (high << bits) | (low >> (64 - bits));
+        low <<= bits;
+    }
+
+    private static void DivRemMagnitudes(in FastBigInteger dividend, in FastBigInteger divisor, out FastBigInteger quotient, out FastBigInteger remainder, bool quotientNegative)
+    {
+        int na = dividend.Length, nb = divisor.Length;
+        int comparison = na != nb ? (na > nb ? 1 : -1) : CompareMagnitude(dividend, divisor);
+        if (comparison < 0)
+        {
+            quotient = default;
+            remainder = dividend;
+            return;
+        }
+        if (comparison == 0)
+        {
+            quotient = new FastBigInteger(quotientNegative ? -1 : 1);
+            remainder = default;
+            return;
+        }
+        Span<ulong> u = na <= 128 ? stackalloc ulong[na] : new ulong[na];
+        Span<ulong> v = nb <= 128 ? stackalloc ulong[nb] : new ulong[nb];
+        CopyLimbs(dividend, u);
+        CopyLimbs(divisor, v);
+        int quotientLength = na - nb + 1;
+        Span<ulong> q = quotientLength <= 128 ? stackalloc ulong[quotientLength] : new ulong[quotientLength];
+        DivideMagnitudes(u, v, q);
+        quotient = new FastBigInteger(q, quotientNegative);
+        remainder = new FastBigInteger(u, dividend.Sign < 0);
+    }
+
+    private static void DivideMagnitudes(Span<ulong> dividend, ReadOnlySpan<ulong> divisor, Span<ulong> quotient)
+    {
+        quotient.Clear();
+        if (divisor.Length == 1)
+        {
+            DivideByLimb(dividend, divisor[0], quotient);
+            return;
+        }
+        int n = divisor.Length;
+        int shift = BitOperations.LeadingZeroCount(divisor[n - 1]);
+        Span<ulong> vn = n <= 128 ? stackalloc ulong[n] : new ulong[n];
+        Span<ulong> un = dividend.Length + 1 <= 129 ? stackalloc ulong[dividend.Length + 1] : new ulong[dividend.Length + 1];
+        ShiftLeft(divisor, vn, shift, extraLimb: false);
+        ShiftLeft(dividend, un, shift, extraLimb: true);
+        ulong vn1 = vn[n - 1], vn2 = vn[n - 2];
+        for (int j = dividend.Length - n; j >= 0; j--)
+        {
+            ulong qhat = EstimateQuotient(un[j + n], un[j + n - 1], un[j + n - 2], vn1, vn2);
+            if (SubtractMul(un.Slice(j, n + 1), vn, qhat) != 0)
+            {
+                qhat--;
+                AddBack(un.Slice(j, n + 1), vn);
+            }
+            quotient[j] = qhat;
+        }
+        ShiftRight(un.Slice(0, n), dividend.Slice(0, n), shift);
+        if (n < dividend.Length) dividend.Slice(n).Clear();
+    }
+
+    private static void DivideByLimb(Span<ulong> dividend, ulong divisor, Span<ulong> quotient)
+    {
+        ulong remainder = 0;
+        for (int i = dividend.Length - 1; i >= 0; i--)
+        {
+            ulong digit = Div128By64(remainder, dividend[i], divisor, out remainder);
+            quotient[i] = digit;
+            dividend[i] = 0;
+        }
+        dividend[0] = remainder;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ulong Div128By64(ulong high, ulong low, ulong divisor, out ulong remainder)
+    {
+        if (high == 0)
+        {
+            (ulong q, ulong r) = Math.DivRem(low, divisor);
+            remainder = r;
+            return q;
+        }
+#pragma warning disable SYSLIB5004
+        if (X86Base.X64.IsSupported)
+        {
+            (ulong q, ulong r) = X86Base.X64.DivRem(low, high, divisor);
+            remainder = r;
+            return q;
+        }
+#pragma warning restore SYSLIB5004
+        UInt128 value = ((UInt128)high << 64) | low;
+        ulong quotient = (ulong)(value / divisor);
+        remainder = (ulong)(value - (UInt128)quotient * divisor);
+        return quotient;
+    }
+
+    private static ulong EstimateQuotient(ulong u2, ulong u1, ulong u0, ulong v1, ulong v0)
+    {
+        ulong qhat, rhat;
+        if (u2 >= v1)
+        {
+            qhat = ulong.MaxValue;
+            rhat = u2 + u1;
+            if (rhat < u2) return qhat;
+        }
+        else
+        {
+            qhat = Div128By64(u2, u1, v1, out rhat);
+        }
+        for (int guard = 0; guard < 2; guard++)
+        {
+            if ((UInt128)qhat * v0 <= (((UInt128)rhat << 64) | u0)) break;
+            qhat--;
+            UInt128 widened = (UInt128)rhat + v1;
+            if (widened > ulong.MaxValue) break;
+            rhat = (ulong)widened;
+        }
+        return qhat;
+    }
+
+    private static ulong SubtractMul(Span<ulong> target, ReadOnlySpan<ulong> value, ulong multiplier)
+    {
+        ulong mulCarry = 0, borrow = 0;
+        int n = value.Length;
+        for (int i = 0; i < n; i++)
+        {
+            ulong high = MultiplyLimb(multiplier, value[i], out ulong low);
+            ulong product = low + mulCarry;
+            mulCarry = high + (product < low ? 1UL : 0);
+            ulong difference = target[i] - product;
+            ulong nextBorrow = target[i] < product || difference < borrow ? 1UL : 0;
+            target[i] = difference - borrow;
+            borrow = nextBorrow;
+        }
+        ulong top = target[n] - mulCarry;
+        ulong topBorrow = target[n] < mulCarry || top < borrow ? 1UL : 0;
+        target[n] = top - borrow;
+        return topBorrow;
+    }
+
+    private static void AddBack(Span<ulong> target, ReadOnlySpan<ulong> value)
+    {
+        ulong carry = 0;
+        for (int i = 0; i < value.Length; i++)
+        {
+            UInt128 sum = (UInt128)target[i] + value[i] + carry;
+            target[i] = (ulong)sum;
+            carry = (ulong)(sum >> 64);
+        }
+        target[value.Length] += carry;
+    }
+
+    private static void ShiftLeft(ReadOnlySpan<ulong> source, Span<ulong> destination, int shift, bool extraLimb)
+    {
+        if (shift == 0)
+        {
+            source.CopyTo(destination);
+            if (extraLimb) destination[source.Length] = 0;
+            return;
+        }
+        int back = 64 - shift;
+        ulong carry = 0;
+        for (int i = 0; i < source.Length; i++)
+        {
+            ulong limb = source[i];
+            destination[i] = (limb << shift) | carry;
+            carry = limb >> back;
+        }
+        if (extraLimb) destination[source.Length] = carry;
+    }
+
+    private static void ShiftRight(ReadOnlySpan<ulong> source, Span<ulong> destination, int shift)
+    {
+        if (shift == 0)
+        {
+            source.CopyTo(destination);
+            return;
+        }
+        int back = 64 - shift;
+        ulong carry = 0;
+        for (int i = source.Length - 1; i >= 0; i--)
+        {
+            ulong limb = source[i];
+            destination[i] = (limb >> shift) | carry;
+            carry = limb << back;
+        }
     }
 
     private ulong[] CopyMagnitude()

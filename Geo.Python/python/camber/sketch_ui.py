@@ -1,6 +1,8 @@
 """Interactive sketch tools. Finish copies camber Python to the clipboard."""
 
 import math
+from copy import deepcopy
+from .history import History
 
 from .clipboard import copy_to_clipboard
 from .sketch_emit import (
@@ -476,6 +478,7 @@ def _append_and_solve(state, new_actions):
     """Add new curves/constraints to the one live sketch and solve it once."""
     if not new_actions:
         return True
+    history = _sketch_snapshot(state)
     created = state.get("sketch") is None
     live = _ensure_live_sketch(state)
     start = len(state["actions"])
@@ -491,6 +494,7 @@ def _append_and_solve(state, new_actions):
         state.setdefault("batches", []).append(batch)
         _adopt_solved(state, commit=True)
         state.pop("solve_error", None)
+        _record_sketch_edit(state, history)
         return True
     except Exception as ex:
         del state["actions"][start:]
@@ -619,6 +623,7 @@ def _tick_sketch_input(ps, ui, state, frame, viz):
             handle = _hit_drag_handle(state, ray, _pick_tolerance(ps, ui, state))
             if handle is not None:
                 state["drag"] = {
+                    "history": _sketch_snapshot(state),
                     "curve": handle[0],
                     "role": handle[1],
                     "moved": False,
@@ -835,10 +840,12 @@ def _draw_curve_editor(ui, state):
     if state.get("edit_error"):
         ui.ValidationMessage(state["edit_error"])
     if ui.Button("Apply##curve_editor", enabled=not error, primary=True):
+        history = _sketch_snapshot(state)
         uv = (action["center"][0]+values[0], action["center"][1]) if key == "radius" else tuple(values)
         _, ok = _apply_handle_drag(state, index, role, uv)
         if ok:
-            _set_curves_construction(state, [index], construction)
+            _set_curves_construction(state, [index], construction, record_undo=False)
+            _record_sketch_edit(state, history)
             state["curve_edit"] = None
             state["edit_error"] = ""
         else:
@@ -899,7 +906,7 @@ def _draw_ui(ui, state, plane, look_at_plane, *, panel_title=None):
         end()
         return
     if docked:
-        spacing_y = ui._current.spacing[1]
+        spacing_y = ui.GetItemSpacing()[1]
         footer = spacing_y * 2 + 34
         ui.BeginChild("Sketch properties", height=max(1, ui.GetContentRegionAvail()[1] - footer))
     else:
@@ -1007,6 +1014,9 @@ def _draw_ui(ui, state, plane, look_at_plane, *, panel_title=None):
         ui.SameLine()
         if _icons.icon_button(ui, "undo", "Undo", _icons.draw_undo, False):
             _undo_pending_or_action(state)
+        ui.SameLine()
+        if _icons.icon_button(ui, "redo", "Redo", _icons.draw_redo, False):
+            _sketch_history(state, "redo")
 
     _draw_construction_toggle(ui, state)
 
@@ -1025,7 +1035,7 @@ def _draw_ui(ui, state, plane, look_at_plane, *, panel_title=None):
     if docked:
         ui.EndChild()
         ui.Separator()
-        width = max(1, (ui.GetContentRegionAvail()[0] - ui._current.spacing[0]) / 2)
+        width = max(1, (ui.GetContentRegionAvail()[0] - ui.GetItemSpacing()[0]) / 2)
         if ui.Button("OK##sketch_ok", width=width, height=32, primary=True, enabled=can_finish):
             state["done"] = "finish"
         ui.SameLine()
@@ -1051,6 +1061,14 @@ def _handle_keys(ui, state):
         pass
     if want:
         return
+    if hasattr(ui, "IsKeyPressed"):
+        from pyglet.window import key
+        if ui.IsKeyPressed(key.Z, modifiers=key.MOD_CTRL | key.MOD_SHIFT) or ui.IsKeyPressed(key.Y, modifiers=key.MOD_CTRL):
+            _sketch_history(state, "redo")
+            return
+        if ui.IsKeyPressed(key.Z, modifiers=key.MOD_CTRL):
+            _undo_pending_or_action(state)
+            return
 
     def down(name, *alts):
         if hasattr(ui, "IsKeyPressed"):
@@ -1248,6 +1266,7 @@ def _finish_handle_drag(state, ray, select_if_click, tolerance=None):
         return
     if drag["moved"]:
         _adopt_solved(state, commit=True)
+        _record_sketch_edit(state, drag["history"])
         state["status"] = "Drag finished."
         return
     if select_if_click and ray is not None:
@@ -1760,6 +1779,20 @@ def _accept_slot(state, hit):
         _finish_dimension_slots(state)
 
 
+def _sketch_freedom_note(state):
+    sketch = state.get("sketch")
+    diagnose = getattr(sketch, "diagnose", None)
+    report_method = getattr(getattr(sketch, "_n", None), "sketch_solve_report", None)
+    if diagnose is None or report_method is None:
+        return ""
+    try:
+        report = diagnose()
+    except Exception:
+        return ""
+    return " · {0} ({1} parameters, {2} equations)".format(
+        report.estimate, report.num_parameters, report.num_equations)
+
+
 def _finish_constraint_slots(state):
     kind = state["pending_constraint"]
     action = _action_from_slots(state, kind, state["slots"])
@@ -1772,7 +1805,7 @@ def _finish_constraint_slots(state):
     state["slots"] = []
     _clear_selection(state)
     state["pending_constraint"] = None
-    state["status"] = _icons.relation_label(kind) + " solved — click next or Esc"
+    state["status"] = _icons.relation_label(kind) + " solved — click next or Esc" + _sketch_freedom_note(state)
     state["selection_dirty"] = True
 
 
@@ -1927,7 +1960,7 @@ def _commit_dimension(state):
     state["selected"] = []
     state["selection_dirty"] = True
     if ok:
-        state["status"] = _icons.relation_label(action["kind"]) + " solved"
+        state["status"] = _icons.relation_label(action["kind"]) + " solved" + _sketch_freedom_note(state)
 
 
 def _begin_dimension_edit(state, action_index):
@@ -2017,11 +2050,13 @@ def _replace_action(state, action_index, replacement, *, insert=False, record_un
     """Replay the affected live batches, restoring the previous sketch on failure."""
     from copy import deepcopy
     previous = deepcopy(state["actions"])
-    old_action = None if insert else deepcopy(previous[action_index])
+    history = _sketch_snapshot(state)
     replacement_actions = [] if replacement is None else [deepcopy(replacement)]
     live = state.get("sketch")
     if live is None:
         state["actions"][action_index:action_index if insert else action_index+1] = replacement_actions
+        if record_undo:
+            _record_sketch_edit(state, history)
         return True
     batch_index, start = _batch_covering(state, action_index)
     if batch_hint is not None:
@@ -2060,9 +2095,7 @@ def _replace_action(state, action_index, replacement, *, insert=False, record_un
         state["selection_dirty"] = True
         state["edit_error"] = ""
         if record_undo:
-            state.setdefault("edit_undo", []).append({"index": action_index, "action": old_action,
-                                                      "deleted": replacement is None,
-                                                      "batches": len(state["batches"]), "batch": batch_index})
+            _record_sketch_edit(state, history)
         return True
     except Exception as ex:
         state["actions"] = previous
@@ -2116,6 +2149,77 @@ def _revert_live_batch(live, batch, *, solve=True):
     return True
 
 
+def _sketch_snapshot(state):
+    return deepcopy({key: state.get(key, []) for key in ("actions", "batches")})
+
+
+def _record_sketch_edit(state, previous):
+    _edit_history(state).record(previous, _sketch_snapshot(state))
+
+
+def _edit_history(state):
+    if "history" not in state:
+        state["history"] = History()
+    return state["history"]
+
+
+def _redo_blocked(state):
+    return any(state.get(key) for key in ("pending", "dimension", "curve_edit", "profile_edit", "constraint_edit", "drag"))
+
+
+def can_sketch_history(state, direction):
+    history = _edit_history(state)
+    if direction == "undo":
+        return history.can_undo or any(state.get(k) for k in (
+            "batches", "pending", "dimension", "slots", "pending_constraint", "pending_dimension",
+            "curve_edit", "profile_edit", "constraint_edit"))
+    if direction == "redo":
+        return history.can_redo and not _redo_blocked(state)
+    raise ValueError("History direction must be undo or redo")
+
+
+def _sketch_history(state, direction):
+    """Replay a complete edit transaction; keep both history and geometry on failure."""
+    if direction == "redo" and _redo_blocked(state):
+        state["status"] = "Finish or cancel the current edit before redoing"
+        return False
+    previous = _sketch_snapshot(state)
+    history = _edit_history(state)
+    fallback = None
+    if not history.can_undo and direction == "undo" and previous["batches"]:
+        # Saved sketches enter the editor as existing batches, rather than new edits.
+        fallback = deepcopy(previous)
+        batch = fallback["batches"].pop()
+        count = len(batch.get("actions") or ())
+        if count:
+            del fallback["actions"][-count:]
+
+    def restore(target):
+        state.update(target)
+        try:
+            if state.get("sketch") is not None:
+                _restore_live_geometry(state)
+        except Exception as exc:
+            state.update(previous)
+            try:
+                _restore_live_geometry(state)
+            except Exception:
+                state["live_invalid"] = True
+            state["status"] = "Could not " + direction + " sketch edit: " + str(exc)
+            return False
+        return True
+
+    if not history.step(direction, previous, restore, fallback=fallback):
+        return False
+    state["tree_action"] = None
+    state.pop("solve_error", None)
+    state.pop("live_invalid", None)
+    state["edit_error"] = ""
+    _clear_selection(state)
+    state["status"] = direction.capitalize() + " sketch edit"
+    return True
+
+
 def _undo_pending_or_action(state, rebuild_live=None):
     if state.get("curve_edit") or state.get("profile_edit") or state.get("constraint_edit"):
         state["curve_edit"] = state["profile_edit"] = state["constraint_edit"] = None
@@ -2150,30 +2254,7 @@ def _undo_pending_or_action(state, rebuild_live=None):
         _clear_selection(state)
         state["status"] = "cleared constraint"
         return
-    batches = state.get("batches") or []
-    edits = state.get("edit_undo") or []
-    if edits and edits[-1]["batches"] == len(batches):
-        edit = edits[-1]
-        if _replace_action(state, edit["index"], edit["action"], insert=edit["deleted"],
-                           record_undo=False, batch_hint=edit["batch"]):
-            edits.pop()
-            state["tree_action"] = None
-            _clear_selection(state)
-            state["status"] = "Undid sketch edit"
-        return
-    if not batches:
-        return
-    batch = batches.pop()
-    n = len(batch.get("actions") or ())
-    if n:
-        del state["actions"][-n:]
-    live = state.get("sketch")
-    if live is not None and not _revert_live_batch(live, batch):
-        state["status"] = "Undid record; live sketch kept"
-        _adopt_solved(state, commit=False)
-        return
-    _adopt_solved(state, commit=False)
-    state["status"] = "undid last action"
+    _sketch_history(state, "undo")
 
 
 def _hit_at(state, ray, tolerance, mode=None, exclude=None):
@@ -2685,7 +2766,8 @@ def _curves_are_construction(state, indices):
     return all(bool(geoms[index].get("construction")) for index in indices)
 
 
-def _set_curves_construction(state, indices, construction):
+def _set_curves_construction(state, indices, construction, *, record_undo=True):
+    history = _sketch_snapshot(state)
     stores = [_recorded_geometry(state["actions"])]
     if state.get("solved"):
         stores.append(state["solved"])
@@ -2706,6 +2788,8 @@ def _set_curves_construction(state, indices, construction):
                     pass
     state["selection_dirty"] = True
     state["status"] = "Construction" if construction else "Sketch geometry"
+    if record_undo:
+        _record_sketch_edit(state, history)
 
 
 def _selection_sets(state):

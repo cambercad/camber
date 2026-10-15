@@ -766,6 +766,29 @@ External parameters referenced by constraints (e.g. points from another sketch) 
         public double SolveConstraints(bool preferMinimalMovement = true)
             => SolveConstraintsDetailed(preferMinimalMovement).SumOfSquaredErrors;
 
+        /// <summary>
+        /// Unfrozen parameters on sketch curves, and constraint equations before Newton reductions.
+        /// Parameters that never appear in an equation are still counted: the reduced solver drops them.
+        /// </summary>
+        public void CountSketchSystem(out int parameters, out int equations)
+        {
+            var sketchParams = new HashSet<Param>();
+            foreach (var curve in EnumerateCurves())
+            {
+                if (curve is IEnumerableParams enumerable)
+                {
+                    foreach (var param in enumerable)
+                    {
+                        if (!param.Frozen)
+                            sketchParams.Add(param);
+                    }
+                }
+            }
+
+            parameters = sketchParams.Count;
+            equations = ConstraintSolver.CountGeneratedEquations(constraints);
+        }
+
         /// <summary>Runs the same sketch solve and retains convergence and diagnostic information.</summary>
         public SolveResult SolveConstraintsDetailed(bool preferMinimalMovement = true)
         {

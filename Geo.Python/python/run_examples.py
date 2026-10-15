@@ -28,6 +28,8 @@ for kind in (api.Part, api.Sketch, api._MeshBody, api.Assembly):
 for name in ("save_stl", "save_obj", "save_step", "save_iges", "save_usda"):
     setattr(api._MeshBody, name, noop)
 sys.argv = [str(source)]
+if source.stem == "control_gallery":
+    sys.argv.append("--no-show")
 runpy.run_path(str(source), run_name="__main__")
 '''
 

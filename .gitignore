@@ -60,3 +60,4 @@ Geo.Python/python/tests/test_angle_grinder_example.py
 Geo.Python/python/tests/test_racing_*.py
 Geo.Python/python/tests/test_uniform_tooth_heads.py
 Geo.Python/_workflow_audit/
+.test-tmp/

@@ -15,19 +15,19 @@ class AssemblyPatternTests(unittest.TestCase):
             self.assertAlmostEqual(a, b, delta=1e-5)
 
     def test_linear_instances_follow_seed_translation_and_rotation(self):
-        assembly = self.part.assembly('linear')
+        assembly = self.part.assembly(name='linear')
         assembly.solve_after_every_constraint = False
         seed = assembly.add_part(self.solid)
         copies = assembly.pattern_linear(seed, 3, (10, 0, 0))
         self.assertIs(seed, copies[0])
-        ground = assembly.add_part(self.solid, (3, 4, 0),
-                                   (0, 0, math.sqrt(.5), math.sqrt(.5)))
+        ground = assembly.add_part(self.solid, position=(3, 4, 0),
+                                   orientation=(0, 0, math.sqrt(.5), math.sqrt(.5)))
         assembly.fix(ground)
         # Three noncollinear locating points move the seed after the pattern
         # exists; its copies must retain their original relative placements.
         for point in ((0, 0, 0), (1, 0, 0), (0, 1, 0)):
             assembly.coincident(seed.point_at(point), ground.point_at(point))
-        probe = assembly.add_part(self.solid, copies[-1].pose)
+        probe = assembly.add_part(self.solid, position=copies[-1].pose)
         assembly.coincident(probe.point_at((0, 0, 0)), copies[-1].point_at((1, 0, 0)))
         result = assembly.solve()
         self.assertTrue(result.converged, repr(result))
@@ -39,12 +39,12 @@ class AssemblyPatternTests(unittest.TestCase):
     def test_circular_full_and_partial_sweeps_place_and_rotate_instances(self):
         for angle, count in ((2*math.pi, 4), (math.pi, 3), (-math.pi, 3)):
             with self.subTest(angle=angle):
-                assembly = self.part.assembly('circle_' + str(angle))
+                assembly = self.part.assembly(name='circle_' + str(angle))
                 assembly.solve_after_every_constraint = False
                 initial_angle = math.pi / 6
-                seed = assembly.add_part(self.solid, (12, 20, 30),
-                    (0, 0, math.sin(initial_angle/2), math.cos(initial_angle/2)))
-                copies = assembly.pattern_circular(seed, count, Frame((10, 20, 30)), angle)
+                seed = assembly.add_part(self.solid, position=(12, 20, 30),
+                    orientation=(0, 0, math.sin(initial_angle/2), math.cos(initial_angle/2)))
+                copies = assembly.pattern_circular(seed, count, axis=Frame((10, 20, 30)), angle=angle)
                 self.assertIs(seed, copies[0])
                 assembly.fix(seed)
                 step = angle / (count if abs(angle) == 2*math.pi else count-1)
@@ -57,7 +57,7 @@ class AssemblyPatternTests(unittest.TestCase):
                            center[1]+math.sin(theta+initial_angle), 30)
                     # A point follower measures actual instance orientation;
                     # it imposes no orientation constraint on the patterned part.
-                    probe = assembly.add_part(self.solid, center)
+                    probe = assembly.add_part(self.solid, position=center)
                     assembly.coincident(probe.point_at((0, 0, 0)), copy.point_at((1, 0, 0)))
                     probes.append(probe)
                     expected.append((center, tip))
@@ -68,15 +68,15 @@ class AssemblyPatternTests(unittest.TestCase):
                     self.assert_point(probe.pose, tip)
 
     def test_nested_pattern_keeps_hierarchy_and_follows_seed(self):
-        leaf = self.part.assembly('leaf')
+        leaf = self.part.assembly(name='leaf')
         leaf.solve_after_every_constraint = False
         body = leaf.add_part(self.solid)
         leaf.fix(body)
-        middle = self.part.assembly('middle')
+        middle = self.part.assembly(name='middle')
         middle.solve_after_every_constraint = False
-        nested = middle.add_subassembly(leaf, (2, 0, 0))
+        nested = middle.add_subassembly(leaf, position=(2, 0, 0))
         middle.fix(nested)
-        parent = self.part.assembly('nested_pattern')
+        parent = self.part.assembly(name='nested_pattern')
         parent.solve_after_every_constraint = False
         seed = parent.add_subassembly(middle)
         copies = parent.pattern_linear(seed, 3, (10, 0, 0))
@@ -84,8 +84,8 @@ class AssemblyPatternTests(unittest.TestCase):
         self.assertEqual(1, len(copies[1].subassemblies))
         self.assertEqual(0, len(copies[1].parts))
         self.assertTrue(copies[1].assembly.solve().converged)
-        ground = parent.add_part(self.solid, (3, 4, 0),
-                                 (0, 0, math.sqrt(.5), math.sqrt(.5)))
+        ground = parent.add_part(self.solid, position=(3, 4, 0),
+                                 orientation=(0, 0, math.sqrt(.5), math.sqrt(.5)))
         parent.fix(ground)
         for point in ((0, 0, 0), (1, 0, 0), (0, 1, 0)):
             parent.coincident(body.point_at(point), ground.point_at(point))
@@ -97,16 +97,16 @@ class AssemblyPatternTests(unittest.TestCase):
         self.assertTrue(leaf.solve().converged)
 
     def test_foreign_and_nested_seeds_are_rejected_without_adding_instances(self):
-        owner = self.part.assembly('owner')
+        owner = self.part.assembly(name='owner')
         seed = owner.add_part(self.solid)
-        target = self.part.assembly('target')
+        target = self.part.assembly(name='target')
         target.add_subassembly(owner)
         for operation in (lambda: target.pattern_linear(seed, 2, (1, 0, 0)),
                           lambda: target.pattern_circular(seed, 3)):
             with self.assertRaisesRegex(Exception, 'seed must be a direct part of this assembly'):
                 operation()
             self.assertEqual(0, len(target.parts))
-        other = self.part.assembly('unrelated')
+        other = self.part.assembly(name='unrelated')
         with self.assertRaisesRegex(Exception, 'seed must be a direct part of this assembly'):
             other.pattern_linear(seed, 2, (1, 0, 0))
         self.assertEqual(0, len(other.parts))

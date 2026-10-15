@@ -1002,6 +1002,28 @@ namespace GeoSolver
             _sideSign = cross < 0 ? -1 : 1;
         }
 
+        internal bool TryGenerateEndpointEquation(IList<IBaseEquation> constraints, List<Expr> equations)
+        {
+            if (Circular is not CArc2D arc) return false;
+            foreach (var (point, direction) in new[] { (arc.CStart, arc.CStartDir), (arc.CEnd, arc.CEndDir) })
+            foreach (var contact in SketchConstraintIncidence.ConnectedPoints(point, constraints))
+            {
+                bool onLine = SketchConstraintIncidence.SamePoint(contact, Line.CStart) ||
+                    SketchConstraintIncidence.SamePoint(contact, Line.CEnd) || constraints.Any(c =>
+                        c is PointOnLineConstraint2d incidence && ReferenceEquals(incidence.Line, Line) &&
+                        SketchConstraintIncidence.SamePoint(contact, incidence.Point));
+                if (!onLine) continue;
+                var dx = Line.CEnd.Ex - Line.CStart.Ex;
+                var dy = Line.CEnd.Ey - Line.CStart.Ey;
+                // At an authored contact, a perpendicular radius is a first-order
+                // tangency equation; center-to-line distance has a double root.
+                equations.Add(arc.CRadius * (direction.Ex * dx + direction.Ey * dy) /
+                    Expr.Sqrt(dx * dx + dy * dy));
+                return true;
+            }
+            return false;
+        }
+
         public void GenerateEquations(List<Expr> equations, double scaling)
         {
             // Keep the initial side of the line. The squared distance equation
@@ -1336,14 +1358,35 @@ namespace GeoSolver
             LabelAnchorWrtCenter = labelAnchorWrtCenter;
         }
 
-        // A distance-based circle tangency has a double root when coincidence
-        // already joins the arc endpoints. Use the equivalent first-order
-        // parallel-radii equation in that case. Match symbolic point identity,
-        // never proximity, so nearby unconstrained endpoints are not joined.
-        internal bool TryGenerateJoinedArcEquation(IList<IBaseEquation> constraints, List<Expr> equations)
+        // Distance tangency has a double root at an authored endpoint contact.
+        // Use the equivalent first-order parallel-radii equation for joined arcs
+        // or an arc endpoint constrained onto a circle. Match symbolic point
+        // identity, never proximity, so unconstrained endpoints stay independent.
+        internal bool TryGenerateEndpointEquation(IList<IBaseEquation> constraints, List<Expr> equations)
         {
-            if (TangentType != CircleTangentType.Auto ||
-                Circular1 is not CArc2D first || Circular2 is not CArc2D second)
+            if (TangentType != CircleTangentType.Auto)
+                return false;
+
+            var arc = Circular1 as CArc2D ?? Circular2 as CArc2D;
+            var circle = Circular1 as CCircle2D ?? Circular2 as CCircle2D;
+            if (arc != null && circle != null)
+            {
+                foreach (var constraint in constraints)
+                {
+                    if (constraint is not PointOnCircle2d contact || !ReferenceEquals(contact.Circle, circle))
+                        continue;
+                    foreach (var (point, direction) in new[] { (arc.CStart, arc.CStartDir), (arc.CEnd, arc.CEndDir) })
+                    {
+                        if (!SamePoint(contact.Point, point)) continue;
+                        var dx = point.Ex - circle.CCenter.Ex;
+                        var dy = point.Ey - circle.CCenter.Ey;
+                        equations.Add(direction.Ex * dy - direction.Ey * dx);
+                        return true;
+                    }
+                }
+                return false;
+            }
+            if (Circular1 is not CArc2D first || Circular2 is not CArc2D second)
                 return false;
 
             var firstEnds = new[] { (first.CStart, first.CStartDir), (first.CEnd, first.CEndDir) };
@@ -1369,7 +1412,7 @@ namespace GeoSolver
         }
 
         private static bool SamePoint(CVec2D a, CVec2D b)
-            => a.Ex.Identical(b.Ex) && a.Ey.Identical(b.Ey);
+            => SketchConstraintIncidence.SamePoint(a, b);
 
         public void GenerateEquations(List<Expr> equations, double scaling)
         {

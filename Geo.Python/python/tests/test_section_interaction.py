@@ -58,7 +58,7 @@ class AnnotationLayoutTests(unittest.TestCase):
 
         viewer = SimpleNamespace(
             inspection=SimpleNamespace(measurements=[Measurement((-.5, 0, 0), (.5, 0, 0), 1,
-                                                                 "Minimum distance")]),
+                                                                 label="Minimum distance")]),
             camera=SimpleNamespace(eye=(0, 0, -5), ortho=False, fov=1.0, aspect=1.0,
                                    frame=lambda: ((0, 0, 1), (0, 1, 0), (1, 0, 0))),
             window=SimpleNamespace(width=640, height=480),

@@ -24,7 +24,7 @@ part = Part(
 # CSG ToSketch uses CCW chordAngle; positive AoA (nose up, freestream +X) needs TE below LE.
 chord_angle = -aoa_deg * math.pi / 180.0
 sketch = part.sketch(frame=Frame.from_plane((0, 0, 0), (0, 0, 1), (1, 0, 0), (0, 1, 0)), name="naca_section")
-sketch.add_naca4(naca, (0, 0), chord, chord_angle, samples_per_side=36)
+sketch.add_naca4(naca, (0, 0), chord, chord_angle=chord_angle, samples_per_side=36)
 
 wing = sketch.extrude(span, name="hydrofoil_4412", max_deviation=max_dev)
 print("Created extruded NACA", naca, "wing:", wing)

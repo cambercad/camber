@@ -134,11 +134,11 @@ class SurfaceTests(unittest.TestCase):
 
     def test_curve3d_tessellate_validates_tolerance(self):
         curve = Curve3D.circle((0, 0, 0), (1, 0, 0), (0, 1, 0), 1)
-        points = curve.tessellate(.02)
+        points = curve.tessellate(max_deviation=.02)
 
         self.assertGreaterEqual(len(points), 8)
         with self.assertRaises(ValueError):
-            curve.tessellate(0)
+            curve.tessellate(max_deviation=0)
 
     def test_curve3d_wraps_sampled_and_torus_knot_implementations(self):
         sampled = Curve3D.sampled([(0, 0, 0), (1, 0, 0), (1, 1, 0)])
@@ -148,7 +148,7 @@ class SurfaceTests(unittest.TestCase):
         self.assertIsInstance(sampled, Curve3D)
         self.assertEqual(3, len(sampled.tessellate()))
         self.assertIsInstance(knot, Curve3D)
-        self.assertGreater(len(knot.tessellate(.01)), 100)
+        self.assertGreater(len(knot.tessellate(max_deviation=.01)), 100)
         self.assertIsInstance(framed_line, Curve3D)
         with self.assertRaises(Exception):
             Curve3D.line((0, 0, 0), (2, 0, 0), up=(1, 0, 0))

@@ -229,6 +229,8 @@ namespace CSG
         public Rat3Hybrid B;
         public int IndexA;
         public int IndexB;
+        // Undirected hash of the (reduced) endpoints; set by ResolverTriangle.AddSegment before it locks.
+        internal int KeyHash;
 
         public PointPair(Rat3Hybrid a, Rat3Hybrid b)
         {
@@ -339,9 +341,10 @@ namespace CSG
         public int Source;
 
         private readonly NewPointCreator _pointCreator;
-        private readonly Lazy<PlaneConvexPolygon> _coplanarPlanePolygon;
+        private PlaneConvexPolygon _coplanarPlanePolygon;
 
         public List<PointPair> insertedSegments; // Can contain points (seg.Start = seg.End)
+        private HashSet<PointPair> segmentKeys;
 
         public LazeIntEvaluator CoplanarEdgeInfo; //bit 0 is AB, bit 1 is BC, bit 2 is CA
 
@@ -355,8 +358,6 @@ namespace CSG
             Source = i;
 
             _pointCreator = newPoints ?? throw new ArgumentNullException(nameof(newPoints));
-            _coplanarPlanePolygon = new Lazy<PlaneConvexPolygon>(CreateCoplanarPlanePolygon, LazyThreadSafetyMode.ExecutionAndPublication);
-
             //CoplanarEdgeInfo = 0;
             /*if (abCoplanar) CoplanarEdgeInfo |= 1;
             if (bcCoplanar) CoplanarEdgeInfo |= 2;
@@ -370,7 +371,18 @@ namespace CSG
         /// Thread-safe lazy coplanar helper for this triangle (vertices from the constructor <c>NewPointCreator</c> at A,B,C).
         /// Valid while those coordinates are unchanged (e.g. boolean overlap phase).
         /// </summary>
-        public PlaneConvexPolygon CoplanarPlanePolygon => _coplanarPlanePolygon.Value;
+        public PlaneConvexPolygon CoplanarPlanePolygon
+        {
+            get
+            {
+                // Publication-only: a racing worker may build an identical
+                // immutable polygon, but nobody blocks behind the builder.
+                var polygon = Volatile.Read(ref _coplanarPlanePolygon);
+                if (polygon != null) return polygon;
+                polygon = CreateCoplanarPlanePolygon();
+                return Interlocked.CompareExchange(ref _coplanarPlanePolygon, polygon, null) ?? polygon;
+            }
+        }
 
         //public void SetCoplanarEdgeInfo(bool abCoplanar, bool bcCoplanar, bool caCoplanar)
         //{
@@ -406,7 +418,34 @@ namespace CSG
         // Constrained triangulation needs a planar graph: every crossing and
         // overlapping endpoint must be an explicit vertex. Arrange before
         // registering boundaries, so clustering uses the resulting subedges.
+        internal bool InternInsertedEndpoints(NewPointCreator points)
+        {
+            var segments = insertedSegments;
+            if (segments == null || segments.Count < 2) return false;
+            var a = points.GetPoint(A);
+            var b = points.GetPoint(B);
+            var c = points.GetPoint(C);
+            // Same gate as cut collection, so new point ids stay in the previous order.
+            if (!CoplanarTriangleProjectionAxes.TryProjectNonDegenerate(
+                    in a, in b, in c, out _, out _, out _, out _, out _, out _))
+                return false;
+            for (int i = 0; i < segments.Count; i++)
+            {
+                PointPair segment = segments[i];
+                segment.UpdateIndices(points);
+                segments[i] = segment;
+            }
+            return true;
+        }
+
         private void CollectTrimSegmentCuts(NewPointCreator points, Dictionary<long, List<Rat3Hybrid>> sharedCuts)
+        {
+            var local = new Dictionary<long, List<Rat3Hybrid>>();
+            AppendTrimSegmentCuts(points, local, false);
+            MergeTrimCuts(sharedCuts, local);
+        }
+
+        internal void AppendTrimSegmentCuts(NewPointCreator points, Dictionary<long, List<Rat3Hybrid>> destination, bool indicesReady)
         {
             var segments = insertedSegments;
             if (segments == null || segments.Count < 2) return;
@@ -417,21 +456,36 @@ namespace CSG
                     in a, in b, in c, out _, out _, out _, out _, out int x, out int y))
                 return;
 
-            var bounds = segments.Select(segment =>
+            int count = segments.Count;
+            var bounds = new (BigRationalHybrid minX, BigRationalHybrid maxX, BigRationalHybrid minY, BigRationalHybrid maxY, Rat3Hybrid direction)[count];
+            for (int i = 0; i < count; i++)
             {
+                var segment = segments[i];
                 int orderX = segment.A[x].CompareTo(segment.B[x]);
                 int orderY = segment.A[y].CompareTo(segment.B[y]);
-                return (minX: orderX <= 0 ? segment.A[x] : segment.B[x],
-                    maxX: orderX <= 0 ? segment.B[x] : segment.A[x],
-                    minY: orderY <= 0 ? segment.A[y] : segment.B[y],
-                    maxY: orderY <= 0 ? segment.B[y] : segment.A[y],
-                    direction: segment.B - segment.A);
-            }).ToArray();
-            var cuts = new List<BigRationalHybrid>[segments.Count];
-            for (int i = 0; i < segments.Count; i++)
-                cuts[i] = new List<BigRationalHybrid> { new(0), new(1) };
+                bounds[i] = (
+                    orderX <= 0 ? segment.A[x] : segment.B[x],
+                    orderX <= 0 ? segment.B[x] : segment.A[x],
+                    orderY <= 0 ? segment.A[y] : segment.B[y],
+                    orderY <= 0 ? segment.B[y] : segment.A[y],
+                    segment.B - segment.A);
+            }
+            var cuts = new List<BigRationalHybrid>[count];
+            var zero = new BigRationalHybrid(0);
+            var one = new BigRationalHybrid(1);
+            for (int i = 0; i < count; i++)
+                cuts[i] = new List<BigRationalHybrid> { zero, one };
 
             BigRationalHybrid Cross(Rat3Hybrid u, Rat3Hybrid v) => u[x] * v[y] - u[y] * v[x];
+            // u = numerator/denominator lies in [0,1] exactly when the two
+            // comparisons have this sign. Misses never build the quotient.
+            bool InUnitInterval(in BigRationalHybrid numerator, in BigRationalHybrid denominator)
+            {
+                int denominatorSign = denominator.Sign();
+                if (denominatorSign > 0)
+                    return numerator.Sign() >= 0 && numerator.CompareTo(denominator) <= 0;
+                return numerator.Sign() <= 0 && numerator.CompareTo(denominator) >= 0;
+            }
             void AddEndpoint(int index, Rat3Hybrid point)
             {
                 var segment = segments[index];
@@ -441,18 +495,18 @@ namespace CSG
                 if (BigRationalHybrid.SignOfCrossProduct(delta[x], direction[y], delta[y], direction[x]) != 0) return;
                 int axis = direction[x].Sign() != 0 ? x : y;
                 var parameter = (point[axis] - segment.A[axis]) / direction[axis];
-                if (parameter >= new BigRationalHybrid(0) && parameter <= new BigRationalHybrid(1))
+                if (parameter >= zero && parameter <= one)
                     cuts[index].Add(parameter);
             }
 
-            for (int i = 0; i < segments.Count; i++)
+            for (int i = 0; i < count; i++)
             {
                 var first = segments[i];
                 var direction = bounds[i].direction;
-                for (int j = i + 1; j < segments.Count; j++)
+                for (int j = i + 1; j < count; j++)
                 {
-                    if (bounds[i].maxX<bounds[j].minX || bounds[j].maxX<bounds[i].minX ||
-                        bounds[i].maxY<bounds[j].minY || bounds[j].maxY<bounds[i].minY) continue;
+                    if (bounds[i].maxX < bounds[j].minX || bounds[j].maxX < bounds[i].minX ||
+                        bounds[i].maxY < bounds[j].minY || bounds[j].maxY < bounds[i].minY) continue;
                     var second = segments[j];
                     var otherDirection = bounds[j].direction;
                     var denominator = Cross(direction, otherDirection);
@@ -465,68 +519,124 @@ namespace CSG
                         continue;
                     }
                     var delta = second.A - first.A;
-                    var u = Cross(delta, otherDirection) / denominator;
-                    var v = Cross(delta, direction) / denominator;
-                    if (u < new BigRationalHybrid(0) || u > new BigRationalHybrid(1) ||
-                        v < new BigRationalHybrid(0) || v > new BigRationalHybrid(1)) continue;
-                    cuts[i].Add(u);
-                    cuts[j].Add(v);
+                    var numeratorU = Cross(delta, otherDirection);
+                    var numeratorV = Cross(delta, direction);
+                    if (!InUnitInterval(numeratorU, denominator) || !InUnitInterval(numeratorV, denominator)) continue;
+                    cuts[i].Add(numeratorU / denominator);
+                    cuts[j].Add(numeratorV / denominator);
                 }
             }
 
             for (int i = 0; i < segments.Count; i++)
             {
                 var segment = segments[i];
-                int start = points.GetIndex(segment.A, out _);
-                int end = points.GetIndex(segment.B, out _);
+                int start = indicesReady ? segment.IndexA : points.GetIndex(segment.A, out _);
+                int end = indicesReady ? segment.IndexB : points.GetIndex(segment.B, out _);
                 long key = Algorithms.Key(start,end);
-                if (!sharedCuts.TryGetValue(key,out var list))
-                    sharedCuts.Add(key,list=new List<Rat3Hybrid>());
+                if (!destination.TryGetValue(key,out var list))
+                    destination.Add(key,list=new List<Rat3Hybrid>());
                 foreach (var parameter in cuts[i])
                     list.Add(segment.A+bounds[i].direction*parameter);
+            }
+        }
+
+        private static void MergeTrimCuts(Dictionary<long, List<Rat3Hybrid>> sharedCuts, Dictionary<long, List<Rat3Hybrid>> local)
+        {
+            if (local == null) return;
+            foreach (var entry in local)
+            {
+                if (!sharedCuts.TryGetValue(entry.Key, out var list))
+                    sharedCuts.Add(entry.Key, list = new List<Rat3Hybrid>());
+                list.AddRange(entry.Value);
             }
         }
 
         internal static void ArrangeTrimSegments(IEnumerable<ResolverTriangle> triangles, NewPointCreator points,
             int firstParallelTriangle = int.MaxValue)
         {
+            var triangleList = triangles as IList<ResolverTriangle> ?? triangles.ToList();
             var sharedCuts = new Dictionary<long,List<Rat3Hybrid>>();
-            int triangleIndex = 0;
-            foreach (var triangle in triangles)
+            for (int triangleIndex = 0; triangleIndex < triangleList.Count; triangleIndex++)
             {
+                var triangle = triangleList[triangleIndex];
                 // Parallel overlap workers can append to the same triangle in
                 // different orders. The cut graph and its triangulation use
                 // this list order, so make it independent of scheduling.
-                if (triangleIndex++ >= firstParallelTriangle && triangle.insertedSegments?.Count > 1)
+                if (triangleIndex >= firstParallelTriangle && triangle.insertedSegments?.Count > 1)
                     triangle.insertedSegments.Sort(CompareSegments);
-                triangle.CollectTrimSegmentCuts(points,sharedCuts);
             }
-            // Both intersecting meshes must use identical subedges. A cut found
-            // on either triangle is propagated to every copy of that segment.
-            foreach (var triangle in triangles)
+            var localCuts = new Dictionary<long, List<Rat3Hybrid>>[triangleList.Count];
+            var cutsReady = new bool[triangleList.Count];
+            for (int triangleIndex = 0; triangleIndex < triangleList.Count; triangleIndex++)
+                cutsReady[triangleIndex] = triangleList[triangleIndex].InternInsertedEndpoints(points);
+            ParallelEx.ForLoadBalanced(0, triangleList.Count, triangleIndex =>
             {
-                var segments=triangle.insertedSegments;
-                if (segments==null) continue;
-                triangle.insertedSegments=null;
-                foreach(var segment in segments)
+                if (!cutsReady[triangleIndex]) return;
+                var local = new Dictionary<long, List<Rat3Hybrid>>();
+                triangleList[triangleIndex].AppendTrimSegmentCuts(points, local, true);
+                localCuts[triangleIndex] = local;
+            });
+            for (int triangleIndex = 0; triangleIndex < triangleList.Count; triangleIndex++)
+                MergeTrimCuts(sharedCuts, localCuts[triangleIndex]);
+            // Parameter splitting stays on this thread. A second parallel pass
+            // over the same triangles increased chamfer time, and point insertion
+            // has to stay ordered so NewPointCreator ids do not depend on scheduling.
+            // Triangles whose endpoint indices are already interned only read the
+            // shared cut table and write their own segment list, so they can split
+            // in parallel. The others may create point ids and stay ordered below.
+            ParallelEx.ForLoadBalanced(0, triangleList.Count, triangleIndex =>
+            {
+                if (cutsReady[triangleIndex])
+                    SplitTriangle(triangleList[triangleIndex], sharedCuts, true, points);
+            });
+            for (int triangleIndex = 0; triangleIndex < triangleList.Count; triangleIndex++)
+            {
+                if (!cutsReady[triangleIndex])
+                    SplitTriangle(triangleList[triangleIndex], sharedCuts, false, points);
+            }
+        }
+
+        private static void SplitTriangle(ResolverTriangle triangle, Dictionary<long, List<Rat3Hybrid>> sharedCuts,
+            bool indicesReady, NewPointCreator points)
+        {
+            var segments = triangle.insertedSegments;
+            if (segments == null) return;
+            var replacement = SplitInsertedSegments(triangle, sharedCuts, indicesReady, points);
+            triangle.insertedSegments = null;
+            triangle.segmentKeys = null;
+            foreach (var segment in replacement)
+                triangle.AddSegment(segment);
+        }
+
+        private static List<PointPair> SplitInsertedSegments(ResolverTriangle triangle,
+            Dictionary<long, List<Rat3Hybrid>> sharedCuts, bool indicesReady, NewPointCreator points = null)
+        {
+            var built = new List<PointPair>();
+            foreach (var segment in triangle.insertedSegments)
+            {
+                var direction = segment.B - segment.A;
+                long key = indicesReady
+                    ? Algorithms.Key(segment.IndexA, segment.IndexB)
+                    : Algorithms.Key(points.GetIndex(segment.A, out _), points.GetIndex(segment.B, out _));
+                if (direction == new Rat3Hybrid(0, 0, 0) || !sharedCuts.TryGetValue(key, out var locations))
                 {
-                    var direction=segment.B-segment.A;
-                    long key=Algorithms.Key(points.GetIndex(segment.A,out _),points.GetIndex(segment.B,out _));
-                    if (direction==new Rat3Hybrid(0,0,0)||!sharedCuts.TryGetValue(key,out var locations))
-                    {
-                        triangle.AddSegment(segment);
-                        continue;
-                    }
-                    int axis=direction.X.Sign()!=0?0:direction.Y.Sign()!=0?1:2;
-                    var parameters=locations.Select(point=>(point[axis]-segment.A[axis])/direction[axis]).ToList();
-                    parameters.Sort((left,right)=>left.CompareTo(right));
-                    for(int i=1;i<parameters.Count;++i)
-                    {
-                        if(parameters[i]==parameters[i-1])continue;
-                        triangle.AddSegment(new PointPair(segment.A+direction*parameters[i-1],segment.A+direction*parameters[i]));
-                    }
+                    built.Add(segment);
+                    continue;
+                }
+                int axis = direction.X.Sign() != 0 ? 0 : direction.Y.Sign() != 0 ? 1 : 2;
+                var parameters = new List<BigRationalHybrid>(locations.Count);
+                var segmentStart = segment.A[axis];
+                var directionAxis = direction[axis];
+                for (int k = 0; k < locations.Count; k++)
+                    parameters.Add((locations[k][axis] - segmentStart) / directionAxis);
+                parameters.Sort((left, right) => left.CompareTo(right));
+                for (int i = 1; i < parameters.Count; ++i)
+                {
+                    if (parameters[i] == parameters[i - 1]) continue;
+                    built.Add(new PointPair(segment.A + direction * parameters[i - 1], segment.A + direction * parameters[i]));
                 }
             }
+            return built;
         }
 
         private static int ComparePoints(in Rat3Hybrid left, in Rat3Hybrid right)
@@ -681,35 +791,38 @@ namespace CSG
             // can perform the expensive rational work in parallel.
             segment.A.Simplify();
             segment.B.Simplify();
+            segment.KeyHash = UndirectedPointPairComparer.ComputeHash(in segment);
 
             // Dual-write Resolve can add to the same B triangle from many A workers.
+            // The lock covers an undirected exact lookup and the append. Reduction
+            // of the endpoints already happened above, outside the lock.
             lock (this)
-            {
-            if (insertedSegments == null)
-                insertedSegments = new List<PointPair>();
+                return AddSegmentLocked(segment);
+        }
 
-            //Check if the segment already exists
-            for (int i = 0; i < insertedSegments.Count; ++i)
+        private bool AddSegmentLocked(PointPair segment)
+        {
+            if (insertedSegments == null)
             {
-                var s = insertedSegments[i];
-                if (s.A == segment.A && s.B == segment.B)
-                {
+                insertedSegments = new List<PointPair>();
+                segmentKeys = new HashSet<PointPair>(UndirectedPointPairComparer.Instance);
+            }
+
+            if (!segmentKeys.Add(segment))
+            {
 #if DEBUG
-                    var tmp = segment;// new PlanePointPair(a, b, newPoints);
-                    if (s.IndexA != tmp.IndexA || s.IndexB != tmp.IndexB)
-                        throw new Exception();
-#endif
-                    return false;
-                }
-                if (s.A == segment.B && s.B == segment.A)
+                for (int i = 0; i < insertedSegments.Count; ++i)
                 {
-#if DEBUG
-                    var tmp = segment;// new PlanePointPair(a, b, newPoints);
-                    if (s.IndexA != tmp.IndexB || s.IndexB != tmp.IndexA)
+                    var s = insertedSegments[i];
+                    bool forward = s.A == segment.A && s.B == segment.B;
+                    bool reversed = s.A == segment.B && s.B == segment.A;
+                    if (!forward && !reversed) continue;
+                    if (s.IndexA != (reversed ? segment.IndexB : segment.IndexA) ||
+                        s.IndexB != (reversed ? segment.IndexA : segment.IndexB))
                         throw new Exception();
-#endif
-                    return false;
                 }
+#endif
+                return false;
             }
 
             var pair = segment;// new PlanePointPair(a, b, newPoints);
@@ -743,7 +856,6 @@ namespace CSG
             //AvoidPointDuplicates();
 
             return true;
-            }
         }
 
         public bool ContainsEdge(int a, int b)
@@ -756,6 +868,24 @@ namespace CSG
         public bool Contains(int id)
         {
             return A == id || B == id || C == id;
+        }
+
+        private sealed class UndirectedPointPairComparer : IEqualityComparer<PointPair>
+        {
+            public static readonly UndirectedPointPairComparer Instance = new();
+
+            public bool Equals(PointPair x, PointPair y) =>
+                (x.A == y.A && x.B == y.B) || (x.A == y.B && x.B == y.A);
+
+            public int GetHashCode(PointPair pair) => pair.KeyHash;
+
+            public static int ComputeHash(in PointPair pair)
+            {
+                int left = pair.A.GetHashCode();
+                int right = pair.B.GetHashCode();
+                if (left > right) (left, right) = (right, left);
+                return HashCode.Combine(left, right);
+            }
         }
 
     }

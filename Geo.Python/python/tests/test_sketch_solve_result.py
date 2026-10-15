@@ -16,6 +16,23 @@ class SketchSolveResultTests(unittest.TestCase):
         sketch.coincident(line @ 0, ("xy", 1, 0))
         with self.assertRaisesRegex(Exception, "Sketch constraint solve failed"):
             sketch.solve()
+        report = sketch.diagnose()
+        self.assertFalse(report.converged)
+        self.assertEqual("failed", report.estimate)
+        self.assertGreater(report.num_parameters, 0)
+        self.assertGreater(report.num_equations, 0)
+
+    def test_free_line_reports_remaining_parameters(self):
+        set_progress_log(False)
+        part = Part((-10, -10, -10), (10, 10, 10), tolerance=.01, unit="mm")
+        self.assertEqual("mm", part.unit)
+        sketch = part.sketch("xy", constrained=True)
+        sketch.solve_after_every_constraint = False
+        sketch.add_line((0, 0), (2, 0))
+        report = sketch.diagnose()
+        self.assertTrue(report.converged)
+        self.assertEqual("underconstrained", report.estimate)
+        self.assertGreater(report.num_parameters, report.num_equations)
 
     def test_tangent_arc_endpoint_stays_coincident(self):
         part = Part((-30, -30, -10), (30, 30, 10), tolerance=.01)

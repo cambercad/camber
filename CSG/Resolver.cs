@@ -192,8 +192,26 @@ namespace CSG
             ref int ipCount,
             ResolvePairStats stats, Span<sbyte> pairSigns, bool reversedPair)
         {
+            bool edgeTriangleOnPlane = false;
             for (int i = 0; i < 3; ++i)
             {
+                // All three vertices of this edge triangle lie on the other plane,
+                // proven when the first edge was coplanar and the remaining vertex
+                // has orientation zero. The other two edges are coplanar as well,
+                // so they skip the 3D predicate and use the same convex clip.
+                if (edgeTriangleOnPlane)
+                {
+                    Interlocked.Increment(ref TriangleSegmentIntersector.FullTestCount);
+                    if (stats != null)
+                    {
+                        Interlocked.Increment(ref stats.SegTriFull);
+                        Interlocked.Increment(ref stats.CoplanarHits);
+                    }
+                    if (write)
+                        ClipCoplanarEdge(edgeTri, i, resolverTri, triPointsFixed, specialCoplanarTriangleTreatment);
+                    continue;
+                }
+
                 Rat3Hybrid intersectionPoint;
                 bool onBoundary, startIsOnTriangle, endIsOnTriangle;
                 SegmentTriangleIntersectionType type = TriangleSegmentIntersector.SegmentIntersectsTriangle(
@@ -205,32 +223,14 @@ namespace CSG
                 {
                     if (stats != null)
                         Interlocked.Increment(ref stats.CoplanarHits);
-                    if (!write)
-                        continue;
-                    PlaneConvexPolygon poly2 = resolverTri.CoplanarPlanePolygon;
-
-                    Rat3LineSegment seg;
-                    bool hasSegment = ProcessCoplanarSegmentVsTriangle(edgeTri[i], edgeTri[(i + 1) % 3], poly2, out seg);
-                    if (hasSegment)
+                    if (i == 0)
                     {
-                        if (specialCoplanarTriangleTreatment)
-                        {
-                            bool onCorner;
-                            int sideIndex;
-                            if (poly2.PointIsOnBoundary(seg.GetStartPoint(), out onCorner, out sideIndex))
-                            {
-                                if (!onCorner && !triPointsFixed.IsCoplanarEdge(sideIndex))
-                                    resolverTri.AddSegment(new PointPair(seg.GetStartPoint(), seg.GetStartPoint()));
-                            }
-                            if (poly2.PointIsOnBoundary(seg.GetEndPoint(), out onCorner, out sideIndex))
-                            {
-                                if (!onCorner && !triPointsFixed.IsCoplanarEdge(sideIndex))
-                                    resolverTri.AddSegment(new PointPair(seg.GetEndPoint(), seg.GetEndPoint()));
-                            }
-                        }
-                        else
-                            resolverTri.AddSegment(seg);
+                        int thirdOnPlane = TriangleSegmentIntersector.Orient3DSign(
+                            edgeTri[2], triPointsFixed.A, triPointsFixed.B, triPointsFixed.C);
+                        edgeTriangleOnPlane = thirdOnPlane == 0;
                     }
+                    if (write)
+                        ClipCoplanarEdge(edgeTri, i, resolverTri, triPointsFixed, specialCoplanarTriangleTreatment);
                 }
                 else if (type == SegmentTriangleIntersectionType.Intersect)
                 {
@@ -239,6 +239,27 @@ namespace CSG
                     AddIntersectionAvoidDuplicates(ref ip0, ref ip1, ref ipCount, in intersectionPoint);
                 }
             }
+        }
+
+        private static void ClipCoplanarEdge(
+            in TriPoints edgeTri, int edgeIndex, ResolverTriangle resolverTri, in TriPoints triPointsFixed,
+            bool specialCoplanarTriangleTreatment)
+        {
+            PlaneConvexPolygon poly2 = resolverTri.CoplanarPlanePolygon;
+            bool hasSegment = ProcessCoplanarSegmentVsTriangle(edgeTri[edgeIndex], edgeTri[(edgeIndex + 1) % 3], poly2, out Rat3LineSegment seg);
+            if (!hasSegment)
+                return;
+            if (specialCoplanarTriangleTreatment)
+            {
+                if (poly2.PointIsOnBoundary(seg.GetStartPoint(), out bool startOnCorner, out int startSide) &&
+                    !startOnCorner && !triPointsFixed.IsCoplanarEdge(startSide))
+                    resolverTri.AddSegment(new PointPair(seg.GetStartPoint(), seg.GetStartPoint()));
+                if (poly2.PointIsOnBoundary(seg.GetEndPoint(), out bool endOnCorner, out int endSide) &&
+                    !endOnCorner && !triPointsFixed.IsCoplanarEdge(endSide))
+                    resolverTri.AddSegment(new PointPair(seg.GetEndPoint(), seg.GetEndPoint()));
+            }
+            else
+                resolverTri.AddSegment(seg);
         }
 
         private static List<Tri> WithoutInvalidTriangles(List<Tri> triangles)
@@ -708,8 +729,16 @@ namespace CSG
                     resultTriangles[i] = null;
             }
 
-            //for (int i = 0; i < resolverTris.Count; ++i)
-            ParallelEx.For(0, trianglesToProcess.Count, local =>
+            // Longest constraint chains first, then small stolen ranges. The plain
+            // Parallel.For gate of 2048 leaves this loop sequential on the pipe.
+            trianglesToProcess.Sort((left, right) =>
+            {
+                int countLeft = resolverTris[left].insertedSegments.Count;
+                int countRight = resolverTris[right].insertedSegments.Count;
+                int order = countRight.CompareTo(countLeft);
+                return order != 0 ? order : left.CompareTo(right);
+            });
+            ParallelEx.ForLoadBalanced(0, trianglesToProcess.Count, local =>
             {
                 int i = trianglesToProcess[local];
                 // Indices here already passed ContainsIntersections() when building trianglesToProcess.

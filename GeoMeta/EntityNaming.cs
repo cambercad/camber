@@ -35,6 +35,7 @@ namespace GeoMeta
         public const string ObjAutoGroupPrefix = "ObjAutoGroup_";
         public const string OffAutoGroupPrefix = "OffAutoGroup_";
         public const string StlAutoGroupPrefix = "StlAutoGroup_";
+        public const string UsdaAutoGroupPrefix = "UsdaAutoGroup_";
 
         public const string BlendEdgePrefix = "BlendEdge_";
         public const string BlendCornerPrefix = "BlendCorner_";

@@ -8,6 +8,7 @@ import math
 import sys
 import time
 from dataclasses import dataclass
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 
@@ -1102,6 +1103,10 @@ class UI:
         return numeric_text_allowed(proposed)
 
     def new_frame(self):
+        if self._current is not None:
+            raise RuntimeError("Finish the previous panel or render its frame before starting a new frame")
+        if any((self._colors, self._styles, self._widths, self._wrap)):
+            raise RuntimeError("Unbalanced GUI style, item-width or text-wrap pushes")
         self._controls.clear()
         self.io.DisplaySize = self.window.get_size()
         self._capture()
@@ -1151,6 +1156,10 @@ class UI:
         self._next["alpha"] = alpha
 
     def Begin(self, title, opened=None, flags=0):
+        if self._current is self._panels.get("##diagnostic") and self._current is not None:
+            self.End()
+        elif self._current is not None:
+            raise RuntimeError("End the current panel before beginning another; use BeginChild for nested content")
         if isinstance(opened, int) and not isinstance(opened, bool):
             flags, opened = opened, None
         fresh = title not in self._panels
@@ -1241,6 +1250,8 @@ class UI:
         p = self._current
         if p is None:
             raise RuntimeError("End without Begin")
+        if getattr(p, "parent", None) is not None:
+            raise RuntimeError("Use EndChild to close a child region before End")
         if p.docked:
             if not p.hidden:
                 x, y, w, h = p.rect
@@ -1309,6 +1320,38 @@ class UI:
         child.scroll = min(child.scroll, child.max_scroll)
         self._draw_scrollbar(child)
         self._current = child.parent
+
+    @contextmanager
+    def panel(self, title, *, flags=0):
+        """Exception-safe Begin/End pairing. Draw controls only when visible."""
+        visible = self.Begin(title, flags=flags)
+        try:
+            yield visible
+        finally:
+            self.End()
+
+    @contextmanager
+    def child(self, label, *, width=0, height=0):
+        """Exception-safe, independently scrolling child region."""
+        visible = self.BeginChild(label, width, height)
+        try:
+            yield visible
+        finally:
+            self.EndChild()
+
+    @contextmanager
+    def style(self, *, variables=None, colors=None):
+        """Restore scoped styles even when a control or callback raises."""
+        previous_styles, previous_colors = self._styles.copy(), self._colors.copy()
+        try:
+            for index, value in (variables or {}).items():
+                self.PushStyleVar(index, value)
+            for index, value in (colors or {}).items():
+                self.PushStyleColor(index, value)
+            yield
+        finally:
+            self._styles[:] = previous_styles
+            self._colors[:] = previous_colors
 
     def _scroll_geometry(self, p):
         x, y, w, h = p.rect
@@ -2077,6 +2120,9 @@ class UI:
                 top += 36
             else:
                 left += w+8
+        if self._inspect_controls:
+            self._controls = [Control(menu.items[index].label, name, rect, True)
+                              for index, rect in menu.rows]
         self._capture()
         return None
 
@@ -2210,6 +2256,23 @@ class UI:
                                       bottom=p.cursor[1]+30, right=p.right)
         return True
 
+    def SetSelectedTab(self, name, label, *, default=False):
+        """Select a tab in the current panel; default seeds an unset selection."""
+        if self._current is None:
+            raise RuntimeError("Tab selection requires a panel")
+        identity = self._id(name)
+        if default:
+            self._tabs.setdefault(identity, label)
+        else:
+            self._tabs[identity] = label
+
+    def GetItemRect(self):
+        """Logical (x, y, width, height) of the last submitted control."""
+        return self._last
+
+    def GetItemSpacing(self):
+        return self._current.spacing if self._current is not None else self._style(1, (8, 6))
+
     def BeginTabItem(self, label):
         b,p = self._tabbar,self._current
         self._tabs.setdefault(b.identity,label)
@@ -2327,11 +2390,8 @@ class UI:
     def ValidationMessage(self, message):
         """An inline, wrapping explanation using the theme's validation color."""
         if message:
-            self.PushStyleColor(0, tuple(c/255 for c in self.theme["error"]))
-            try:
+            with self.style(colors={0: tuple(c/255 for c in self.theme["error"])}):
                 self.TextWrapped(message)
-            finally:
-                self.PopStyleColor()
 
     def Spacing(self, height=8):
         """Reserve vertical space between content groups."""
@@ -2599,25 +2659,34 @@ class UI:
         self._widths.append(width)
 
     def PopItemWidth(self):
-        self._widths.pop()
+        self._pop(self._widths, 1, "PopItemWidth")
 
     def PushTextWrapPos(self, width):
         self._wrap.append(max(1,width-self.GetCursorPosX()))
 
     def PopTextWrapPos(self):
-        self._wrap.pop()
+        self._pop(self._wrap, 1, "PopTextWrapPos")
 
     def PushStyleVar(self, index, value):
         self._styles.append((index,tuple(value)))
 
     def PopStyleVar(self, count=1):
-        del self._styles[-count:]
+        self._pop(self._styles, count, "PopStyleVar")
 
     def PushStyleColor(self, index, *value):
         self._colors.append((index,self.GetColorU32(value[0] if len(value)==1 else value)))
 
     def PopStyleColor(self, count=1):
-        del self._colors[-count:]
+        self._pop(self._colors, count, "PopStyleColor")
+
+    @staticmethod
+    def _pop(stack, count, operation):
+        if type(count) is not int or count < 0:
+            raise ValueError(operation + " count must be a nonnegative integer")
+        if count > len(stack):
+            raise RuntimeError(operation + " exceeds the number of pushed values")
+        if count:
+            del stack[-count:]
 
     @staticmethod
     def GetColorU32(value):
@@ -2722,6 +2791,8 @@ class UI:
 
     def render(self):
         """Cached batched primitives; only changed commands allocate GPU objects."""
+        if any((self._colors, self._styles, self._widths, self._wrap)):
+            raise RuntimeError("Finish GUI style, item-width and text-wrap scopes before rendering")
         import pyglet
         from pyglet.graphics.api import gl
         if self._current is not None:

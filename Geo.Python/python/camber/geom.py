@@ -250,7 +250,7 @@ def triangulate(loops, *holes, working_volume=None, slices=None):
     return _unpack_indexed2(packed)
 
 
-def signed_area(loop, working_volume=None, slices=None):
+def signed_area(loop, *, working_volume=None, slices=None):
     """Shoelace area on the working-volume lattice, converted back to world units.
     Positive is CCW. Pass the same ``working_volume`` as ``triangulate`` when comparing.
     """
@@ -258,12 +258,12 @@ def signed_area(loop, working_volume=None, slices=None):
     return float(_require(_G(), "signed_area")(_pack_loops2(loop), vol))
 
 
-def is_ccw(loop, working_volume=None, slices=None):
+def is_ccw(loop, *, working_volume=None, slices=None):
     """True if ``signed_area(loop)`` is positive (CCW in sketch XY)."""
     return signed_area(loop, working_volume=working_volume, slices=slices) > 0.0
 
 
-def point_in_polygon(loop, point, on_edge=True, working_volume=None, slices=None):
+def point_in_polygon(loop, point, *, on_edge=True, working_volume=None, slices=None):
     """True if ``point`` is inside ``loop``. Boundary counts as inside unless
     ``on_edge=False``."""
     x, y = _xy(point)
@@ -276,7 +276,7 @@ def point_in_polygon(loop, point, on_edge=True, working_volume=None, slices=None
     return False
 
 
-def convex_hull(points, working_volume=None, slices=None):
+def convex_hull(points, *, working_volume=None, slices=None):
     """2D convex hull as a CCW list of ``vec2`` (no closing duplicate)."""
     vol = _pack_working_volume(working_volume, slices)
     packed = _require(_G(), "convex_hull")(_pack_points2(points), vol)
@@ -286,7 +286,7 @@ def convex_hull(points, working_volume=None, slices=None):
     return loops[0]
 
 
-def tessellate_bezier(controls, max_deviation=0.01):
+def tessellate_bezier(controls, *, max_deviation=0.01):
     """Adaptive polyline for a 2D Bezier given control points."""
     packed = _require(_G(), "tessellate_bezier")(_pack_points2(controls), float(max_deviation))
     loops = _unpack_loops2(packed)
@@ -295,7 +295,7 @@ def tessellate_bezier(controls, max_deviation=0.01):
     return loops[0]
 
 
-def text_outlines(text, origin=(0, 0), family="Arial", em_size=0.2, bold=False, italic=False):
+def text_outlines(text, origin=(0, 0), *, family="Arial", em_size=0.2, bold=False, italic=False):
     """Tessellated glyph contours as a list of loops (``vec2``)."""
     x, y = _xy(origin)
     flags = 0

@@ -129,7 +129,7 @@ All Plane3D objects registered via AddPlane (snapshot of references).")]
         }
 
         [APIDescription(@"GetSketches() -> List[PlotterSketcherCoordSys]
-All sketches registered via GetPlotterSketcher / GetSketcherFromDxf / GetSketcherFromSvg (snapshot of references).")]
+All sketches registered via GetPlotterSketcher / GetConstraintSketcher / GetSketcherFromSvg (snapshot of references).")]
         public List<PlotterSketcherCoordSys> GetSketches()
         {
             lock (_meshRegistryLock) return new List<PlotterSketcherCoordSys>(sketches);

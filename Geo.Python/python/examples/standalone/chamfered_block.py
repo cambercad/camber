@@ -14,11 +14,11 @@ part = Part(vec3(-100, -80, -20), vec3(100, 80, 40), tolerance=0.01)
 
 base_sk = part.sketch("xy", name="base_profile")
 base_sk.add_rectangle((0, 0), (base_w, base_d))
-base = base_sk.extrude_two_sides(base_h * 0.5, base_h * 0.5, name="base")
+base = base_sk.extrude_two_sides(base_h * 0.5, minus_z=base_h * 0.5, name="base")
 
 lip_sk = part.sketch("base-ExtrudeTop", name="lip_profile")
 lip_sk.add_rectangle((8, 8), (base_w - 8, base_d - 8))
-lip = lip_sk.extrude_two_sides(lip_h, 0.0, name="lip")
+lip = lip_sk.extrude_two_sides(lip_h, minus_z=0.0, name="lip")
 block = part.union(base, lip, name="block")
 
 lip_top_edges = [

@@ -73,7 +73,7 @@ def named_plane(name, origin=None):
         raise ValueError("degenerate plane {0!r}".format(name))
     y = _unit(y)
     x = _cross(y, z)
-    return Frame(origin, x, y, z)
+    return Frame(origin, x=x, y=y, z=z)
 
 
 def _dot(a, b):
@@ -209,7 +209,7 @@ def _center_shifts(sizes, centered):
 
 def _frame_plus_local(frame, local):
     origin = frame.origin + float(local[0]) * frame.x + float(local[1]) * frame.y + float(local[2]) * frame.z
-    return Frame(origin, frame.x, frame.y, frame.z)
+    return Frame(origin, x=frame.x, y=frame.y, z=frame.z)
 
 
 def _world_from_local(frame, local):
@@ -234,7 +234,7 @@ def _rotate_frame(frame, degrees):
         x, z = _rotate_vec(x, y, ry), _rotate_vec(z, y, ry)
     if rz:
         x, y = _rotate_vec(x, z, rz), _rotate_vec(y, z, rz)
-    return Frame(frame.origin, _unit(x), _unit(y), _unit(z))
+    return Frame(frame.origin, x=_unit(x), y=_unit(y), z=_unit(z))
 
 
 def _plane_from_normal(origin, normal, hint_x):
@@ -246,7 +246,7 @@ def _plane_from_normal(origin, normal, hint_x):
     x = _unit(x)
     y = _unit(_cross(z, x))
     x = _unit(_cross(y, z))
-    return Frame(origin, x, y, z)
+    return Frame(origin, x=x, y=y, z=z)
 
 
 def _project_to_plane(point, origin, normal):
@@ -1399,7 +1399,7 @@ class Workplane(object):
         if isinstance(inPlane, Workplane):
             self._copy_from(inPlane)
             if origin is not None:
-                self._frame = Frame(vec3(origin), self._frame.x, self._frame.y, self._frame.z)
+                self._frame = Frame(vec3(origin), x=self._frame.x, y=self._frame.y, z=self._frame.z)
             if obj is not None:
                 self._solid = self._as_solid(obj)
                 self._stack_solids = []
@@ -1407,7 +1407,7 @@ class Workplane(object):
         if isinstance(inPlane, Frame):
             self._frame = inPlane
             if origin is not None:
-                self._frame = Frame(vec3(origin), self._frame.x, self._frame.y, self._frame.z)
+                self._frame = Frame(vec3(origin), x=self._frame.x, y=self._frame.y, z=self._frame.z)
         else:
             self._frame = named_plane(inPlane, origin)
         self.part = part
@@ -1508,8 +1508,8 @@ class Workplane(object):
     @staticmethod
     def _aligned_face_frame(frame, origin, normal):
         if _dot(vec3(frame.z), vec3(normal)) < 0:
-            return Frame(origin, frame.x, -vec3(frame.y), -vec3(frame.z))
-        return Frame(origin, frame.x, frame.y, frame.z)
+            return Frame(origin, x=frame.x, y=-vec3(frame.y), z=-vec3(frame.z))
+        return Frame(origin, x=frame.x, y=frame.y, z=frame.z)
 
     def _profile_sketch(self, wires, name, frame=None):
         if not wires:
@@ -1610,7 +1610,7 @@ class Workplane(object):
                 sections.append((self._frame, pending))
             frame = _frame_plus_local(frame, (self._center2d[0], self._center2d[1], offset))
             if invert:
-                frame = Frame(frame.origin, -vec3(frame.x), vec3(frame.y), -vec3(frame.z))
+                frame = Frame(frame.origin, x=-vec3(frame.x), y=vec3(frame.y), z=-vec3(frame.z))
             return self._spawn(
                 _frame=frame,
                 _pending=[],
@@ -1626,7 +1626,7 @@ class Workplane(object):
                 _construction_vertices=[],
             )
         if invert:
-            frame = Frame(frame.origin, -vec3(frame.x), vec3(frame.y), -vec3(frame.z))
+            frame = Frame(frame.origin, x=-vec3(frame.x), y=vec3(frame.y), z=-vec3(frame.z))
         frame = _frame_plus_local(frame, (0.0, 0.0, offset))
         return self._spawn(
             _frame=frame,
@@ -2183,7 +2183,7 @@ class Workplane(object):
         origin, x_axis, y_axis = self._revolve_axes(axisStart, axisEnd)
         z_axis = _unit(_cross(x_axis, y_axis))
         y_axis = _unit(_cross(z_axis, x_axis))
-        frame = Frame(origin, x_axis, y_axis, z_axis)
+        frame = Frame(origin, x=x_axis, y=y_axis, z=z_axis)
 
         def to_revolve(point):
             delta = _world_from_local(source, (point[0], point[1], 0.0)) - origin
@@ -2311,7 +2311,7 @@ class Workplane(object):
             if both or self._solid is None or self._stack_solids:
                 raise ValueError("cutBlind(surface) needs one target solid and cannot use both=True")
             frame = self._active_frame()
-            inward = Frame(frame.origin, frame.x, -vec3(frame.y), -vec3(frame.z))
+            inward = Frame(frame.origin, x=frame.x, y=-vec3(frame.y), z=-vec3(frame.z))
             name = self._new_name("cut")
             sketch = self._profile_sketch(self._wires(), name + "_sk", frame=inward)
             cutter = sketch.extrude_until_surface(until, name=name + "_tool")
@@ -2358,11 +2358,11 @@ class Workplane(object):
                     sk = part.sketch(frame=frame, name=tool_name + "_sk")
                     wire.draw(sk)
                     if both:
-                        operand = sk.extrude_two_sides(abs(height), abs(height), name=tool_name)
+                        operand = sk.extrude_two_sides(abs(height), minus_z=abs(height), name=tool_name)
                     elif height >= 0:
                         operand = sk.extrude(height, name=tool_name)
                     else:
-                        operand = sk.extrude_two_sides(0.0, abs(height), name=tool_name)
+                        operand = sk.extrude_two_sides(0.0, minus_z=abs(height), name=tool_name)
                     if cutter is None:
                         if operation in ("s", "i"):
                             raise ValueError("a subtract/intersect sketch mode needs an existing profile")
@@ -2381,11 +2381,11 @@ class Workplane(object):
                 sk = part.sketch(frame=frame, name=name + "_sk")
                 self._draw_wires(sk, wires)
                 if both:
-                    cutter = sk.extrude_two_sides(abs(height), abs(height), name=name)
+                    cutter = sk.extrude_two_sides(abs(height), minus_z=abs(height), name=name)
                 elif height >= 0:
                     cutter = sk.extrude(height, name=name)
                 else:
-                    cutter = sk.extrude_two_sides(0.0, abs(height), name=name)
+                    cutter = sk.extrude_two_sides(0.0, minus_z=abs(height), name=name)
             results.append(part.subtract(solid, cutter, name=solid.name))
         return self._cleared(
             _solid=results[0] if len(results) == 1 else None,
@@ -2467,7 +2467,7 @@ class Workplane(object):
             return sketch.extrude(height, name=name, taper_angle=angle)
         positive = sketch.extrude(abs(height), name=name + "_positive",
                                 taper_angle=angle)
-        reverse_frame = Frame(frame.origin, frame.x, -vec3(frame.y), -vec3(frame.z))
+        reverse_frame = Frame(frame.origin, x=frame.x, y=-vec3(frame.y), z=-vec3(frame.z))
         reverse_sketch = part.sketch(frame=reverse_frame, name=name + "_negative_sk")
         wire.mapped_xy(lambda point: (point[0], -point[1])).draw(reverse_sketch)
         negative = reverse_sketch.extrude(abs(height), name=name + "_negative",
@@ -2823,7 +2823,7 @@ class Workplane(object):
             top = self.part.intersect(self._solid, cutter, name=self._new_name("split_top"))
         if keepBottom:
             cutter = sketch.extrude_two_sides(
-                0, -min(distances) + margin,
+                0, minus_z=-min(distances) + margin,
                 name=self._new_name("split_bottom_tool"))
             bottom = self.part.intersect(self._solid, cutter, name=self._new_name("split_bottom"))
         if top is not None and bottom is not None:

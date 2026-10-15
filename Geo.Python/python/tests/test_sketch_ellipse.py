@@ -70,4 +70,4 @@ class EllipseTests(unittest.TestCase):
         for radii,rotation in (((0,4),0),((-1,4),0),((3,float("nan")),0),((3,4),float("inf"))):
             with self.subTest(radii=radii,rotation=rotation):
                 with self.assertRaises(ValueError):
-                    sk.add_ellipse((0,0),radii,rotation)
+                    sk.add_ellipse((0,0),radii,rotation=rotation)

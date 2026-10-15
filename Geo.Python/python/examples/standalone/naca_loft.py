@@ -24,6 +24,6 @@ sketches = [
     make_naca_sketch(2.0 * spacing_z, chord_base, "naca_loft_top"),
 ]
 
-wing = part.loft(sketches, LoftOptions(), name="naca_three_section_loft", max_deviation=max_dev)
+wing = part.loft(sketches, options=LoftOptions(), name="naca_three_section_loft", max_deviation=max_dev)
 print(wing)
 wing.show(title="NACA 2412 loft")

@@ -6,6 +6,18 @@ from pathlib import Path
 
 
 class GalleryImportTests(unittest.TestCase):
+    def test_unimplemented_tutorials_are_skipped_but_real_failures_are_reported(self):
+        runner = Path(__file__).resolve().parents[1] / "examples" / "show_all_examples.py"
+        collect = runpy.run_path(str(runner))["_collect_gallery"]
+        failures = []
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            for name, exception in (("unfinished", "NotImplementedError"), ("broken", "RuntimeError")):
+                (folder / (name + ".py")).write_text(
+                    f"def build(): raise {exception}('reason')\n", encoding="utf-8")
+            self.assertEqual([], collect(folder, "sample", failures))
+        self.assertEqual([("sample broken", "reason")], failures)
+
     def test_each_gallery_uses_its_own_common_helper(self):
         runner = Path(__file__).resolve().parents[1] / "examples" / "show_all_examples.py"
         collect = runpy.run_path(str(runner))["_collect_gallery"]

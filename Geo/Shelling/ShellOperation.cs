@@ -17,12 +17,15 @@ internal sealed class ShellOperation
         faces ??= new List<string>();
         source.EnsureCoplanarPostProcessed();
         var selected = new HashSet<int>();
+        var seenText = new HashSet<string>(StringComparer.Ordinal);
         foreach (var face in faces)
         {
+            if (!seenText.Add(face))
+                throw new ArgumentException($"Shell face '{face}' was selected more than once.", nameof(faces));
             string local = source.ResolveLocalPatchNamePublic(face);
             if (local == null || !source.extendedNameToGroupId.TryGetValue(local, out var id))
                 throw new ArgumentException($"Shell face '{face}' does not exist on '{source.Name}'.", nameof(faces));
-            if (!selected.Add(id)) throw new ArgumentException($"Shell face '{face}' was selected more than once.", nameof(faces));
+            selected.Add(id);
         }
         var openingPatches = selected.Select(id => source.groupIdToExtendedName[id])
             .ToHashSet(StringComparer.Ordinal);

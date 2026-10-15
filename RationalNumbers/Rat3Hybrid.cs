@@ -37,6 +37,13 @@
             Z.Simplify();
         }
 
+        public void LimitGrowth()
+        {
+            X.LimitGrowth();
+            Y.LimitGrowth();
+            Z.LimitGrowth();
+        }
+
         public bool IsZero()
         {
             return X.Sign() == 0 && Y.Sign() == 0 && Z.Sign() == 0;
@@ -97,6 +104,10 @@
             return lhs.X != rhs.X || lhs.Y != rhs.Y || lhs.Z != rhs.Z;
         }
 
+        /// <summary>Exact sign of (u × v) · (p × q), without building either cross product.</summary>
+        public static int SignOfCrossDot(in Rat3Hybrid u, in Rat3Hybrid v, in Rat3Hybrid p, in Rat3Hybrid q) =>
+            BigRationalHybrid.SignOfCrossDot(u.X, u.Y, u.Z, v.X, v.Y, v.Z, p.X, p.Y, p.Z, q.X, q.Y, q.Z);
+
         public static BigRationalHybrid Dot(in Rat3Hybrid lhs, in Rat3Hybrid rhs)
         {
             return lhs.X * rhs.X + lhs.Y * rhs.Y + lhs.Z * rhs.Z;
@@ -113,14 +124,31 @@
         /// </summary>
         public static bool AreOppositeCollinear(in Rat3Hybrid a, in Rat3Hybrid b)
         {
+            // Opposite collinear vectors have opposite signs on every axis, and a zero
+            // only opposite another zero. Sign is much cheaper than a product, and a
+            // mismatch is exact: it cannot hide a truly anti-parallel pair.
+            if (AxisRejectsOpposite(a.X, b.X) || AxisRejectsOpposite(a.Y, b.Y) || AxisRejectsOpposite(a.Z, b.Z))
+                return false;
+
             if (DotSign(a, b) >= 0)
                 return false;
 
-            if ((a.Y * b.Z - a.Z * b.Y).Sign() != 0)
+            if (BigRationalHybrid.SignOf2D(a.Y, a.Z, b.Y, b.Z) != 0)
                 return false;
-            if ((a.Z * b.X - a.X * b.Z).Sign() != 0)
+            if (BigRationalHybrid.SignOf2D(a.Z, a.X, b.Z, b.X) != 0)
                 return false;
-            return (a.X * b.Y - a.Y * b.X).Sign() == 0;
+            return BigRationalHybrid.SignOf2D(a.X, a.Y, b.X, b.Y) == 0;
+        }
+
+        private static bool AxisRejectsOpposite(in BigRationalHybrid a, in BigRationalHybrid b)
+        {
+            int sa = a.Sign();
+            int sb = b.Sign();
+            if (sa == 0)
+                return sb != 0;
+            if (sb == 0)
+                return true;
+            return sa == sb;
         }
 
         public BigRationalHybrid this[int index]

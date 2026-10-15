@@ -208,27 +208,32 @@ namespace Geo
         {
             HashSet<int> result = new HashSet<int>();
             Dictionary<int, List<int>> triangleIdsPerGroup = CoplanarGroupFusion.ExtractTriangleIdsPerGroup(Mesh.GetTriangleGroups());
-            foreach(var v in triangleIdsPerGroup)
+            // Patches whose metadata is not Planar (curved, twisted caps, Unknown) are not
+            // fusion candidates; this mirrors the original post-planarity metadata check.
+            // This scan stays sequential: it can run underneath an existing parallel
+            // Boolean or tessellation, and a nested Parallel.For would stall the pool.
+            foreach (var group in triangleIdsPerGroup)
             {
-                List<Tri> tris = GetTriangles(v.Value);
+                if (HasExplicitNonPlanarSurfaceType(group.Key))
+                    continue;
+                List<Tri> tris = GetTriangles(group.Value);
                 UVSurface tmp = new UVSurface(Mesh.Positions, null, null, tris, Mesh.PrecisionPositions);
-                if (tmp.IsSurfacePlanar())
-                {
-                    // Only treat as planar if it has no vertex data discontinuities
-                    // Groups with UV seams or sharp edges must not be retriangulated (would break data)
-                    if (GroupHasVertexDataDiscontinuities(v.Key, v.Value))
-                        continue;
-                    // If metadata explicitly marks this surface as non-planar (e.g. twisted sweep caps), skip
-                    // coplanar fusion/retriangulation even when triangles lie in one plane.
-                    if (surfaceMetaData != null
-                        && groupIdToExtendedName.TryGetValue(v.Key, out string gName)
-                        && surfaceMetaData.TryGetValue(gName, out var smd)
-                        && smd.SurfaceType != SurfaceType.Planar)
-                        continue;
-                    result.Add(v.Key);
-                }
+                if (!tmp.IsSurfacePlanar())
+                    continue;
+                // Groups with UV seams or sharp edges must not be retriangulated.
+                if (GroupHasVertexDataDiscontinuities(group.Key, group.Value))
+                    continue;
+                result.Add(group.Key);
             }
             return result;
+        }
+
+        private bool HasExplicitNonPlanarSurfaceType(int groupId)
+        {
+            return surfaceMetaData != null
+                && groupIdToExtendedName.TryGetValue(groupId, out string name)
+                && surfaceMetaData.TryGetValue(name, out var metadata)
+                && metadata.SurfaceType != SurfaceType.Planar;
         }
 
         /// <summary>
@@ -312,9 +317,7 @@ namespace Geo
                     var oldGroupsForLineage = Mesh.GetTriangleGroups();
                     var representativeTriangles = CoplanarGroupFusion.FuseCoplanarGroups(Mesh.Triangles, Mesh.GetTriangleGroups(), Mesh.PrecisionPositions,
                         groupIdToExtendedName, idsOfPlanarGroups, out var newGroupPerTriangle, out var newGroupToId);
-                    var mergedLineage = new Dictionary<int, FaceLineage>();
-                    foreach (var group in Enumerable.Range(0, newGroupPerTriangle.Count).GroupBy(i => newGroupPerTriangle[i]))
-                        mergedLineage[group.Key] = FaceLineage.Merge(group.Select(i => oldGroupsForLineage[i]).Distinct().Select(id => FaceLineages[id]));
+                    var mergedLineage = MergeLineageByGroup(oldGroupsForLineage, newGroupPerTriangle);
                     FaceLineages = mergedLineage;
 
                     groupIdToExtendedName = newGroupToId;
@@ -344,6 +347,49 @@ namespace Geo
             }
 
             SplitDisconnectedPatchGroups();
+        }
+
+        private Dictionary<int, FaceLineage> MergeLineageByGroup(List<int> oldGroups, List<int> newGroups)
+        {
+            var oldIdsByNewGroup = new Dictionary<int, List<int>>();
+            for (int i = 0; i < newGroups.Count; i++)
+            {
+                int newId = newGroups[i];
+                int oldId = oldGroups[i];
+                if (!oldIdsByNewGroup.TryGetValue(newId, out List<int> oldIds))
+                {
+                    oldIds = new List<int>(2);
+                    oldIdsByNewGroup[newId] = oldIds;
+                }
+                bool seen = false;
+                for (int k = 0; k < oldIds.Count; k++)
+                {
+                    if (oldIds[k] == oldId)
+                    {
+                        seen = true;
+                        break;
+                    }
+                }
+                if (!seen)
+                    oldIds.Add(oldId);
+            }
+
+            var merged = new Dictionary<int, FaceLineage>(oldIdsByNewGroup.Count);
+            foreach (var pair in oldIdsByNewGroup)
+            {
+                List<int> oldIds = pair.Value;
+                if (oldIds.Count == 1)
+                {
+                    merged[pair.Key] = FaceLineages[oldIds[0]];
+                    continue;
+                }
+
+                var faces = new FaceLineage[oldIds.Count];
+                for (int i = 0; i < oldIds.Count; i++)
+                    faces[i] = FaceLineages[oldIds[i]];
+                merged[pair.Key] = FaceLineage.Merge(faces);
+            }
+            return merged;
         }
 
         /// <summary>
@@ -442,9 +488,15 @@ namespace Geo
             // Planar fusion has already rebuilt these groups from one affine UV
             // frame. They require no per-collapse parameter validation.
             Func<Dictionary<int, Remeshing.FullTriangle>, bool> validateUv = null;
-            if (trianglesEx.Any(t => !affineUvGroups.Contains(t.GroupId)))
-                validateUv = new AffineUvCollapseGuard(positions, originalTriangles,
-                    originalTrianglesEx, affineUvGroups).Validate;
+            for (int i = 0; i < trianglesEx.Count; i++)
+            {
+                if (!affineUvGroups.Contains(trianglesEx[i].GroupId))
+                {
+                    validateUv = new AffineUvCollapseGuard(positions, originalTriangles,
+                        originalTrianglesEx, affineUvGroups).Validate;
+                    break;
+                }
+            }
             Remeshing.EdgeCollapser.CleanMesh(
                 positions,
                 trianglesWithGroups,
@@ -1037,8 +1089,11 @@ namespace Geo
         private bool TryGetSurfaceCore(string name, out UVSurface result, bool localGeometry, bool preserveCornerAttributes)
         {
             result = null;
-            if(!extendedNameToGroupId.ContainsKey(name))
-                return false;
+            if (!extendedNameToGroupId.ContainsKey(name))
+            {
+                if (!TryResolveCurrentFaceReference(name, out name))
+                    return false;
+            }
 
             int groupId = extendedNameToGroupId[name];
 
@@ -1396,8 +1451,13 @@ namespace Geo
 
             void Check(string patch)
             {
-                if (AmbiguousFaceReferences.Contains(patch))
-                    throw new GeoMeta.NameCollisionException($"Face reference '{patch}' has ambiguous or obsolete split ancestry; use a current provenance-qualified face name.");
+                if (!AmbiguousFaceReferences.Contains(patch))
+                    return;
+                var current = CurrentFacesMatching(patch);
+                if (current.Count > 1)
+                    throw new GeoMeta.NameCollisionException(
+                        $"Face reference '{patch}' is ambiguous among current faces: {string.Join(", ", current)}.");
+                throw new GeoMeta.NameCollisionException($"Face reference '{patch}' has ambiguous or obsolete split ancestry; use a current provenance-qualified face name.");
             }
         }
 
@@ -1408,16 +1468,17 @@ namespace Geo
                 if (group.Count() != 1 || AmbiguousFaceReferences.Contains(group.Key)) continue;
                 var pair = group.Single();
                 var lineage = pair.Value;
-                if (!lineage.Split || !lineage.Supported) continue;
+                if (!lineage.Supported || (lineage.Roots.Count < 2 && !lineage.Split)) continue;
                 string previous = groupIdToExtendedName[pair.Key];
                 if (previous == lineage.Reference) continue;
-                // Fusion changes ancestry. Publish its unique combined identity,
-                // while old names remain obsolete rather than being resurrected.
+                // Fusion publishes one combined identity. Each original name stays
+                // an alias while it still identifies this single face.
                 if (groupIdToExtendedName.Any(item => item.Key != pair.Key && item.Value == lineage.Reference)) continue;
                 groupIdToExtendedName[pair.Key] = lineage.Reference;
                 if (surfaceMetaData.TryGetValue(previous, out var metadata))
                     surfaceMetaData[lineage.Reference] = metadata?.Clone();
-                AmbiguousFaceReferences.Add(previous);
+                if (!lineage.Roots.Contains(previous))
+                    AmbiguousFaceReferences.Add(previous);
             }
         }
 
@@ -1527,21 +1588,31 @@ namespace Geo
             return null;
         }
 
-        private bool TryResolveCurrentFaceReference(string reference, out string patchName)
+        internal bool TryResolveCurrentFaceReference(string reference, out string patchName)
         {
             patchName = null;
-            if (FaceLineages == null || string.IsNullOrWhiteSpace(reference))
+            var matches = CurrentFacesMatching(reference);
+            if (matches.Count != 1)
                 return false;
-            int match = -1;
+            patchName = matches[0];
+            return true;
+        }
+
+        private List<string> CurrentFacesMatching(string reference)
+        {
+            var names = new List<string>();
+            if (FaceLineages == null || string.IsNullOrWhiteSpace(reference))
+                return names;
             foreach (var pair in FaceLineages)
             {
-                if (!string.Equals(pair.Value.Reference, reference, StringComparison.Ordinal))
+                if (!string.Equals(pair.Value.Reference, reference, StringComparison.Ordinal) &&
+                    !pair.Value.Roots.Contains(reference))
                     continue;
-                if (match >= 0)
-                    return false;
-                match = pair.Key;
+                if (groupIdToExtendedName.TryGetValue(pair.Key, out string name))
+                    names.Add(name);
             }
-            return match >= 0 && groupIdToExtendedName.TryGetValue(match, out patchName);
+            names.Sort(StringComparer.Ordinal);
+            return names;
         }
 
         private string TryUniquePatchSuffixMatch(string curveName)

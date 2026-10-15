@@ -34,6 +34,12 @@ namespace GeoCore
             Y.Simplify();
         }
 
+        public void LimitGrowth()
+        {
+            X.LimitGrowth();
+            Y.LimitGrowth();
+        }
+
 
         public override int GetHashCode()
         {

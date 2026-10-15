@@ -31,9 +31,9 @@ class AssemblyPlaneFrameTests(unittest.TestCase):
         return after
 
     def test_translated_rotated_face_frame_is_unchanged_by_display(self):
-        assembly = self.part.assembly('root')
-        assembly.add_part(self.solid, (10, 20, 30),
-                          (0, math.sqrt(.5), 0, math.sqrt(.5)))
+        assembly = self.part.assembly(name='root')
+        assembly.add_part(self.solid, position=(10, 20, 30),
+                          orientation=(0, math.sqrt(.5), 0, math.sqrt(.5)))
         frame = self.assert_display_invariant(assembly, 'block:ExtrudeTop')
         self.assertAlmostEqual(frame.origin.x, 10+self.local_top, delta=1e-8)
         self.assert_vector(frame.z, (1, 0, 0))
@@ -45,9 +45,9 @@ class AssemblyPlaneFrameTests(unittest.TestCase):
         self.assert_vector(bottom.z, (-1, 0, 0))
 
     def test_repeated_parts_require_and_resolve_occurrence_paths(self):
-        assembly = self.part.assembly('repeated')
-        assembly.add_part(self.solid, (10, 0, 0))
-        assembly.add_part(self.solid, (30, 0, 0))
+        assembly = self.part.assembly(name='repeated')
+        assembly.add_part(self.solid, position=(10, 0, 0))
+        assembly.add_part(self.solid, position=(30, 0, 0))
         with self.assertRaisesRegex(Exception, 'ambiguous.*repeated/block\\[1\\]'):
             assembly.plane_frame('block:ExtrudeTop')
         first = self.assert_display_invariant(assembly, 'repeated/block[1]:ExtrudeTop')
@@ -56,12 +56,12 @@ class AssemblyPlaneFrameTests(unittest.TestCase):
         self.assert_vector(first.z, (0, 0, 1))
 
     def test_nested_shared_body_uses_composed_occurrence_pose(self):
-        root = self.part.assembly('root')
+        root = self.part.assembly(name='root')
         for index, x in enumerate((10, 30)):
-            child = self.part.assembly(f'child{index}')
-            child.add_part(self.solid, (1, 2, 3))
-            root.add_subassembly(child, (x, 20, 30),
-                                 (0, math.sqrt(.5), 0, math.sqrt(.5)))
+            child = self.part.assembly(name=f'child{index}')
+            child.add_part(self.solid, position=(1, 2, 3))
+            root.add_subassembly(child, position=(x, 20, 30),
+                                 orientation=(0, math.sqrt(.5), 0, math.sqrt(.5)))
         first = self.assert_display_invariant(root, 'root/child0[1]/block[1]:ExtrudeTop')
         second = self.assert_display_invariant(root, 'root/child1[2]/block[1]:ExtrudeTop')
         self.assertAlmostEqual(first.origin.x, 10+3+self.local_top, delta=1e-8)

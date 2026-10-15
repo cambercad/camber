@@ -39,9 +39,9 @@ class PartConcurrencyTests(unittest.TestCase):
         self.assertEqual(4, len({owner.name for owner, _, _, _ in actual}))
         self.assertEqual(4, len({item[3] for item in actual}))
         destination = Part((-10, -10, -10), (20, 20, 20), tolerance=.02)
-        assembly = destination.assembly('collected')
+        assembly = destination.assembly(name='collected')
         for i, (owner, body, signature, _) in enumerate(actual):
-            assembly.add_part(body, (0, 0, i*4))
+            assembly.add_part(body, position=(0, 0, i*4))
             copied = destination.copy_solid(body, 'collected_'+str(i))
             points, triangles = copied.mesh()
             geometry = tuple(sorted(tuple(sorted(tuple(points[j]) for j in triangle)) for triangle in triangles))

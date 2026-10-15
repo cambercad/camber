@@ -87,15 +87,15 @@ def _tube_shoulder(occurrence, solid, profile):
 
 def _bearing_assembly(part, solids, name="needle_bearing"):
     """One purchased bearing cartridge, reused at all eight journal ends."""
-    bearing = part.assembly(name)
+    bearing = part.assembly(name=name)
     bearing.solve_after_every_constraint = False
     cup = bearing.add_part(solids["bearing_cup"])
     bearing.fix(cup)
-    seed = bearing.add_part(solids["needle"], (8.8, 0, 2))
+    seed = bearing.add_part(solids["needle"], position=(8.8, 0, 2))
     bearing.concentric(seed.axis("bearing_needle-Circle1"), cup.axis_at((8.8, 0, 0), (0, 0, 1)))
     bearing.coincident(seed.point_at((0, 0, 0)), cup.point_at((8.8, 0, 2)))
     bearing.pattern_circular(seed, 24)
-    seal = bearing.add_part(solids["bearing_seal"], (0, 0, .1))
+    seal = bearing.add_part(solids["bearing_seal"], position=(0, 0, .1))
     bearing.concentric(seal.axis("bearing_seal_outer-Circle1"), cup.axis("bearing_cup_outer-Circle1"))
     bearing.coincident(seal.point_at((0, 0, 0)), cup.point_at((0, 0, .1)))
     result = bearing.solve()
@@ -111,7 +111,7 @@ def _add_joint_hardware(assembly, solids, occurrences, prefix, center_z, bearing
         ((0, 14, center_z), TO_Y), ((0, -14, center_z), TO_NEG_Y),
     )
     for index, (position, orientation) in enumerate(cup_directions):
-        cartridge = assembly.add_subassembly(bearing, position, orientation)
+        cartridge = assembly.add_subassembly(bearing, position=position, orientation=orientation)
         cup = occurrences["%s_cup_%d" % (prefix, index)] = cartridge.parts[0]
         journal = "universal_cross_journal_" + ("x" if index < 2 else "y") + "-Circle1"
         assembly.concentric(_axis(cross, solids["cross"], journal),
@@ -121,7 +121,7 @@ def _add_joint_hardware(assembly, solids, occurrences, prefix, center_z, bearing
 
     # Grease fittings are visible service details on each cross center.
     occurrences[prefix + "_grease"] = assembly.add_part(
-        solids["grease_nipple"], (0, 0, center_z + 6))
+        solids["grease_nipple"], position=(0, 0, center_z + 6))
 
 
 def _add_chain(assembly, solid, occurrences, output_center):
@@ -161,7 +161,7 @@ def _add_chain(assembly, solid, occurrences, output_center):
             x, y, z, w = q
             q = ((x + w) * _SQRT_HALF, (y + z) * _SQRT_HALF,
                  (z - y) * _SQRT_HALF, (w - x) * _SQRT_HALF)
-        occurrences["chain_link_%02d" % i] = assembly.add_part(solid, point, q)
+        occurrences["chain_link_%02d" % i] = assembly.add_part(solid, position=point, orientation=q)
 
 
 def build(extended=False, cutaway=False):
@@ -204,7 +204,7 @@ def build(extended=False, cutaway=False):
         except Exception as error:
             raise RuntimeError("Invalid PTO component: " + name) from error
 
-    assembly = part.assembly("DEMA_67991_reconstruction")
+    assembly = part.assembly(name="DEMA_67991_reconstruction")
     assembly.solve_after_every_constraint = False
     occurrences = {}
 
@@ -212,36 +212,36 @@ def build(extended=False, cutaway=False):
     # telescope between their tube-side hubs.
     occurrences["input_yoke"] = assembly.add_part(solids["input_yoke"])
     occurrences["input_tube_yoke"] = assembly.add_part(
-        solids["input_tube_yoke"], (0, 0, 0), FORK_CLOCK)
+        solids["input_tube_yoke"], position=(0, 0, 0), orientation=FORK_CLOCK)
     occurrences["input_cross"] = assembly.add_part(solids["cross"])
     occurrences["output_tube_yoke"] = assembly.add_part(
-        solids["output_tube_yoke"], (0, 0, output_center), FORK_CLOCK)
+        solids["output_tube_yoke"], position=(0, 0, output_center), orientation=FORK_CLOCK)
     occurrences["output_yoke"] = assembly.add_part(
-        solids["output_yoke"], (0, 0, output_center), IDENTITY)
+        solids["output_yoke"], position=(0, 0, output_center), orientation=IDENTITY)
     occurrences["output_cross"] = assembly.add_part(
-        solids["cross"], (0, 0, output_center))
+        solids["cross"], position=(0, 0, output_center))
 
     occurrences["outer_profile"] = assembly.add_part(
-        solids["outer_profile"], (0, 0, PROFILE_CONNECTION_OFFSET))
+        solids["outer_profile"], position=(0, 0, PROFILE_CONNECTION_OFFSET))
     occurrences["inner_profile"] = assembly.add_part(
-        solids["inner_profile"], (0, 0, output_center - PROFILE_CONNECTION_OFFSET),
-        TO_REVERSED_AXIS)
+        solids["inner_profile"], position=(0, 0, output_center - PROFILE_CONNECTION_OFFSET),
+        orientation=TO_REVERSED_AXIS)
 
     # Full shields by default. Inspection windows are explicitly optional.
     occurrences["guard_outer"] = assembly.add_part(solids["guard_outer"],
-                                                    (0, 0, 70))
+                                                    position=(0, 0, 70))
     occurrences["guard_inner"] = assembly.add_part(
-        solids["guard_inner"], (0, 0, output_center - 70),
-        TO_REVERSED_AXIS)
+        solids["guard_inner"], position=(0, 0, output_center - 70),
+        orientation=TO_REVERSED_AXIS)
     if not cutaway:
-        occurrences["warning_label"] = assembly.add_part(solids["warning_label"], (0, 0, 280))
-        occurrences["warning_header"] = assembly.add_part(solids["warning_header"], (0, 0, 280))
+        occurrences["warning_label"] = assembly.add_part(solids["warning_label"], position=(0, 0, 280))
+        occurrences["warning_header"] = assembly.add_part(solids["warning_header"], position=(0, 0, 280))
     occurrences["input_bell"] = assembly.add_part(solids["guard_bell"])
     occurrences["output_bell"] = assembly.add_part(
-        solids["guard_bell"], (0, 0, output_center),
-        (1, 0, 0, 0))
-    occurrences["input_button"] = assembly.add_part(solids["locking_button"], (0, 17, -61))
-    occurrences["output_button"] = assembly.add_part(solids["locking_button"], (0, 17, output_center + 61))
+        solids["guard_bell"], position=(0, 0, output_center),
+        orientation=(1, 0, 0, 0))
+    occurrences["input_button"] = assembly.add_part(solids["locking_button"], position=(0, 17, -61))
+    occurrences["output_button"] = assembly.add_part(solids["locking_button"], position=(0, 17, output_center + 61))
 
     bearing = _bearing_assembly(part, solids)
     _add_joint_hardware(assembly, solids, occurrences, "input", 0, bearing)
@@ -306,13 +306,13 @@ def build_joint_detail(solids):
     # The cartridge's circular pattern needs its solids registered in this
     # source Part. A second Part cannot pattern them across kernel sessions.
     detail_part = solids["cross"]._part
-    detail = detail_part.assembly("PTO_universal_joint_detail")
+    detail = detail_part.assembly(name="PTO_universal_joint_detail")
     detail.solve_after_every_constraint = False
     joints = {
         "input_yoke": detail.add_part(solids["input_yoke"]),
-        "input_tube_yoke": detail.add_part(solids["input_tube_yoke"], (0, 0, 0), FORK_CLOCK),
+        "input_tube_yoke": detail.add_part(solids["input_tube_yoke"], position=(0, 0, 0), orientation=FORK_CLOCK),
         "input_cross": detail.add_part(solids["cross"]),
-        "input_button": detail.add_part(solids["locking_button"], (0, 17, -61)),
+        "input_button": detail.add_part(solids["locking_button"], position=(0, 17, -61)),
     }
     bearing = _bearing_assembly(detail_part, solids, "needle_bearing_detail")
     _add_joint_hardware(detail, solids, joints, "input", 0, bearing)

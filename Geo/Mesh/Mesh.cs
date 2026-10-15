@@ -92,58 +92,70 @@ namespace Geo
                 out result.PrecisionPositions, out result.Triangles, out List<SourceTriangle> sources, null,
                 intersectionStrips, classifiedFragments, retainExteriorTrimCaps);
 
-            result.TrianglesEx = new List<MeshTriangle<T>>(result.Triangles.Count);
-
             result.Positions = converter.Convert(result.PrecisionPositions);
 
-            // Reuse corners only within a run of fragments from one source
-            // triangle. Reset at seams; isolated triangles need no cache work.
-            var corners = typeof(T) == typeof(TriangleVertexNormalUV)
-                ? new Dictionary<int, T>() : null;
-            MeshOrigin cachedOrigin = default;
-            int cachedTriangle = -1;
-
+            // Corner attributes of one result triangle depend only on its source
+            // triangle, so runs of fragments from the same source triangle are
+            // independent. A run shares a corner cache; isolated triangles need none.
             int numTriangles = result.Triangles.Count;
+            var extTriangles = new MeshTriangle<T>[numTriangles];
+            var runStarts = new List<int>();
             for (int i = 0; i < numTriangles; i++)
             {
-                Tri triangle = result.Triangles[i];
-
-                SourceTriangle s = sources[i];
-                bool sameSource = s.MeshOrigin == cachedOrigin && s.SourceTriangleIndex == cachedTriangle;
-                bool reuseCorners = corners != null && (sameSource || (i + 1 < numTriangles &&
-                    sources[i + 1].MeshOrigin == s.MeshOrigin && sources[i + 1].SourceTriangleIndex == s.SourceTriangleIndex));
-                if (!sameSource)
-                {
-                    corners?.Clear();
-                    cachedOrigin = s.MeshOrigin;
-                    cachedTriangle = s.SourceTriangleIndex;
-                }
-                var source = s.MeshOrigin switch
-                {
-                    MeshOrigin.MeshA => a,
-                    MeshOrigin.MeshB => b,
-                    _ => throw new InvalidOperationException(
-                        $"Boolean result triangle has unknown source mesh origin '{s.MeshOrigin}'.")
-                };
-                var sourceExtTriangle = source.TrianglesEx[s.SourceTriangleIndex];
-
-                T Corner(int point)
-                {
-                    if (reuseCorners && corners.TryGetValue(point, out var cached)) return cached;
-                    var vertex = sourceExtTriangle.InterpolateExact(InterpolationHelpers.GetExactBarycentricWeights(
-                        result.PrecisionPositions[point], source.Triangles[s.SourceTriangleIndex], source.PrecisionPositions));
-                    if (reuseCorners) corners.Add(point, vertex);
-                    return vertex;
-                }
-
-                MeshTriangle<T> resultExtTriangle;
-                resultExtTriangle.V0 = Corner(triangle.A);
-                resultExtTriangle.V1 = Corner(triangle.B);
-                resultExtTriangle.V2 = Corner(triangle.C);
-                resultExtTriangle.GroupId = sourceExtTriangle.GroupId;
-
-                result.TrianglesEx.Add(resultExtTriangle);
+                if (i == 0 || sources[i].MeshOrigin != sources[i - 1].MeshOrigin ||
+                    sources[i].SourceTriangleIndex != sources[i - 1].SourceTriangleIndex)
+                    runStarts.Add(i);
             }
+            runStarts.Add(numTriangles);
+
+            bool cacheCorners = typeof(T) == typeof(TriangleVertexNormalUV);
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo failure = null;
+            ParallelEx.ForLoadBalanced(0, runStarts.Count - 1, run =>
+            {
+                if (Volatile.Read(ref failure) != null) return;
+                try
+                {
+                    int first = runStarts[run], end = runStarts[run + 1];
+                    var corners = cacheCorners && end - first > 1 ? new Dictionary<int, T>() : null;
+                    SourceTriangle s = sources[first];
+                    var source = s.MeshOrigin switch
+                    {
+                        MeshOrigin.MeshA => a,
+                        MeshOrigin.MeshB => b,
+                        _ => throw new InvalidOperationException(
+                            $"Boolean result triangle has unknown source mesh origin '{s.MeshOrigin}'.")
+                    };
+                    var sourceExtTriangle = source.TrianglesEx[s.SourceTriangleIndex];
+
+                    T Corner(int point)
+                    {
+                        if (corners != null && corners.TryGetValue(point, out var cached)) return cached;
+                        var vertex = sourceExtTriangle.InterpolateExact(InterpolationHelpers.GetExactBarycentricWeights(
+                            result.PrecisionPositions[point], source.Triangles[s.SourceTriangleIndex], source.PrecisionPositions));
+                        corners?.Add(point, vertex);
+                        return vertex;
+                    }
+
+                    for (int i = first; i < end; i++)
+                    {
+                        Tri triangle = result.Triangles[i];
+                        MeshTriangle<T> resultExtTriangle;
+                        resultExtTriangle.V0 = Corner(triangle.A);
+                        resultExtTriangle.V1 = Corner(triangle.B);
+                        resultExtTriangle.V2 = Corner(triangle.C);
+                        resultExtTriangle.GroupId = sourceExtTriangle.GroupId;
+                        extTriangles[i] = resultExtTriangle;
+                    }
+                }
+                catch (Exception e)
+                {
+                    // Surface the original exception type, as the sequential loop did.
+                    System.Threading.Interlocked.CompareExchange(ref failure,
+                        System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e), null);
+                }
+            });
+            failure?.Throw();
+            result.TrianglesEx = new List<MeshTriangle<T>>(extTriangles);
 
             return result;
         }

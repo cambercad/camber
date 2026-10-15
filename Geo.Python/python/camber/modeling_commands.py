@@ -7,6 +7,7 @@ import inspect
 import keyword
 import math
 import re
+from typing import Literal, get_args, get_origin
 
 from . import api
 
@@ -89,8 +90,10 @@ def simple_value(node):
         return (allowed
                 and all(simple_value(n) for n in node.args)
                 and all(k.arg and simple_value(k.value) for k in node.keywords))
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.MatMult):
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.MatMult, ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod)):
         return simple_value(node.left) and simple_value(node.right)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        return simple_value(node.operand)
     try:
         ast.literal_eval(node)
         return True
@@ -117,7 +120,8 @@ class Operation:
 
     @property
     def label(self):
-        return self.method.replace("_", " ").capitalize() if self.method else self.owner.__name__
+        return (self.call_name.replace("_", " ").capitalize() if self.call_name else
+                self.method.replace("_", " ").capitalize() if self.method else self.owner.__name__)
 
     @property
     def description(self):
@@ -153,6 +157,8 @@ class Operation:
         # Literal values are the public API's enum vocabulary.
         if parameter.annotation is inspect.Parameter.empty:
             return ()
+        if get_origin(parameter.annotation) is Literal:
+            return get_args(parameter.annotation)
         annotation = parameter.annotation if isinstance(parameter.annotation, str) else str(parameter.annotation)
         try:
             tree = ast.parse(annotation, mode="eval")
@@ -300,7 +306,7 @@ class Operation:
                         raise ValueError("Enter two finite sketch-plane coordinates")
                 if isinstance(value, api.Frame):
                     validate_frame(value)
-            except (ValueError, TypeError, SyntaxError, NameError, IndexError, AttributeError, OverflowError) as exc:
+            except (ValueError, TypeError, SyntaxError, NameError, IndexError, AttributeError, ArithmeticError) as exc:
                 errors[parameter.name] = "Enter a valid value" if isinstance(exc, SyntaxError) else str(exc)
         if self.key == "Part.loft":
             for end in ("start", "end"):
@@ -323,6 +329,24 @@ class Operation:
                 validate_frame(api.Frame(**vectors))
             except ValueError as exc:
                 errors.update({key: str(exc) for key in ("x", "y", "z")})
+        if not errors and self.call_name:
+            from .modeling_parameters import GENERATORS, named_parameter
+            function = GENERATORS.get(self.call_name)
+            if function or self.call_name == "named_parameter":
+                arguments = {}
+                for parameter in self.parameters:
+                    node = self.parse_field(parameter, values.get(parameter.name, ""), available)
+                    if node is not None:
+                        arguments[parameter.name] = field_value(node, available)
+                try:
+                    if function:
+                        arguments.pop("part", None)
+                        arguments.pop("name", None)
+                        function.parameter_type(**arguments)
+                    else:
+                        named_parameter(**arguments)
+                except (TypeError, ValueError) as exc:
+                    errors["__parameters"] = str(exc)
         return errors
 
 
@@ -345,6 +369,10 @@ def discover_operations():
     from .modeling import load_component
     command = Operation(api.Part, "", load_component, inspect.signature(load_component), True, "load_component")
     operations[command.key] = command
+    from .modeling_parameters import named_parameter, GENERATORS
+    for function in (named_parameter, *GENERATORS.values()):
+        command = Operation(api.Part, "", function, inspect.signature(function), True, function.__name__)
+        operations[command.key] = command
     return operations
 
 

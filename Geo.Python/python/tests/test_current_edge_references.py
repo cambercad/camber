@@ -21,7 +21,7 @@ class CurrentEdgeReferenceTests(unittest.TestCase):
         current = next(name for name in carrier.patch_names
                        if "hub-Circle1" in name and not name.endswith("hub-Circle1"))
         self.assertNotIn("#current=", current)
-        occurrence = part.assembly("assembly").add_part(carrier)
+        occurrence = part.assembly(name="assembly").add_part(carrier)
         datum = occurrence.axis(current)
         self.assertEqual(current, datum.reference)
 

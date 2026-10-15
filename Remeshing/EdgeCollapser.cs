@@ -53,6 +53,7 @@ namespace Remeshing
     public static class EdgeCollapser
     {
         [ThreadStatic] private static int[] s_listOpScratch;
+        [ThreadStatic] private static Dictionary<int, FullTriangle> affectedScratch;
 
         private static int[] EnsureListScratch(int minSize)
         {
@@ -357,6 +358,8 @@ namespace Remeshing
                 
                 // Reused across dirty-vertex iterations; grown when a higher valence appears.
                 Rat3Hybrid[] collinearDirectionScratch = Array.Empty<Rat3Hybrid>();
+                List<int> groupsScratchA = new List<int>(4);
+                List<int> groupsScratchB = new List<int>(4);
 
                 // Process dirty vertices until none remain
                 while (dirtyQueue.Count > 0)
@@ -389,17 +392,18 @@ namespace Remeshing
                             continue;
 
                         // Safety check: both edges (x,i) and (i,y) must be adjacent to the same groups
-                        HashSet<int> groupsEdgeXI = GetAdjacentGroups(x, i, connectedTriangles, triangles);
-                        HashSet<int> groupsEdgeIY = GetAdjacentGroups(i, y, connectedTriangles, triangles);
-                        
-                        if (!AreSameGroups(groupsEdgeXI, groupsEdgeIY))
+                        groupsScratchA.Clear();
+                        groupsScratchB.Clear();
+                        AppendAdjacentGroups(x, i, connectedTriangles, triangles, groupsScratchA);
+                        AppendAdjacentGroups(i, y, connectedTriangles, triangles, groupsScratchB);
+
+                        if (!SameGroupIds(groupsScratchA, groupsScratchB))
                             continue; // Skip this collinear edge - groups don't match
 
                         // Collinearity of two edges does not make a junction of
                         // additional face groups removable. Its other incident
                         // patches would acquire vertices/attributes from another face.
-                        if (connectedTriangles[i].Any(index => triangles[index].A >= 0 &&
-                            !groupsEdgeXI.Contains(triangles[index].GroupId)))
+                        if (HasForeignGroup(connectedTriangles[i], triangles, groupsScratchA))
                             continue;
 
                         var dx = (points[x] - pI).LengthSquared();
@@ -596,39 +600,77 @@ namespace Remeshing
         /// Gets the set of group IDs adjacent to an edge (a,b)
         /// Returns the groups of triangles that contain this edge
         /// </summary>
-        private static HashSet<int> GetAdjacentGroups(int a, int b, List<int>[] connectedTriangles, IList<TriWithGroupId> triangles)
+        private static void AppendAdjacentGroups(int a, int b, List<int>[] connectedTriangles, IList<TriWithGroupId> triangles, List<int> groups)
         {
-            HashSet<int> groups = new HashSet<int>();
-            
-            // Find triangles containing vertex a
             var trisA = connectedTriangles[a];
-            if (trisA != null)
+            if (trisA == null)
+                return;
+
+            for (int i = 0; i < trisA.Count; i++)
             {
-                foreach (int triIdx in trisA)
+                var tri = triangles[trisA[i]];
+                if (tri.A < 0 || !tri.ContainsAll(a, b))
+                    continue;
+
+                int groupId = tri.GroupId;
+                bool seen = false;
+                for (int k = 0; k < groups.Count; k++)
                 {
-                    var tri = triangles[triIdx];
-                    if (tri.A < 0) continue; // Skip deleted triangles
-                    
-                    // Check if this triangle contains both a and b (i.e., contains the edge)
-                    if (tri.ContainsAll(a, b))
+                    if (groups[k] == groupId)
                     {
-                        groups.Add(tri.GroupId);
+                        seen = true;
+                        break;
                     }
                 }
+                if (!seen)
+                    groups.Add(groupId);
             }
-            
-            return groups;
         }
 
-        /// <summary>
-        /// Checks if two sets of group IDs are the same (order doesn't matter)
-        /// </summary>
-        private static bool AreSameGroups(HashSet<int> groups1, HashSet<int> groups2)
+        private static bool SameGroupIds(List<int> groups1, List<int> groups2)
         {
             if (groups1.Count != groups2.Count)
                 return false;
-            
-            return groups1.SetEquals(groups2);
+
+            for (int i = 0; i < groups1.Count; i++)
+            {
+                int groupId = groups1[i];
+                bool found = false;
+                for (int j = 0; j < groups2.Count; j++)
+                {
+                    if (groups2[j] == groupId)
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found)
+                    return false;
+            }
+            return true;
+        }
+
+        private static bool HasForeignGroup(List<int> incidentTriangles, IList<TriWithGroupId> triangles, List<int> allowedGroups)
+        {
+            for (int i = 0; i < incidentTriangles.Count; i++)
+            {
+                var tri = triangles[incidentTriangles[i]];
+                if (tri.A < 0)
+                    continue;
+
+                bool allowed = false;
+                for (int k = 0; k < allowedGroups.Count; k++)
+                {
+                    if (allowedGroups[k] == tri.GroupId)
+                    {
+                        allowed = true;
+                        break;
+                    }
+                }
+                if (!allowed)
+                    return true;
+            }
+            return false;
         }
 
         private static List<int> Copy(List<int> source)
@@ -701,7 +743,6 @@ namespace Remeshing
                 for (int i = 0; i < triUnionCount; ++i)
                 {
                     TriWithGroupId tri = triangles[scratch[i]];
-                    var normal = Rat3Hybrid.Cross(points[tri.B] - points[tri.A], points[tri.C] - points[tri.A]);
                     bool containsA = tri.Contains(keepOrMove);
                     bool containsB = tri.Contains(remove);
 
@@ -722,24 +763,18 @@ namespace Remeshing
                     // This ensures the triangle orientation is preserved after collapse
                     if (c < 3)
                     {
-                        if (containsA)
-                        {
-                            var n = Normal(points, tri, keepOrMove, newDestination);
-                            var dot = Rat3Hybrid.Dot(n, normal);
-                            // Reject if normal flips (dot <= 0) or triangle becomes degenerate (n is zero)
-                            if (dot.Sign() <= 0)
-                                return false;
-                        }
-                        else if (containsB)
-                        {
-                            var n = Normal(points, tri, remove, newDestination);
-                            var dot = Rat3Hybrid.Dot(n, normal);
-                            // Reject if normal flips (dot <= 0) or triangle becomes degenerate (n is zero)
-                            if (dot.Sign() <= 0)
-                                return false;
-                        }
-                        else
-                            throw new Exception();
+                        int moved = containsA ? keepOrMove : containsB ? remove : throw new Exception();
+                        var a = points[tri.A];
+                        var b = points[tri.B];
+                        var pointC = points[tri.C];
+                        if (tri.A == moved) a = newDestination;
+                        if (tri.B == moved) b = newDestination;
+                        if (tri.C == moved) pointC = newDestination;
+                        // Reject a flipped or collapsed normal. The sign matches Dot(newCross, oldCross).
+                        var oldU = points[tri.B] - points[tri.A];
+                        var oldV = points[tri.C] - points[tri.A];
+                        if (Rat3Hybrid.SignOfCrossDot(b - a, pointC - a, oldU, oldV) <= 0)
+                            return false;
                     }
                     else
                         ++counter;
@@ -753,7 +788,11 @@ namespace Remeshing
             // User-provided validation callback - build list of affected triangles in post-collapse form
             if (validateCollapseCallback != null)
             {
-                Dictionary<int, FullTriangle> affectedTriangles = new Dictionary<int, FullTriangle>();
+                // The candidate map is only valid for the duration of the callback, so one
+                // per-thread instance is reused instead of allocating a table of 200+ byte
+                // entries for every attempted collapse.
+                Dictionary<int, FullTriangle> affectedTriangles = affectedScratch ??= new Dictionary<int, FullTriangle>(16);
+                affectedTriangles.Clear();
                 
                 for (int i = 0; i < triUnionCount; ++i)
                 {
@@ -925,19 +964,5 @@ namespace Remeshing
             return true;
         }
 
-        private static Rat3Hybrid Normal(IList<Rat3Hybrid> points, TriWithGroupId tri, int id, Rat3Hybrid p)
-        {
-            var a = points[tri.A];
-            var b = points[tri.B];
-            var c = points[tri.C];
-            if (tri.A == id)
-                a = p;
-            if (tri.B == id)
-                b = p;
-            if (tri.C == id)
-                c = p;
-
-            return Rat3Hybrid.Cross(b - a, c - a);
-        }
     }
 }

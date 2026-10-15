@@ -48,7 +48,7 @@ from .api import (
     set_progress_log,
 )
 
-def show(obj, title="Camber", *, colors=None, checker=None):
+def show(obj, *, title="Camber", colors=None, checker=None):
     """Open the CAD viewer. ``checker=True`` shows UV checks with any palette.
 
     ``checker=None`` preserves the default: on unless custom colors are supplied.

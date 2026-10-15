@@ -35,4 +35,22 @@ public class SketchSolveResultTests : IDisposable
             Assert.Equal(new Vec2D(2, 0), line.CEnd.Evaluate());
         }
     }
+
+    [Fact]
+    public void FreeLineKeepsItsParametersOutsideTheReducedSystem()
+    {
+        var api = new GeoAPI(new Box3D(new Vec3D(-10), new Vec3D(10)), .01);
+        var sketch = api.GetConstraintSketcher(DefaultPlanes.OriginXY, "constraints");
+        sketch.SolveAfterEveryConstraint = false;
+        sketch.AddCLine(new Vec2D(0, 0), new Vec2D(2, 0));
+
+        sketch.CountSketchSystem(out int parameters, out int equations);
+        var reduced = sketch.SolveConstraintsDetailed();
+
+        Assert.Equal(4, parameters);
+        Assert.Equal(0, equations);
+        Assert.True(reduced.Converged);
+        Assert.Equal(0, reduced.NumParameters);
+        Assert.Equal(0, reduced.NumEquations);
+    }
 }

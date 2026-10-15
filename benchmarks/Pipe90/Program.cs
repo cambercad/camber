@@ -9,15 +9,19 @@ using GeoCore;
 // Same dimensions, tolerance and feature sequence as examples/standalone/pipe.py.
 // Run: dotnet run --project benchmarks/Pipe90 -c Release
 int runs = args.Length == 0 ? 1 : int.Parse(args[0]);
+if (Environment.GetEnvironmentVariable("PIPE90_ALLOC") == "1") AllocListener.Start();
 for (int run = 0; run < runs; run++)
 {
     GeoAPI.Clear();
     Console.WriteLine($"run={run + 1}");
     Run();
 }
+AllocListener.Report();
 
 static void Run()
 {
+    var total = Stopwatch.StartNew();
+    var stage = Stopwatch.StartNew();
     var api = new GeoAPI(new Box3D(new Vec3D(-1000), new Vec3D(1000)), .1);
     const string name = "pipe";
     var guide = api.GetPlotterSketcher(DefaultPlanes.OriginXY, "guide");
@@ -30,6 +34,7 @@ static void Run()
     profile.AddCircle(new Vec2D(0, 0), 145).Name = "outer";
     profile.AddCircle(new Vec2D(0, 0), 105).Name = "inner";
     var pipe = api.ExtrudeAlongSketch(profile, guide, name: name);
+    Stage("sweep", stage, pipe);
 
     var bottom = api.GetPlotterSketcher("pipe-ExtrudeBottom", "bottom_profile");
     var top = api.GetPlotterSketcher("pipe-ExtrudeTop", "top_profile");
@@ -37,8 +42,10 @@ static void Run()
     AddFlange(top);
     var bottomSolid = api.ExtrudeTwoSides(bottom, 0, 50, name: "bottom_flange");
     var topSolid = api.ExtrudeTwoSides(top, 50, 0, name: "top_flange");
+    Stage("flange_extrude", stage, bottomSolid);
     pipe = api.Boolean(pipe, bottomSolid, BooleanOp.Union, name);
     pipe = api.Boolean(pipe, topSolid, BooleanOp.Union, name);
+    Stage("flange_union", stage, pipe);
     var edges = new List<string>();
     foreach (string flange in new[] { "bottom_flange", "top_flange" })
     {
@@ -47,23 +54,26 @@ static void Run()
         edges.Add($"[{flange}-east,{flange}-north]");
         edges.Add($"[{flange}-north,{flange}-west]");
     }
-    var timer = Stopwatch.StartNew();
     pipe = api.Fillet(pipe, edges, 20, name: name);
-    Console.WriteLine($"fillet_seconds={timer.Elapsed.TotalSeconds:F3}");
+    Stage("fillet", stage, pipe);
     Fingerprint("fillet", pipe);
+    Stage("fillet_fingerprint", stage, pipe);
 
     CutBolts(bottom.CoordinateSystem, "bottom_counterbores", 30, 10, true);
     CutBolts(bottom.CoordinateSystem, "bottom_holes", 15, 50, true);
     CutBolts(top.CoordinateSystem, "top_counterbores", 30, 10, false);
     CutBolts(top.CoordinateSystem, "top_holes", 15, 50, false);
-    timer.Restart();
+    Stage("bolt_cuts", stage, pipe);
     pipe = api.Chamfer(pipe, new List<string>
     {
         "[pipe-outer-h_line,bottom_flange-ExtrudeBottom]",
         "[pipe-outer-v_line,top_flange-ExtrudeTop]"
     }, 10, name: name);
-    Console.WriteLine($"chamfer_seconds={timer.Elapsed.TotalSeconds:F3}");
+    Stage("chamfer", stage, pipe);
     Fingerprint("chamfer", pipe);
+    Stage("chamfer_fingerprint", stage, pipe);
+    Console.WriteLine($"total_seconds={total.Elapsed.TotalSeconds:F3}");
+    Console.WriteLine($"gc gen0={GC.CollectionCount(0)} gen1={GC.CollectionCount(1)} gen2={GC.CollectionCount(2)} pause_s={GC.GetTotalPauseDuration().TotalSeconds:F2} alloc_gb={GC.GetTotalAllocatedBytes() / 1e9:F2}");
 
     void CutBolts(CoordinateSystem frame, string sketchName, double radius, double depth, bool isBottom)
     {
@@ -74,6 +84,12 @@ static void Run()
             name: sketchName + "_cutter");
         pipe = api.Boolean(pipe, cutter, BooleanOp.Subtract, name);
     }
+}
+
+static void Stage(string name, Stopwatch stage, AnchorMesh body)
+{
+    Console.WriteLine($"{name}_seconds={stage.Elapsed.TotalSeconds:F3} triangles={body.Mesh.Triangles.Count}");
+    stage.Restart();
 }
 
 static void AddFlange(PlotterSketcherCoordSys sketch)
