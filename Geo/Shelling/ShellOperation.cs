@@ -17,10 +17,15 @@ internal sealed class ShellOperation
         faces ??= new List<string>();
         source.EnsureCoplanarPostProcessed();
         var selected = new HashSet<int>();
+        // Distinct aliases of one fused face (left-ExtrudeTop, right-ExtrudeTop) may be
+        // listed together. Repeating the same name, or its mesh-qualified form, fails.
         var seenText = new HashSet<string>(StringComparer.Ordinal);
+        string qualifier = source.Name + ":";
         foreach (var face in faces)
         {
-            if (!seenText.Add(face))
+            string unqualified = face != null && face.StartsWith(qualifier, StringComparison.Ordinal)
+                ? face.Substring(qualifier.Length) : face;
+            if (!seenText.Add(unqualified))
                 throw new ArgumentException($"Shell face '{face}' was selected more than once.", nameof(faces));
             string local = source.ResolveLocalPatchNamePublic(face);
             if (local == null || !source.extendedNameToGroupId.TryGetValue(local, out var id))

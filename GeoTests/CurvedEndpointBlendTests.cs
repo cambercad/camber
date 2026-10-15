@@ -49,8 +49,11 @@ public sealed class CurvedEndpointBlendTests : IDisposable
         {
             string a = solid.groupIdToExtendedName[edge.GroupIdA];
             string b = solid.groupIdToExtendedName[edge.GroupIdB];
-            return (a.Contains("cap-ExtrudeTop") && b.Contains("rib-Line")) ||
-                (b.Contains("cap-ExtrudeTop") && a.Contains("rib-Line"));
+            // Fused faces carry combined names (cap-Line4&rib-Line4). Only a pure rib
+            // side wall forms the concave rib/cap root edge; the fused outer wall is convex.
+            static bool RibSide(string n) => n.Contains("rib-Line") && !n.Contains("cap-");
+            return (a.Contains("cap-ExtrudeTop") && RibSide(b)) ||
+                (b.Contains("cap-ExtrudeTop") && RibSide(a));
         });
         Assert.True(index >= 0);
         var edges = new List<string> { solid.GetEdgeReference(index) };

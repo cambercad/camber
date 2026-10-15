@@ -384,12 +384,36 @@ namespace Geo
                     continue;
                 }
 
-                var faces = new FaceLineage[oldIds.Count];
+                // Blend end closures (BlendCorner_/ChamferCorner_) only complete the
+                // neighbouring face; they never contribute to the identity of a face
+                // they were fused into.
+                var faces = new List<FaceLineage>(oldIds.Count);
                 for (int i = 0; i < oldIds.Count; i++)
-                    faces[i] = FaceLineages[oldIds[i]];
+                {
+                    FaceLineage lineage = FaceLineages[oldIds[i]];
+                    if (!IsBlendClosureLineage(lineage))
+                        faces.Add(lineage);
+                }
+                if (faces.Count == 0)
+                    for (int i = 0; i < oldIds.Count; i++)
+                        faces.Add(FaceLineages[oldIds[i]]);
                 merged[pair.Key] = FaceLineage.Merge(faces);
             }
             return merged;
+        }
+
+        private static bool IsBlendClosureLineage(FaceLineage lineage)
+        {
+            if (lineage.Roots.Count == 0)
+                return false;
+            for (int i = 0; i < lineage.Roots.Count; i++)
+            {
+                string root = lineage.Roots[i];
+                if (!root.StartsWith(GeoMeta.EntityNaming.BlendCornerPrefix, StringComparison.Ordinal)
+                    && !root.StartsWith(GeoMeta.EntityNaming.ChamferCornerPrefix, StringComparison.Ordinal))
+                    return false;
+            }
+            return true;
         }
 
         /// <summary>
