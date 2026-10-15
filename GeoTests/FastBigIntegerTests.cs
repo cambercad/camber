@@ -198,4 +198,38 @@ public class FastBigIntegerTests
         BigInteger value = new(bytes, isUnsigned: true);
         return random.Next(2) == 0 ? value : -value;
     }
+
+    [Fact]
+    public void LehmerGreatestCommonDivisorMatchesBigInteger()
+    {
+        var random = new Random(777);
+        BigInteger RandomBig(int maxBits)
+        {
+            int bits = random.Next(129, maxBits + 1);
+            var bytes = new byte[(bits + 7) / 8 + 1];
+            random.NextBytes(bytes);
+            bytes[^1] = 0;
+            var value = new BigInteger(bytes) & ((BigInteger.One << bits) - 1);
+            value |= BigInteger.One << (bits - 1);
+            return random.Next(2) == 0 ? value : -value;
+        }
+        BigInteger fibA = 1, fibB = 1;
+        var fibs = new List<BigInteger>();
+        for (int i = 0; i < 1200; i++) { fibs.Add(fibA); (fibA, fibB) = (fibB, fibA + fibB); }
+        for (int i = 0; i < 20000; i++)
+        {
+            BigInteger a, b;
+            switch (random.Next(6))
+            {
+                case 0: a = RandomBig(400); b = RandomBig(400); break;
+                case 1: { var g = RandomBig(300); a = g * RandomBig(300); b = g * RandomBig(300); break; }
+                case 2: a = RandomBig(2000); b = RandomBig(2000); break;
+                case 3: { int k = random.Next(150, 900); a = fibs[k]; b = fibs[k - random.Next(1, 40)]; break; }
+                case 4: a = (BigInteger.One << random.Next(130, 600)) * RandomBig(200); b = (BigInteger.One << random.Next(130, 600)) * RandomBig(200); break;
+                default: a = RandomBig(300); b = a * random.Next(1, 50) + random.Next(-3, 4); break;
+            }
+            Assert.Equal(BigInteger.GreatestCommonDivisor(a, b),
+                FastBigInteger.GreatestCommonDivisor(new FastBigInteger(a), new FastBigInteger(b)).ToBigInteger());
+        }
+    }
 }

@@ -365,7 +365,113 @@ public readonly struct FastBigInteger : IEquatable<FastBigInteger>, IComparable<
             FastBigInteger large = a.Length <= b.Length ? b : a;
             return GreatestCommonDivisor(small, large % small);
         }
-        return new FastBigInteger(BigInteger.GreatestCommonDivisor(a.ToBigInteger(), b.ToBigInteger()));
+        return LehmerGreatestCommonDivisor(a, b);
+    }
+
+    private const int LehmerApproximationBits = 60;
+
+    /// <summary>
+    /// Lehmer's GCD on stack limbs: the leading 60 bits drive many Euclid steps at once, and the
+    /// accumulated cofactors are applied to the full numbers in one linear-combination pass.
+    /// Exact; allocates only the result (operands up to 128 limbs stay on the stack).
+    /// </summary>
+    public static FastBigInteger LehmerGreatestCommonDivisor(FastBigInteger a, FastBigInteger b)
+    {
+        int n = Math.Max(a.Length, b.Length);
+        Span<ulong> first = n <= 128 ? stackalloc ulong[n] : new ulong[n];
+        Span<ulong> second = n <= 128 ? stackalloc ulong[n] : new ulong[n];
+        Span<ulong> quotient = n <= 128 ? stackalloc ulong[n] : new ulong[n];
+        first.Clear();
+        second.Clear();
+        a.CopyLimbsTo(first);
+        b.CopyLimbsTo(second);
+        int nx = TrimmedLength(first, a.Length), ny = TrimmedLength(second, b.Length);
+        Span<ulong> x = first, y = second;
+        if (CompareLimbs(x, nx, y, ny) < 0)
+        {
+            Span<ulong> swap = x; x = y; y = swap;
+            (nx, ny) = (ny, nx);
+        }
+
+        while (ny > 2)
+        {
+            int shift = nx * 64 - BitOperations.LeadingZeroCount(x[nx - 1]) - LehmerApproximationBits;
+            long xh = LeadingBits(x, nx, shift), yh = LeadingBits(y, ny, shift);
+            long cofactorA = 1, cofactorB = 0, cofactorC = 0, cofactorD = 1;
+            while (true)
+            {
+                long denominatorC = yh + cofactorC, denominatorD = yh + cofactorD;
+                if (denominatorC == 0 || denominatorD == 0) break;
+                long q = (xh + cofactorA) / denominatorC;
+                if (q != (xh + cofactorB) / denominatorD) break;
+                long t = cofactorA - q * cofactorC; cofactorA = cofactorC; cofactorC = t;
+                t = cofactorB - q * cofactorD; cofactorB = cofactorD; cofactorD = t;
+                t = xh - q * yh; xh = yh; yh = t;
+            }
+
+            if (cofactorB == 0)
+            {
+                // No progress from the leading bits: one exact division step.
+                DivideMagnitudes(x.Slice(0, nx), y.Slice(0, ny), quotient.Slice(0, nx - ny + 1));
+                nx = TrimmedLength(x, ny);
+            }
+            else
+            {
+                // x' = A*x + B*y and y' = C*x + D*y; both are non-negative and smaller than x.
+                Int128 carryX = 0, carryY = 0;
+                for (int i = 0; i < nx; i++)
+                {
+                    Int128 xi = x[i], yi = i < ny ? y[i] : 0;
+                    Int128 newX = cofactorA * xi + cofactorB * yi + carryX;
+                    Int128 newY = cofactorC * xi + cofactorD * yi + carryY;
+                    x[i] = (ulong)(newX & ulong.MaxValue);
+                    y[i] = (ulong)(newY & ulong.MaxValue);
+                    carryX = newX >> 64;
+                    carryY = newY >> 64;
+                }
+                if (carryX != 0 || carryY != 0)
+                    throw new InvalidOperationException("Lehmer GCD cofactors produced an out-of-range value.");
+                nx = TrimmedLength(x, nx);
+                ny = TrimmedLength(y, nx);
+            }
+            if (CompareLimbs(x, nx, y, ny) < 0)
+            {
+                Span<ulong> swap = x; x = y; y = swap;
+                (nx, ny) = (ny, nx);
+            }
+        }
+        return GreatestCommonDivisor(new FastBigInteger(x.Slice(0, nx), false), new FastBigInteger(y.Slice(0, ny), false));
+    }
+
+    private static int TrimmedLength(ReadOnlySpan<ulong> limbs, int length)
+    {
+        while (length > 0 && limbs[length - 1] == 0) length--;
+        return length;
+    }
+
+    private static int CompareLimbs(ReadOnlySpan<ulong> x, int nx, ReadOnlySpan<ulong> y, int ny)
+    {
+        if (nx != ny) return nx > ny ? 1 : -1;
+        for (int i = nx - 1; i >= 0; i--)
+            if (x[i] != y[i]) return x[i] > y[i] ? 1 : -1;
+        return 0;
+    }
+
+    /// <summary>floor(value / 2^shift), which the caller guarantees fits 60 bits.</summary>
+    private static long LeadingBits(ReadOnlySpan<ulong> limbs, int length, int shift)
+    {
+        int word = shift >> 6, bit = shift & 63;
+        ulong low = word < length ? limbs[word] : 0;
+        ulong high = word + 1 < length ? limbs[word + 1] : 0;
+        ulong value = bit == 0 ? low : (low >> bit) | (high << (64 - bit));
+        return (long)(value & ((1UL << LehmerApproximationBits) - 1));
+    }
+
+    private void CopyLimbsTo(Span<ulong> destination)
+    {
+        int length = Length;
+        if (length == 0) return;
+        CopyLimbs(this, destination.Slice(0, length));
     }
 
     private static FastBigInteger MultiplyByLimb(in FastBigInteger value, ulong limb, bool negative)
