@@ -127,6 +127,9 @@ public struct BigRational : IComparable<BigRational>, IComparable, IEquatable<Bi
         Simplify();
     }
 
+    internal static BigRational FromFraction(FastBigInteger numerator, FastBigInteger denominator) =>
+        new BigRational(numerator, denominator);
+
     private BigRational(FastBigInteger numerator, FastBigInteger denominator)
     {
         if (denominator.IsZero) throw new DivideByZeroException();

@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 
 using Rat = GeoCore.BigRational;
 
@@ -833,6 +833,78 @@ namespace GeoCore
         {
             if (denominator == common) return numerator;
             return numerator * (common / denominator);
+        }
+
+        /// <summary>
+        /// Splits a finite double into signed significand and exponent: value = significand * 2^exponent.
+        /// </summary>
+        private static void DecomposeDouble(double value, out long significand, out int exponent)
+        {
+            if (!double.IsFinite(value))
+                throw new ArgumentException("Argument must be a finite number.", nameof(value));
+            long bits = BitConverter.DoubleToInt64Bits(value);
+            int exponentBits = (int)((bits >> 52) & 0x7ff);
+            long mantissa = bits & 0xfffffffffffffL;
+            if (exponentBits == 0)
+                exponent = -1074;
+            else
+            {
+                mantissa |= 1L << 52;
+                exponent = exponentBits - 1075;
+            }
+            significand = bits < 0 ? -mantissa : mantissa;
+        }
+
+        /// <summary>
+        /// The double nearest (as <see cref="ToDouble"/> rounds) to the exact value of
+        /// <c>a * wx + b * wy + c * wz</c>, where the weights share one denominator, as barycentric
+        /// weights of a triangle do. All three terms are put over that denominator and a power of
+        /// two, so no greatest common divisors are needed until the single final reduction.
+        /// Returns false (and nothing is computed) when the weights do not share a denominator.
+        /// </summary>
+        public static bool TryExactWeightedSum(double a, double b, double c,
+            in BigRationalHybrid wx, in BigRationalHybrid wy, in BigRationalHybrid wz, out double result)
+        {
+            result = 0;
+            GetFastNumDenom(wx, out var nx, out var denominator);
+            GetFastNumDenom(wy, out var ny, out var dy);
+            GetFastNumDenom(wz, out var nz, out var dz);
+            if (denominator != dy || denominator != dz)
+                return false;
+
+            DecomposeDouble(a, out long ma, out int ea);
+            DecomposeDouble(b, out long mb, out int eb);
+            DecomposeDouble(c, out long mc, out int ec);
+            // The lowest exponent of the non-zero terms is the shared power of two.
+            int lowest = int.MaxValue;
+            if (ma != 0) lowest = Math.Min(lowest, ea);
+            if (mb != 0) lowest = Math.Min(lowest, eb);
+            if (mc != 0) lowest = Math.Min(lowest, ec);
+            if (lowest == int.MaxValue)
+                return true; // all three are zero
+
+            FastBigInteger Term(long m, int e, in FastBigInteger weight)
+            {
+                if (m == 0) return default;
+                var product = new FastBigInteger(m) * weight;
+                return e == lowest ? product : product * FastBigInteger.PowerOfTwo(e - lowest);
+            }
+
+            FastBigInteger numerator = Term(ma, ea, nx) + Term(mb, eb, ny) + Term(mc, ec, nz);
+            FastBigInteger totalDenominator = denominator;
+            if (lowest >= 0)
+                numerator *= FastBigInteger.PowerOfTwo(lowest);
+            else
+                totalDenominator *= FastBigInteger.PowerOfTwo(-lowest);
+
+            Rat sum = Rat.FromFraction(numerator, totalDenominator);
+            sum.Simplify();
+            // Same conversion as Simplify followed by ToDouble on a hybrid value: integers that
+            // fit a long take the long path, everything else the rational conversion.
+            result = sum.FastDenominator.IsUnit && sum.FastNumerator.TryGetInt64(out long integer)
+                ? integer
+                : (double)sum;
+            return true;
         }
 
         private static void GetFastNumDenom(in BigRationalHybrid x, out FastBigInteger n, out FastBigInteger d)

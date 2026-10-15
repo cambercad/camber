@@ -26,6 +26,11 @@ namespace Geo
                 }
                 // Keep the complete affine combination exact until its one
                 // conversion to display UV, including constant seam values.
+                if (!double.IsFinite(a) || !double.IsFinite(b) || !double.IsFinite(c))
+                    throw new InvalidOperationException("Surface UV coordinates must be finite.");
+                // Barycentric weights share one denominator: sum over it without per-term GCDs.
+                if (BigRationalHybrid.TryExactWeightedSum(a, b, c, w.X, w.Y, w.Z, out double exactSum))
+                    return exactSum;
                 var value = Exact(a) * w.X + Exact(b) * w.Y + Exact(c) * w.Z;
                 value.Simplify();
                 return value.ToDouble();

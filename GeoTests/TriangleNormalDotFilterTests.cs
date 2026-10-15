@@ -135,4 +135,36 @@ public class TriangleNormalDotFilterTests
         }
         Assert.True(decided > 1000, "The filter should settle most random cases: " + decided);
     }
+
+    [Fact]
+    public void ExactWeightedSumMatchesTheGeneralRationalPath()
+    {
+        var random = new Random(31337);
+        double[] special = { 0, -0.0, 1, -1, .1, 1e-300, 4e15, -123456.789, double.Epsilon };
+        int shared = 0;
+        for (int i = 0; i < 6000; i++)
+        {
+            double Pick() => random.Next(4) == 0 ? special[random.Next(special.Length)]
+                : (random.NextDouble() - .5) * Math.Pow(10, random.Next(-6, 7));
+            double a = Pick(), b = Pick(), c = Pick();
+            // Barycentric-like weights: shared denominator, sometimes plain integers or huge values.
+            BigInteger denominator = random.Next(3) == 0 ? BigInteger.One
+                : new BigInteger(random.NextInt64(1, 1L << 55)) * (random.Next(2) == 0 ? 1 : BigInteger.Pow(10, 30)) + 1;
+            BigInteger N() => new BigInteger(random.NextInt64(-(1L << 50), 1L << 50)) * (random.Next(3) == 0 ? BigInteger.Pow(7, 40) : 1);
+            var wx = new BigRationalHybrid(N(), denominator);
+            var wy = new BigRationalHybrid(N(), denominator);
+            var wz = new BigRationalHybrid(N(), denominator);
+            var expected = BigRationalHybrid.FromDouble(a) * wx + BigRationalHybrid.FromDouble(b) * wy + BigRationalHybrid.FromDouble(c) * wz;
+            expected.Simplify();
+            if (BigRationalHybrid.TryExactWeightedSum(a, b, c, wx, wy, wz, out double actual))
+            {
+                shared++;
+                Assert.Equal(expected.ToDouble(), actual);
+            }
+        }
+        Assert.True(shared > 5000, shared.ToString());
+        // Different denominators are declined, never approximated.
+        Assert.False(BigRationalHybrid.TryExactWeightedSum(1, 2, 3, new BigRationalHybrid(1, 3), new BigRationalHybrid(1, 5),
+            new BigRationalHybrid(1, 7), out _));
+    }
 }
