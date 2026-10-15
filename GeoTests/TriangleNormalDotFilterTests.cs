@@ -122,6 +122,10 @@ public class TriangleNormalDotFilterTests
             }
             Assert.Equal(exact, BigRationalHybrid.SignOfOrient3D(a.X, a.Y, a.Z, b.X, b.Y, b.Z, c.X, c.Y, c.Z, d.X, d.Y, d.Z));
 
+            var exact2d = BigRationalHybrid.SignOfCrossProduct(a.X - c.X, b.Y - c.Y, a.Y - c.Y, b.X - c.X);
+            if (FloatFilter.TryOrient2DSign(a.X, a.Y, b.X, b.Y, c.X, c.Y, out int orient2d))
+                Assert.Equal(exact2d, orient2d);
+
             var adx = a.X - d.X; var ady = a.Y - d.Y; var bdx = b.X - d.X; var bdy = b.Y - d.Y; var cdx = c.X - d.X; var cdy = c.Y - d.Y;
             var result = (adx * adx + ady * ady) * (bdx * cdy - cdx * bdy) + (bdx * bdx + bdy * bdy) * (cdx * ady - adx * cdy)
                 + (cdx * cdx + cdy * cdy) * (adx * bdy - bdx * ady);

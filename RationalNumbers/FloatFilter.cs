@@ -109,6 +109,31 @@ public static class FloatFilter
     }
 
     /// <summary>
+    /// Sign of (a - c) x (b - c), i.e. the orientation of the 2D triangle (a, b, c); same convention
+    /// as <see cref="Rat2Hybrid.Orient2DSign"/>. False when undecided.
+    /// </summary>
+    public static bool TryOrient2DSign(
+        in BigRationalHybrid pax, in BigRationalHybrid pay,
+        in BigRationalHybrid pbx, in BigRationalHybrid pby,
+        in BigRationalHybrid pcx, in BigRationalHybrid pcy,
+        out int sign)
+    {
+        sign = 0;
+        if (!Load(in pax, out var ax) || !Load(in pay, out var ay) ||
+            !Load(in pbx, out var bx) || !Load(in pby, out var by) ||
+            !Load(in pcx, out var cx) || !Load(in pcy, out var cy))
+            return false;
+
+        Approx acx = ax - cx, bcx = bx - cx, acy = ay - cy, bcy = by - cy;
+        Approx determinant = acx * bcy - acy * bcx;
+        int certain = determinant.CertainSign();
+        if (certain == 2)
+            return false;
+        sign = certain;
+        return true;
+    }
+
+    /// <summary>
     /// Sign of the in-circle determinant (positive: d inside the circle through a, b, c in
     /// counterclockwise order), same formula as the Delaunay predicate. False when undecided.
     /// </summary>

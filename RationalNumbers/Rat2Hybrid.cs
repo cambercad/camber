@@ -94,6 +94,8 @@ namespace GeoCore
         /// <summary>Exact sign of <see cref="Orient2D"/>; faster when only the sign is needed.</summary>
         public static int Orient2DSign(in Rat2Hybrid a, in Rat2Hybrid b, in Rat2Hybrid c)
         {
+            if (FloatFilter.TryOrient2DSign(in a.X, in a.Y, in b.X, in b.Y, in c.X, in c.Y, out int filtered))
+                return filtered;
             var acx = a.X - c.X;
             var bcx = b.X - c.X;
             var acy = a.Y - c.Y;
