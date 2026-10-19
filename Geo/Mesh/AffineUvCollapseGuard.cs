@@ -25,28 +25,46 @@ internal sealed class AffineUvCollapseGuard(
         if (values == null)
         {
             values = new();
+            // Every vertex is a corner of several triangles; simplify its key only once.
+            var vertexKeys = new Rat3Hybrid[positions.Count];
+            var haveKey = new bool[positions.Count];
+            Rat3Hybrid KeyOf(int vertex)
+            {
+                if (!haveKey[vertex])
+                {
+                    vertexKeys[vertex] = Key(positions[vertex]);
+                    haveKey[vertex] = true;
+                }
+                return vertexKeys[vertex];
+            }
             for (int i = 0; i < triangles.Count; i++)
             {
                 var t = triangles[i];
                 var a = attributes[i];
                 if (affineGroups?.Contains(a.GroupId) == true) continue;
-                Add(a.GroupId, positions[t.A], a.V0.UV);
-                Add(a.GroupId, positions[t.B], a.V1.UV);
-                Add(a.GroupId, positions[t.C], a.V2.UV);
+                Add(a.GroupId, KeyOf(t.A), a.V0.UV);
+                Add(a.GroupId, KeyOf(t.B), a.V1.UV);
+                Add(a.GroupId, KeyOf(t.C), a.V2.UV);
             }
         }
         return values.GetValueOrDefault((group, Key(point)));
     }
 
-    private void Add(int group, Rat3Hybrid point, Vec2D uv)
+    private void Add(int group, Rat3Hybrid simplifiedPoint, Vec2D uv)
     {
-        var key = (group, Key(point));
+        var key = (group, simplifiedPoint);
         if (!values.TryGetValue(key, out var existing)) values.Add(key, uv);
         else if (existing != uv) values[key] = null;
     }
 
     internal bool Validate(Dictionary<int, FullTriangle> candidates)
     {
+        // All candidates of one collapse move the same vertex to the same position, so the same
+        // (group, point) is looked up once per incident triangle; remember the previous lookup.
+        bool haveLast = false;
+        int lastGroup = 0;
+        Rat3Hybrid lastPoint = default;
+        Vec2D? lastActual = null;
         foreach (var (index, candidate) in candidates)
         {
             if (affineGroups?.Contains(attributes[index].GroupId) == true) continue;
@@ -61,7 +79,17 @@ internal sealed class AffineUvCollapseGuard(
             bool Check(Rat3Hybrid point)
             {
                 if (point == a || point == b || point == c) return true;
-                var actual = Find(data.GroupId, point);
+                Vec2D? actual;
+                if (haveLast && lastGroup == data.GroupId && lastPoint == point)
+                    actual = lastActual;
+                else
+                {
+                    actual = Find(data.GroupId, point);
+                    haveLast = true;
+                    lastGroup = data.GroupId;
+                    lastPoint = point;
+                    lastActual = actual;
+                }
                 if (!actual.HasValue) return false;
                 var weights = InterpolationHelpers.GetBarycentricWeights(point, triangle, positions);
                 double wa = weights.X, wb = weights.Y, wc = weights.Z;

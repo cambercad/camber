@@ -2017,13 +2017,17 @@ Lofts an ordered list of profile sketches into a mesh. Each sketch contains a si
         {
             maxDeviation = ResolveMaxDeviation(maxDeviation);
             name = name ?? GenerateName("Loft");
+            var dbgSw = System.Diagnostics.Stopwatch.StartNew();
             var output = new MeshOutput();
             int numGroups = LoftBuilder.GenerateLoftFromSketches(converter, sketches, maxDeviation, options, output, name, out var triangleGroupToName, 0);
+            long dbgGen = dbgSw.ElapsedMilliseconds;
             ReserveGeneratedGroupIds(output.TriangleGroups, numGroups, triangleGroupToName);
 
             var mesh = new MeshNormalUV(converter, output.Vertices, output.Normals, output.UVs, output.Triangles, output.TriangleGroups, output.PrecisePositions);
+            long dbgMesh = dbgSw.ElapsedMilliseconds;
             var surfaceMetaData = NurbsPatchMetadataBuilder.BuildLoftMetadata(sketches, maxDeviation, options, name,
                 output.LoftSideSupportFactory, output.LoftSideDomains, output.StartPointCap, output.EndPointCap);
+            long dbgMeta = dbgSw.ElapsedMilliseconds;
             // A finite tessellation cannot prove that a smooth or curved NURBS
             // support is planar. For ruled lofts made entirely from straight
             // profile edges, each local patch is bilinear, so exact coplanarity
@@ -2033,8 +2037,11 @@ Lofts an ordered list of profile sketches into a mesh. Each sketch contains a si
                     mesh.Triangles, mesh.GetTriangleGroups(), triangleGroupToName,
                     surfaceMetaData, converter, name);
 
+            long dbgPlanar = dbgSw.ElapsedMilliseconds;
             var result = new AnchorMesh(name, mesh, triangleGroupToName, surfaceMetaData);
             RegisterMesh(result);
+            if (Resolver.LogBooleanOps)
+                Console.WriteLine($"LoftStages {name}: tris={mesh.Triangles.Count} generate={dbgGen}ms mesh={dbgMesh - dbgGen}ms meta={dbgMeta - dbgMesh}ms planar={dbgPlanar - dbgMeta}ms anchor={dbgSw.ElapsedMilliseconds - dbgPlanar}ms");
             return result;
         }
 
@@ -2517,10 +2524,13 @@ Group/patch names from both inputs are merged (throws on group-id conflict for t
             var (nameToGroupCombined, metaDataCombined) = MergeBooleanPatchData(
                 meshA, meshB, inheritedLineages, obsolete);
             var provenance = operation == BooleanOp.Subtract ? new BooleanFaceLineage(meshA, meshB) : null;
+            var dbgSw = System.Diagnostics.Stopwatch.StartNew();
             MeshNormalUV combinedMesh = MeshNormalUV.BooleanOperation(meshA.Mesh, meshB.Mesh, operation, converter,
                 classifiedFragments: provenance == null ? null : provenance.Classify);
+            long dbgBool = dbgSw.ElapsedMilliseconds;
             var lineages = FaceLineageNaming.Apply(combinedMesh, nameToGroupCombined, metaDataCombined,
                 provenance?.Output, inheritedLineages, obsolete);
+            long dbgNaming = dbgSw.ElapsedMilliseconds;
 
             //var edges = GroupEdgeExtractor.ExtractGroupEdges(combinedMesh.Triangles, combinedMesh.GetGroupList(), combinedMesh.Positions);
 
@@ -2535,6 +2545,8 @@ Group/patch names from both inputs are merged (throws on group-id conflict for t
                     result.UnionOperands = (meshA, meshB);
                 RegisterMesh(result);
             }
+            if (Resolver.LogBooleanOps)
+                Console.WriteLine($"  GeoBool: meshBool={dbgBool}ms naming={dbgNaming - dbgBool}ms anchor={dbgSw.ElapsedMilliseconds - dbgNaming}ms");
             //nameOfMostRecentMesh = name;
             return result;
         }

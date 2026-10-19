@@ -87,12 +87,15 @@ namespace Geo
                 return null;
 
 
+            var dbgSw = System.Diagnostics.Stopwatch.StartNew();
             M result = new M();
             Resolver.Resolve(op, a.PrecisionPositions, a.Triangles, b.PrecisionPositions, b.Triangles,
                 out result.PrecisionPositions, out result.Triangles, out List<SourceTriangle> sources, null,
                 intersectionStrips, classifiedFragments, retainExteriorTrimCaps);
 
+            long dbgResolve = dbgSw.ElapsedMilliseconds;
             result.Positions = converter.Convert(result.PrecisionPositions);
+            long dbgConvert = dbgSw.ElapsedMilliseconds;
 
             // Corner attributes of one result triangle depend only on its source
             // triangle, so runs of fragments from the same source triangle are
@@ -156,6 +159,8 @@ namespace Geo
             });
             failure?.Throw();
             result.TrianglesEx = new List<MeshTriangle<T>>(extTriangles);
+            if (Resolver.LogBooleanOps)
+                Console.WriteLine($"  MeshBool: resolve={dbgResolve}ms convert={dbgConvert - dbgResolve}ms corners={dbgSw.ElapsedMilliseconds - dbgConvert}ms");
 
             return result;
         }

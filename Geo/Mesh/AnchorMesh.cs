@@ -173,12 +173,17 @@ namespace Geo
                 return;
             }
 
+            var dbgSw = System.Diagnostics.Stopwatch.StartNew();
             FuseCoplanarPlanes(skipCoplanarFusion);
+            long dbgFuse = dbgSw.ElapsedMilliseconds;
             GroupEdges = GroupEdgeExtractor.ExtractGroupEdges(
                 Mesh.Triangles, Mesh.GetTriangleGroups(), Mesh.Positions, null, groupIdToExtendedName, surfaceMetaData,
                 PreferLexClosedLoopStarts);
+            long dbgEdges = dbgSw.ElapsedMilliseconds;
             AttachEdgeMetadata();
             ValidateMeshInvariants();
+            if (CSG.Resolver.LogBooleanOps)
+                Console.WriteLine($"  AnchorFinish {Name}: tris={Mesh.Triangles.Count} fuse={dbgFuse}ms groupEdges={dbgEdges - dbgFuse}ms attach={dbgSw.ElapsedMilliseconds - dbgEdges}ms");
         }
 
         private void AttachEdgeMetadata()
@@ -306,7 +311,9 @@ namespace Geo
         /// </param>
         private void FuseCoplanarPlanes(bool skipCoplanarFusion = false)
         {
+            var dbgSw = System.Diagnostics.Stopwatch.StartNew();
             HashSet<int> idsOfPlanarGroups = GetPlanarSurfaceIds();
+            long dbgPlanar = dbgSw.ElapsedMilliseconds;
 
             if (idsOfPlanarGroups.Count > 0)
             {
@@ -336,17 +343,24 @@ namespace Geo
                         Mesh.PrecisionPositions, Mesh.Triangles, Mesh.TrianglesEx, idsOfPlanarGroups);
                 }
 
+                long dbgFusion = dbgSw.ElapsedMilliseconds;
                 CleanMesh(Mesh.PrecisionPositions, Mesh.Triangles, Mesh.TrianglesEx, affineUvGroups);
+                long dbgClean = dbgSw.ElapsedMilliseconds;
 
                 int triCountBeforeDelaunay = Mesh.Triangles.Count;
                 DelaunayFlipper.MakeDelaunay(Mesh.PrecisionPositions, Mesh.Triangles, Mesh.TrianglesEx, idsOfPlanarGroups, retriangulatedGroupIds);
+                if (CSG.Resolver.LogBooleanOps)
+                    Console.WriteLine($"    Fuse {Name}: planarIds={dbgPlanar}ms({idsOfPlanarGroups.Count}) fusion={dbgFusion - dbgPlanar}ms clean={dbgClean - dbgFusion}ms delaunay={dbgSw.ElapsedMilliseconds - dbgClean}ms");
 #if DEBUG
                 if (triCountBeforeDelaunay != Mesh.Triangles.Count)
                     throw new Exception("Delaunay optimization changed triangle count");
 #endif
             }
 
+            long dbgBeforeSplit = dbgSw.ElapsedMilliseconds;
             SplitDisconnectedPatchGroups();
+            if (CSG.Resolver.LogBooleanOps)
+                Console.WriteLine($"    Split {Name}: {dbgSw.ElapsedMilliseconds - dbgBeforeSplit}ms (total fuse {dbgSw.ElapsedMilliseconds}ms)");
         }
 
         private Dictionary<int, FaceLineage> MergeLineageByGroup(List<int> oldGroups, List<int> newGroups)
@@ -478,11 +492,14 @@ namespace Geo
             // These are vertices where UV or normals differ between adjacent triangles
             // (e.g., UV seam = same position but different texture coords on each side)
             // ═══════════════════════════════════════════════════════════════════════════════
+            var dbgSw = System.Diagnostics.Stopwatch.StartNew();
             bool[] vertexMustBePreserved = DetectPreservedVertices(positions, triangles, trianglesEx);
+            long dbgDetect = dbgSw.ElapsedMilliseconds;
 
             var originalTriangles = new List<Tri>(triangles);
             var originalTrianglesEx = new List<MeshTriangle<TriangleVertexNormalUV>>(trianglesEx);
             var vertexDataByGroupAndVertex = BuildVertexDataByGroupAndVertex(triangles, trianglesEx);
+            long dbgVData = dbgSw.ElapsedMilliseconds;
 
             // ═══════════════════════════════════════════════════════════════════════════════
             // STEP 3: Convert to EdgeCollapser's format (strips UV/normal, keeps groupId)
@@ -521,6 +538,7 @@ namespace Geo
                     break;
                 }
             }
+            long dbgPrep = dbgSw.ElapsedMilliseconds;
             Remeshing.EdgeCollapser.CleanMesh(
                 positions,
                 trianglesWithGroups,
@@ -529,6 +547,7 @@ namespace Geo
                 removeCollinearEdges: true,
                 validateCollapseCallback: validateUv,
                 vertexMustBePreserved: vertexMustBePreserved);
+            long dbgCollapse = dbgSw.ElapsedMilliseconds;
 
             // ═══════════════════════════════════════════════════════════════════════════════
             // STEP 5: Rebuild output lists from collapsed mesh
@@ -559,6 +578,8 @@ namespace Geo
                     });
                 }
             }
+            if (CSG.Resolver.LogBooleanOps)
+                Console.WriteLine($"      Clean {Name}: detect={dbgDetect}ms vdata={dbgVData - dbgDetect}ms prep={dbgPrep - dbgVData}ms collapse={dbgCollapse - dbgPrep}ms rebuild={dbgSw.ElapsedMilliseconds - dbgCollapse}ms");
         }
 
         private Dictionary<(int GroupId, int VertexId), TriangleVertexNormalUV> BuildVertexDataByGroupAndVertex(
