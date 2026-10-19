@@ -440,7 +440,7 @@ namespace CSG
 
         private void CollectTrimSegmentCuts(NewPointCreator points, Dictionary<long, List<Rat3Hybrid>> sharedCuts)
         {
-            var local = new Dictionary<long, List<Rat3Hybrid>>();
+            var local = new Dictionary<long, List<Rat3Hybrid>>(EdgeKeyComparer.Instance);
             AppendTrimSegmentCuts(points, local, false);
             MergeTrimCuts(sharedCuts, local);
         }
@@ -555,7 +555,7 @@ namespace CSG
             int firstParallelTriangle = int.MaxValue)
         {
             var triangleList = triangles as IList<ResolverTriangle> ?? triangles.ToList();
-            var sharedCuts = new Dictionary<long,List<Rat3Hybrid>>();
+            var sharedCuts = new Dictionary<long,List<Rat3Hybrid>>(EdgeKeyComparer.Instance);
             for (int triangleIndex = 0; triangleIndex < triangleList.Count; triangleIndex++)
             {
                 var triangle = triangleList[triangleIndex];
@@ -572,7 +572,7 @@ namespace CSG
             ParallelEx.ForLoadBalanced(0, triangleList.Count, triangleIndex =>
             {
                 if (!cutsReady[triangleIndex]) return;
-                var local = new Dictionary<long, List<Rat3Hybrid>>();
+                var local = new Dictionary<long, List<Rat3Hybrid>>(EdgeKeyComparer.Instance);
                 triangleList[triangleIndex].AppendTrimSegmentCuts(points, local, true);
                 localCuts[triangleIndex] = local;
             });

@@ -5,7 +5,92 @@
     // and when they are sorted around the edge, each pair must have opposite winding
     public static class AdjacencyEx
     {
+        /// <summary>
+        /// Same result as <see cref="BuildAdjacencyInformationReference"/> (including the exceptions for
+        /// degenerate triangles and odd edge use) but computed on flat arrays instead of a dictionary of
+        /// lists. Edges are visited in first-occurrence order, which is the dictionary enumeration order
+        /// of the reference, so overwrites of neighbour slots resolve identically.
+        /// </summary>
         public static TriangleAdjacency[] BuildAdjacencyInformation(List<Rat3Hybrid> vertices, List<Tri> triangles, bool throwOnOpenEdge = false)
+        {
+            int count = triangles.Count;
+            var tris = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(triangles);
+            for (int i = 0; i < count; ++i)
+            {
+                var t = tris[i];
+                if (t.A < 0)
+                    continue;
+                if (t.A == t.B || t.B == t.C || t.A == t.C)
+                    throw new Exception();
+            }
+
+            int entries = count * 3;
+            var edgeOf = new int[entries];
+            int edgeCount = EdgeIdTable.Build(tris, edgeOf, skipNegative: true);
+            var edgeStart = new int[edgeCount + 1];
+            for (int k = 0; k < entries; k++)
+            {
+                int e = edgeOf[k];
+                if (e >= 0) edgeStart[e + 1]++;
+            }
+            for (int e = 0; e < edgeCount; e++) edgeStart[e + 1] += edgeStart[e];
+            var fill = new int[edgeCount];
+            var edgeEntries = new int[edgeStart[edgeCount]];
+            for (int k = 0; k < entries; k++)
+            {
+                int e = edgeOf[k];
+                if (e >= 0) edgeEntries[edgeStart[e] + fill[e]++] = k;
+            }
+
+            var adj = new TriangleAdjacency[count];
+            for (int i = 0; i < count; ++i)
+                adj[i] = new TriangleAdjacency() { NeighbourAB = -1, NeighbourBC = -1, NeighbourCA = -1 };
+
+            List<int> list = null;
+            for (int e = 0; e < edgeCount; e++)
+            {
+                int begin = edgeStart[e];
+                int n = edgeStart[e + 1] - begin;
+                if (throwOnOpenEdge && n % 2 != 0)
+                    throw new Exception();
+                if (n == 1)
+                    continue;
+                if (n == 2)
+                {
+                    int i1 = edgeEntries[begin] / 3, i2 = edgeEntries[begin + 1] / 3;
+                    Tri t1 = tris[i1];
+                    Tri t2 = tris[i2];
+                    adj[i1].AddNeighbour(t1, t2, i2);
+                    adj[i2].AddNeighbour(t2, t1, i1);
+                    continue;
+                }
+
+                // More than two triangles share the edge: sort around it and pair up consecutive ones.
+                list ??= new List<int>();
+                list.Clear();
+                for (int p = 0; p < n; p++) list.Add(edgeEntries[begin + p] / 3);
+                int k0 = edgeEntries[begin];
+                var first = tris[k0 / 3];
+                int s0 = k0 % 3;
+                int ea = s0 == 0 ? first.A : s0 == 1 ? first.B : first.C;
+                int eb = s0 == 0 ? first.B : s0 == 1 ? first.C : first.A;
+                if (ea > eb) (ea, eb) = (eb, ea);
+                SortAroundEdge(vertices, triangles, list, ea, eb);
+                if (list.Count % 2 != 0)
+                    throw new Exception();
+                for (int i = 0; i < list.Count; i += 2)
+                {
+                    Tri t1 = tris[list[i]];
+                    Tri t2 = tris[list[i + 1]];
+                    adj[list[i]].AddNeighbour(t1, t2, list[i + 1]);
+                    adj[list[i + 1]].AddNeighbour(t2, t1, list[i]);
+                }
+            }
+            return adj;
+        }
+
+        /// <summary>Original dictionary based implementation; kept as the specification for tests.</summary>
+        public static TriangleAdjacency[] BuildAdjacencyInformationReference(List<Rat3Hybrid> vertices, List<Tri> triangles, bool throwOnOpenEdge = false)
         {
             var edgeToTriangles = BuildEdgeToTrianglesMap(triangles, vertices.Count + triangles.Count);
 

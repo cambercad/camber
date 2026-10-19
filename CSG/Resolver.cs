@@ -600,10 +600,10 @@ namespace CSG
 
             tim = timing.Start("PrepareTriangulate");
             ResolverTriangle.ArrangeTrimSegments(resolverTris, newPoints, numValidTrisA);
-            Dictionary<long, int> insertedSegmentsA = new Dictionary<long, int>();
+            Dictionary<long, int> insertedSegmentsA = new Dictionary<long, int>(EdgeKeyComparer.Instance);
             for (int i = 0; i < numValidTrisA; ++i)
                 resolverTris[i].PrepareTriangulate(newPoints, insertedSegmentsA);
-            Dictionary<long, int> insertedSegmentsB = new Dictionary<long, int>();
+            Dictionary<long, int> insertedSegmentsB = new Dictionary<long, int>(EdgeKeyComparer.Instance);
             for (int i = numValidTrisA; i < resolverTris.Count; ++i)
                 resolverTris[i].PrepareTriangulate(newPoints, insertedSegmentsB);
 
@@ -794,7 +794,7 @@ namespace CSG
             {
                 tim.Stop();
                 tim = timing.Start("Clusterize");
-                var insertedSegments = insertedSegmentsA.Keys.ToHashSet();
+                var insertedSegments = new HashSet<long>(insertedSegmentsA.Keys, EdgeKeyComparer.Instance);
 
                 Task a = new Task(delegate ()
                 {
@@ -892,13 +892,13 @@ namespace CSG
                 }
                 else
                 {
-                    var insertedSegments = insertedSegmentsA.Keys.ToHashSet();
+                    var insertedSegments = new HashSet<long>(insertedSegmentsA.Keys, EdgeKeyComparer.Instance);
 
                     // For a solid, the retained part of B is the cap. Its exact
                     // boundary winding determines which side of A closes with it,
                     // including at tangent contacts where a facet-plane test
                     // does not give a consistent side across a curved cutter.
-                    var capEdges = new Dictionary<long, (int Start, int End, int Uses)>();
+                    var capEdges = new Dictionary<long, (int Start, int End, int Uses)>(EdgeKeyComparer.Instance);
                     if (meshAIsVolume && clustersB != null)
                     {
                         var volumeIntersector = new Int3Intersector(newPoints, trianglesA);
@@ -1073,7 +1073,7 @@ namespace CSG
         private static bool IsIntersectionBoundedCluster(List<int> cluster, List<Tri> triangles,
             Dictionary<long, int> intersectionSegments)
         {
-            var edgeIncidence = new Dictionary<long, int>();
+            var edgeIncidence = new Dictionary<long, int>(EdgeKeyComparer.Instance);
             foreach (int index in cluster)
             {
                 var triangle = triangles[index];
@@ -1148,7 +1148,7 @@ namespace CSG
             // Disjoint retained solids are separate material regions. Test their
             // union, not the parity of overlapping outer enclosures with their
             // still-deferred internal cavity surfaces missing.
-            var components=Clusterize(points.GetPoints(),new HashSet<long>(),retained,0,retained.Count);
+            var components=Clusterize(points.GetPoints(),new HashSet<long>(EdgeKeyComparer.Instance),retained,0,retained.Count);
             var regions=new List<(List<Tri> mesh,BVHNode[] tree,Box3I bounds)>();
             foreach(var component in components)
             {
@@ -1453,76 +1453,57 @@ namespace CSG
 
         public static List<List<int>> Clusterize(List<Rat3Hybrid> points, HashSet<long> insertedSegmentsAsBoundaries, List<Tri> resultTrianglesJoined)
         {
-            //Use flood fill but cannot go over insertedSegmentsAsBoundaries
-            
-            // Build adjacency information for all triangles
+            // Flood fill; insertedSegmentsAsBoundaries cannot be crossed. Clusters are listed in order of
+            // their lowest triangle index and each cluster in breadth-first order. Since the queue is
+            // consumed in the order it is filled, a cluster is exactly its slice of the queue array.
+            int n = resultTrianglesJoined.Count;
             TriangleAdjacency[] adjacency = AdjacencyEx.BuildAdjacencyInformation(points, resultTrianglesJoined);
-            
-            // Track which triangles have been visited
-            bool[] visited = new bool[resultTrianglesJoined.Count];
-            
-            // Result clusters
-            List<List<int>> clusters = new List<List<int>>();
-            
-            // Process each triangle
-            for (int i = 0; i < resultTrianglesJoined.Count; i++)
+            bool[] visited = new bool[n];
+            int[] queue = new int[n];
+            int tail = 0;
+            var clusters = new List<List<int>>();
+            for (int i = 0; i < n; i++)
             {
                 if (visited[i])
                     continue;
-                    
-                // Start a new cluster with BFS flood fill
-                List<int> cluster = new List<int>();
-                Queue<int> queue = new Queue<int>();
-                
-                queue.Enqueue(i);
+
+                int start = tail;
+                int head = tail;
+                queue[tail++] = i;
                 visited[i] = true;
-                
-                while (queue.Count > 0)
+                while (head < tail)
                 {
-                    int currentTriIndex = queue.Dequeue();
-                    cluster.Add(currentTriIndex);
-                    
+                    int currentTriIndex = queue[head++];
                     Tri currentTri = resultTrianglesJoined[currentTriIndex];
                     TriangleAdjacency adj = adjacency[currentTriIndex];
-                    
-                    // Check all three neighbors
-                    // Neighbor across edge AB
-                    if (adj.NeighbourAB >= 0 && !visited[adj.NeighbourAB])
+
+                    int neighbour = adj.NeighbourAB;
+                    if (neighbour >= 0 && !visited[neighbour] &&
+                        !insertedSegmentsAsBoundaries.Contains(Algorithms.Key(currentTri.A, currentTri.B)))
                     {
-                        long edgeKey = Algorithms.Key(currentTri.A, currentTri.B);
-                        if (!insertedSegmentsAsBoundaries.Contains(edgeKey))
-                        {
-                            visited[adj.NeighbourAB] = true;
-                            queue.Enqueue(adj.NeighbourAB);
-                        }
+                        visited[neighbour] = true;
+                        queue[tail++] = neighbour;
                     }
-                    
-                    // Neighbor across edge BC
-                    if (adj.NeighbourBC >= 0 && !visited[adj.NeighbourBC])
+                    neighbour = adj.NeighbourBC;
+                    if (neighbour >= 0 && !visited[neighbour] &&
+                        !insertedSegmentsAsBoundaries.Contains(Algorithms.Key(currentTri.B, currentTri.C)))
                     {
-                        long edgeKey = Algorithms.Key(currentTri.B, currentTri.C);
-                        if (!insertedSegmentsAsBoundaries.Contains(edgeKey))
-                        {
-                            visited[adj.NeighbourBC] = true;
-                            queue.Enqueue(adj.NeighbourBC);
-                        }
+                        visited[neighbour] = true;
+                        queue[tail++] = neighbour;
                     }
-                    
-                    // Neighbor across edge CA
-                    if (adj.NeighbourCA >= 0 && !visited[adj.NeighbourCA])
+                    neighbour = adj.NeighbourCA;
+                    if (neighbour >= 0 && !visited[neighbour] &&
+                        !insertedSegmentsAsBoundaries.Contains(Algorithms.Key(currentTri.C, currentTri.A)))
                     {
-                        long edgeKey = Algorithms.Key(currentTri.C, currentTri.A);
-                        if (!insertedSegmentsAsBoundaries.Contains(edgeKey))
-                        {
-                            visited[adj.NeighbourCA] = true;
-                            queue.Enqueue(adj.NeighbourCA);
-                        }
+                        visited[neighbour] = true;
+                        queue[tail++] = neighbour;
                     }
                 }
-                
+
+                var cluster = new List<int>(tail - start);
+                cluster.AddRange(new ReadOnlySpan<int>(queue, start, tail - start));
                 clusters.Add(cluster);
             }
-            
             return clusters;
         }
 

@@ -256,7 +256,7 @@ internal sealed class BooleanFaceLineage
         // ---- Edge incidence (CSR): edge id per (triangle, side), incident entries in (i, side) order ----
         int entries = count * 3;
         var edgeOf = new int[entries];
-        int edgeCount = BuildEdgeIds(triangles, edgeOf);
+        int edgeCount = EdgeIdTable.Build(triangles, edgeOf, skipNegative: false);
         var edgeStart = new int[edgeCount + 1];
         for (int k = 0; k < entries; k++) edgeStart[edgeOf[k] + 1]++;
         var aCount = new int[edgeCount];
@@ -430,69 +430,5 @@ internal sealed class BooleanFaceLineage
             if (retained[i])
                 output.Add(component[i] >= 0 ? regionLineage[component[i]] : triInfo[i].Lineage);
         Output = output;
-    }
-
-    /// <summary>Assigns a dense id to every undirected edge; entry k is side (k % 3) of triangle (k / 3).</summary>
-    private static int BuildEdgeIds(Tri[] triangles, int[] edgeOf)
-    {
-        int count = triangles.Length;
-        int capacity = 16;
-        while (capacity < count * 2) capacity <<= 1;
-        var keys = new long[capacity];
-        var ids = new int[capacity];
-        Array.Fill(ids, -1);
-        int mask = capacity - 1;
-        int next = 0;
-        for (int i = 0; i < count; i++)
-        {
-            var t = triangles[i];
-            for (int side = 0; side < 3; side++)
-            {
-                int a = side == 0 ? t.A : side == 1 ? t.B : t.C;
-                int b = side == 0 ? t.B : side == 1 ? t.C : t.A;
-                if (a > b) (a, b) = (b, a);
-                long key = ((long)a << 32) | (uint)b;
-                int slot = (int)(((ulong)key * 0x9E3779B97F4A7C15UL) >> 32) & mask;
-                while (true)
-                {
-                    int id = ids[slot];
-                    if (id < 0)
-                    {
-                        keys[slot] = key;
-                        ids[slot] = id = next++;
-                        edgeOf[i * 3 + side] = id;
-                        break;
-                    }
-                    if (keys[slot] == key)
-                    {
-                        edgeOf[i * 3 + side] = id;
-                        break;
-                    }
-                    slot = (slot + 1) & mask;
-                }
-                // load factor: next <= 3*count <= 1.5 * capacity worst case; grow when over 70%
-                if (next * 10 > capacity * 7)
-                {
-                    int newCapacity = capacity << 1;
-                    var newKeys = new long[newCapacity];
-                    var newIds = new int[newCapacity];
-                    Array.Fill(newIds, -1);
-                    int newMask = newCapacity - 1;
-                    for (int s = 0; s < capacity; s++)
-                    {
-                        if (ids[s] < 0) continue;
-                        int ns = (int)(((ulong)keys[s] * 0x9E3779B97F4A7C15UL) >> 32) & newMask;
-                        while (newIds[ns] >= 0) ns = (ns + 1) & newMask;
-                        newKeys[ns] = keys[s];
-                        newIds[ns] = ids[s];
-                    }
-                    keys = newKeys;
-                    ids = newIds;
-                    capacity = newCapacity;
-                    mask = newMask;
-                }
-            }
-        }
-        return next;
     }
 }

@@ -127,7 +127,7 @@ namespace CSG
             
             // Step 4: Prepare for triangulation
             ResolverTriangle.ArrangeTrimSegments(resolverTris, newPoints);
-            Dictionary<long, int> insertedSegments = new Dictionary<long, int>();
+            Dictionary<long, int> insertedSegments = new Dictionary<long, int>(EdgeKeyComparer.Instance);
             for (int i = 0; i < resolverTris.Count; i++)
             {
                 resolverTris[i].PrepareTriangulate(newPoints, insertedSegments);
@@ -183,7 +183,7 @@ namespace CSG
             List<Rat3Hybrid> allPoints = newPoints.ExportPoints();
 
             // Step 7: Clusterize - group triangles that aren't separated by trim curves
-            HashSet<long> boundaries = new HashSet<long>(insertedSegments.Keys);
+            HashSet<long> boundaries = new HashSet<long>(insertedSegments.Keys, EdgeKeyComparer.Instance);
             List<List<int>> clusters = Resolver.Clusterize(allPoints, boundaries, allTriangles);
             
             // Step 8: Create a separate Surface for each cluster
