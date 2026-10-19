@@ -36,8 +36,11 @@ namespace CSG
 
     public static class Resolver
     {
-        /// <summary>When true, each boolean prints a name line plus resolver timings and pair stats.</summary>
-        public static bool LogBooleanOps;
+        /// <summary>
+        /// When true, each boolean prints a name line plus resolver timings and pair stats.
+        /// Environment variable CAMBER_LOG_BOOLEANS=1 enables it without code changes (also in the Python host).
+        /// </summary>
+        public static bool LogBooleanOps = Environment.GetEnvironmentVariable("CAMBER_LOG_BOOLEANS") == "1";
         public static ResolvePairStats LastResolveStats;
         private static void AddIntersectionAvoidDuplicates(
             ref Rat3Hybrid ip0, ref Rat3Hybrid ip1, ref int ipCount, in Rat3Hybrid p)
@@ -824,6 +827,10 @@ namespace CSG
 
                 tim.Stop();
                 tim = timing.Start("InsideOutside");
+                int dbgGc0 = GC.CollectionCount(0), dbgGc1 = GC.CollectionCount(1), dbgGc2 = GC.CollectionCount(2);
+                TimeSpan dbgPause = GC.GetTotalPauseDuration();
+                long dbgAlloc = GC.GetTotalAllocatedBytes(false);
+                var dbgSw = System.Diagnostics.Stopwatch.StartNew();
                 ParallelEx.For(0, resultTrianglesJoined.Count, i =>
                 //for (int i = 0; i < resultTriangles.Count; ++i)
                 {
@@ -852,6 +859,8 @@ namespace CSG
                     resultTrianglesJoined[i] = tri;
                     insideResults[i] = r;
                 });
+                if (LogBooleanOps)
+                    Console.WriteLine($"  IO: tris={resultTrianglesJoined.Count} wall={dbgSw.ElapsedMilliseconds}ms gc0={GC.CollectionCount(0) - dbgGc0} gc1={GC.CollectionCount(1) - dbgGc1} gc2={GC.CollectionCount(2) - dbgGc2} pause={(GC.GetTotalPauseDuration() - dbgPause).TotalMilliseconds:F0}ms alloc={(GC.GetTotalAllocatedBytes(false) - dbgAlloc) / 1048576}MB");
 
 
 
